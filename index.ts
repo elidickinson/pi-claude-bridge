@@ -921,9 +921,6 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 
 					output.stopReason = "toolUse";
 					hadToolUseCycles = true;
-					// Strip usage — ACP doesn't provide per-turn usage for tool-use
-					// intermediates. Leaving zeros would pollute llm-perf stats.
-					output.usage = undefined as any;
 					stream.push({ type: "done", reason: "toolUse", message: output });
 					stream.end();
 					// activePromise stays alive — next streamSimple call will resume
@@ -952,8 +949,6 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 						output.usage.cacheWrite = result.usage.cachedWriteTokens ?? 0;
 						output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 						calculateCost(model, output.usage);
-					} else if (hadToolUseCycles) {
-						output.usage = undefined as any;
 					}
 					output.stopReason = result.stopReason === "cancelled" ? "aborted" : "stop";
 					pushStart();
