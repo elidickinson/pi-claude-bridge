@@ -1,16 +1,14 @@
 import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION, type SessionNotification, type SessionUpdate, type PromptResponse, type RequestPermissionRequest, type RequestPermissionResponse, type ReadTextFileRequest, type ReadTextFileResponse, type WriteTextFileRequest, type WriteTextFileResponse, type CreateTerminalRequest, type CreateTerminalResponse, type TerminalOutputRequest, type TerminalOutputResponse, type WaitForTerminalExitRequest, type WaitForTerminalExitResponse, type KillTerminalRequest, type KillTerminalResponse, type ReleaseTerminalRequest, type ReleaseTerminalResponse } from "@agentclientprotocol/sdk";
+import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION, type SessionNotification, type SessionUpdate, type PromptResponse } from "@agentclientprotocol/sdk";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
+import { writeFile, unlink } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Writable, Readable } from "node:stream";
 
 const PROVIDER_ID = "claude-code-acp";
-
-const BUILTIN_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "grep", "find", "glob"]);
 const MCP_SERVER_NAME = "pi-tools";
 
 const LATEST_MODEL_IDS = new Set(["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]);
@@ -27,17 +25,8 @@ const MODELS = getModels("anthropic")
 		maxTokens: model.maxTokens,
 	}));
 
-// --- Tool partitioning ---
-
-function partitionTools(tools?: Tool[]): { customTools: Tool[] } {
-	if (!tools) return { customTools: [] };
-	const customTools: Tool[] = [];
-	for (const tool of tools) {
-		if (!BUILTIN_TOOL_NAMES.has(tool.name.toLowerCase())) {
-			customTools.push(tool);
-		}
-	}
-	return { customTools };
+function getToolsForMcp(tools?: Tool[]): Tool[] {
+	return tools ?? [];
 }
 
 // --- Prompt building ---
@@ -49,18 +38,12 @@ function buildPromptText(context: Context): string {
 		if (message.role === "user") {
 			const text = messageContentToText(message.content);
 			parts.push(`USER:\n${text || "(see attached image)"}`);
-			continue;
-		}
-
-		if (message.role === "assistant") {
+		} else if (message.role === "assistant") {
 			const text = assistantContentToText(message.content);
 			if (text.length > 0) {
 				parts.push(`ASSISTANT:\n${text}`);
 			}
-			continue;
-		}
-
-		if (message.role === "toolResult") {
+		} else if (message.role === "toolResult") {
 			const header = `TOOL RESULT (historical ${message.toolName ?? "unknown"}):`;
 			const text = messageContentToText(message.content);
 			parts.push(`${header}\n${text || "(see attached image)"}`);
@@ -84,7 +67,7 @@ function messageContentToText(
 			textParts.push(block.text);
 			hasText = true;
 		} else if (block.type === "image") {
-			// text-only for v1
+			// text-only for now
 		} else {
 			textParts.push(`[${block.type}]`);
 		}
@@ -111,14 +94,14 @@ function assistantContentToText(
 			if (block.type === "thinking") return block.thinking ?? "";
 			if (block.type === "toolCall") {
 				const args = block.arguments ? JSON.stringify(block.arguments) : "{}";
-				return `Historical tool call (non-executable): ${block.name} args=${args}`;
+				return `Historical tool call: ${block.name} args=${args}`;
 			}
 			return `[${block.type}]`;
 		})
 		.join("\n");
 }
 
-// --- HTTP bridge for custom tool calls ---
+// --- HTTP bridge for MCP tool calls ---
 
 interface PendingToolCall {
 	toolName: string;
@@ -156,7 +139,7 @@ async function ensureBridgeServer(): Promise<number> {
 						},
 					};
 					toolCallDetected?.();
-				} catch (e) {
+				} catch {
 					res.writeHead(400);
 					res.end("Bad request");
 				}
@@ -176,14 +159,14 @@ async function ensureBridgeServer(): Promise<number> {
 
 let mcpServerScriptPath: string | null = null;
 
-function generateMcpServerScript(customTools: Tool[], bridgeUrl: string): string {
-	const toolSchemas = customTools.map((t) => ({
+function generateMcpServerScript(tools: Tool[], bridgeUrl: string): string {
+	const toolSchemas = tools.map((t) => ({
 		name: t.name,
 		description: t.description,
 		inputSchema: t.parameters,
 	}));
 
-	// Claude Code uses ndjson (newline-delimited JSON) for MCP stdio, not Content-Length framing
+	// Claude Code uses ndjson for MCP stdio, not Content-Length framing
 	return `const http = require("http");
 const BRIDGE_URL = ${JSON.stringify(bridgeUrl)};
 const TOOLS = ${JSON.stringify(toolSchemas)};
@@ -243,8 +226,8 @@ function handleMessage(msg) {
 `;
 }
 
-async function ensureMcpServerScript(customTools: Tool[], bridgeUrl: string): Promise<string> {
-	const script = generateMcpServerScript(customTools, bridgeUrl);
+async function writeMcpServerScript(tools: Tool[], bridgeUrl: string): Promise<string> {
+	const script = generateMcpServerScript(tools, bridgeUrl);
 	const path = join(tmpdir(), `pi-tools-mcp-${process.pid}.js`);
 	await writeFile(path, script, "utf-8");
 	mcpServerScriptPath = path;
@@ -268,13 +251,6 @@ function extractLastToolResult(context: Context): { toolName: string; content: s
 
 // --- ACP connection management ---
 
-interface TerminalState {
-	proc: ChildProcess;
-	output: string;
-	exitCode?: number | null;
-	signal?: string | null;
-}
-
 let acpProcess: ChildProcess | null = null;
 let acpConnection: ClientSideConnection | null = null;
 let sessionUpdateHandler: ((update: SessionUpdate) => void) | null = null;
@@ -282,129 +258,18 @@ let activeSessionId: string | null = null;
 let activeModelId: string | null = null;
 let activePromise: Promise<PromptResponse> | null = null;
 let lastContextLength = 0;
-let nextTerminalId = 1;
-const terminals = new Map<string, TerminalState>();
-
-function handleRequestPermission(params: RequestPermissionRequest): RequestPermissionResponse {
-	const allowOption = params.options.find(
-		(o) => o.kind === "allow_once" || o.kind === "allow_always",
-	);
-	if (allowOption) {
-		return { outcome: { outcome: "selected", optionId: allowOption.optionId } };
-	}
-	return { outcome: { outcome: "cancelled" } };
-}
-
-async function handleReadTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
-	const content = await readFile(params.path, "utf-8");
-	if (params.line != null || params.limit != null) {
-		const lines = content.split("\n");
-		const start = Math.max(0, (params.line ?? 1) - 1);
-		const end = params.limit != null ? start + params.limit : lines.length;
-		return { content: lines.slice(start, end).join("\n") };
-	}
-	return { content };
-}
-
-async function handleWriteTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
-	await mkdir(dirname(params.path), { recursive: true });
-	await writeFile(params.path, params.content, "utf-8");
-	return {};
-}
-
-function handleCreateTerminal(params: CreateTerminalRequest): CreateTerminalResponse {
-	const id = `term-${nextTerminalId++}`;
-	const args = params.args ?? [];
-	const proc = spawn(params.command, args, {
-		cwd: params.cwd ?? process.cwd(),
-		stdio: ["ignore", "pipe", "pipe"],
-		env: {
-			...process.env,
-			...(params.env
-				? Object.fromEntries(params.env.map((e) => [e.name, e.value]))
-				: {}),
-		},
-	});
-
-	const state: TerminalState = { proc, output: "" };
-	terminals.set(id, state);
-
-	proc.stdout?.on("data", (chunk: Buffer) => {
-		state.output += chunk.toString();
-		if (params.outputByteLimit && state.output.length > params.outputByteLimit) {
-			state.output = state.output.slice(-params.outputByteLimit);
-		}
-	});
-	proc.stderr?.on("data", (chunk: Buffer) => {
-		state.output += chunk.toString();
-		if (params.outputByteLimit && state.output.length > params.outputByteLimit) {
-			state.output = state.output.slice(-params.outputByteLimit);
-		}
-	});
-	proc.on("close", (code, signal) => {
-		state.exitCode = code;
-		state.signal = signal;
-	});
-
-	return { terminalId: id };
-}
-
-function handleTerminalOutput(params: TerminalOutputRequest): TerminalOutputResponse {
-	const state = terminals.get(params.terminalId);
-	if (!state) return { output: "", truncated: false };
-	return {
-		output: state.output,
-		truncated: false,
-		...(state.exitCode !== undefined || state.signal !== undefined
-			? { exitStatus: { exitCode: state.exitCode, signal: state.signal } }
-			: {}),
-	};
-}
-
-async function handleWaitForTerminalExit(
-	params: WaitForTerminalExitRequest,
-): Promise<WaitForTerminalExitResponse> {
-	const state = terminals.get(params.terminalId);
-	if (!state) return { exitCode: 1 };
-	return new Promise((resolve) => {
-		state.proc.on("close", (code, signal) => {
-			resolve({ exitCode: code, signal });
-		});
-		if (state.exitCode !== undefined || state.signal !== undefined) {
-			resolve({ exitCode: state.exitCode, signal: state.signal });
-		}
-	});
-}
-
-function handleKillTerminal(params: KillTerminalRequest): KillTerminalResponse | void {
-	const state = terminals.get(params.terminalId);
-	if (state) state.proc.kill();
-}
-
-function handleReleaseTerminal(params: ReleaseTerminalRequest): ReleaseTerminalResponse | void {
-	const state = terminals.get(params.terminalId);
-	if (state) {
-		state.proc.kill();
-		terminals.delete(params.terminalId);
-	}
-}
 
 function killConnection() {
 	if (acpProcess) {
 		acpProcess.kill();
 		acpProcess = null;
 	}
-	for (const [, state] of terminals) {
-		state.proc.kill();
-	}
-	terminals.clear();
 	acpConnection = null;
 	sessionUpdateHandler = null;
 	activeSessionId = null;
 	activeModelId = null;
 	activePromise = null;
 	lastContextLength = 0;
-	nextTerminalId = 1;
 
 	if (pendingToolCall) {
 		pendingToolCall.resolve("Error: connection killed");
@@ -451,7 +316,7 @@ async function ensureConnection(): Promise<ClientSideConnection> {
 	const rawStream = ndJsonStream(input, output);
 
 	// Intercept session/update notifications before SDK validation
-	// (same workaround as claude-acp.ts — avoids Zod union parse errors)
+	// (workaround for Zod union parse errors in the ACP SDK)
 	const filter = new TransformStream({
 		transform(msg: any, controller) {
 			if ("method" in msg && msg.method === "session/update" && !("id" in msg) && msg.params) {
@@ -469,17 +334,24 @@ async function ensureConnection(): Promise<ClientSideConnection> {
 	rawStream.readable.pipeTo(filter.writable).catch(() => {});
 	const stream = { readable: filter.readable, writable: rawStream.writable };
 
+	// ACP callbacks — built-in tools are disabled so these are stubs,
+	// but the protocol requires them to be registered.
 	const connection = new ClientSideConnection(
 		() => ({
-			sessionUpdate: async () => {}, // handled by stream filter above
-			requestPermission: async (params) => handleRequestPermission(params),
-			readTextFile: async (params) => handleReadTextFile(params),
-			writeTextFile: async (params) => handleWriteTextFile(params),
-			createTerminal: async (params) => handleCreateTerminal(params),
-			terminalOutput: async (params) => handleTerminalOutput(params),
-			waitForTerminalExit: async (params) => handleWaitForTerminalExit(params),
-			killTerminal: async (params) => handleKillTerminal(params),
-			releaseTerminal: async (params) => handleReleaseTerminal(params),
+			sessionUpdate: async () => {},
+			requestPermission: async (params) => {
+				const opt = params.options.find((o) => o.kind === "allow_once" || o.kind === "allow_always");
+				return opt
+					? { outcome: { outcome: "selected", optionId: opt.optionId } }
+					: { outcome: { outcome: "cancelled" } };
+			},
+			readTextFile: async () => ({ content: "" }),
+			writeTextFile: async () => ({}),
+			createTerminal: async () => ({ terminalId: "stub" }),
+			terminalOutput: async () => ({ output: "", truncated: false }),
+			waitForTerminalExit: async () => ({ exitCode: 1 }),
+			killTerminal: async () => {},
+			releaseTerminal: async () => {},
 		}),
 		stream,
 	);
@@ -497,7 +369,6 @@ async function ensureConnection(): Promise<ClientSideConnection> {
 	return connection;
 }
 
-// Clean up on process exit
 process.on("exit", () => killConnection());
 process.on("SIGTERM", () => killConnection());
 
@@ -568,51 +439,37 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 
 		try {
 			const connection = await ensureConnection();
-			const { customTools } = partitionTools(context.tools);
+			const tools = getToolsForMcp(context.tools);
 
 			// --- Mode B: Resume with tool result ---
 			if (activePromise && pendingToolCall) {
 				sessionId = activeSessionId;
 				const toolResult = extractLastToolResult(context);
-				if (toolResult) {
-					pendingToolCall.resolve(toolResult.content || "OK");
-				} else {
-					pendingToolCall.resolve("No tool result provided");
-				}
+				pendingToolCall.resolve(toolResult?.content || "OK");
 				pendingToolCall = null;
 				lastContextLength = context.messages.length;
 
 			// --- Mode A: Fresh prompt ---
 			} else {
-				// TODO: consider prepending pi skills or other pi-specific context to
-				// the first prompt. Claude Code loads its own CLAUDE.md so we don't
-				// send that, but pi skills aren't visible to Claude Code.
-
 				let promptText: string;
 				if (!activeSessionId) {
 					// First call — new session with full context
 					const mcpServers: Array<{ command: string; args: string[]; env: Array<{ name: string; value: string }>; name: string }> = [];
-					if (customTools.length > 0) {
+					if (tools.length > 0) {
 						const port = await ensureBridgeServer();
 						const bridgeUrl = `http://127.0.0.1:${port}`;
-						const scriptPath = await ensureMcpServerScript(customTools, bridgeUrl);
-						mcpServers.push({
-							command: "node",
-							args: [scriptPath],
-							env: [],
-							name: MCP_SERVER_NAME,
-						});
+						const scriptPath = await writeMcpServerScript(tools, bridgeUrl);
+						mcpServers.push({ command: "node", args: [scriptPath], env: [], name: MCP_SERVER_NAME });
 					}
 
-					const _meta: Record<string, unknown> = {};
-					if (customTools.length > 0) {
-						_meta.claudeCode = {
-							options: {
-								allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
-							},
-						};
-					}
-					const session = await connection.newSession({ cwd: process.cwd(), mcpServers, _meta } as any);
+					const session = await connection.newSession({
+						cwd: process.cwd(),
+						mcpServers,
+						_meta: {
+							disableBuiltInTools: true,
+							claudeCode: { options: { allowedTools: [`mcp__${MCP_SERVER_NAME}__*`] } },
+						},
+					} as any);
 
 					sessionId = session.sessionId;
 					activeSessionId = sessionId;
@@ -629,9 +486,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 						activeModelId = model.id;
 					}
 					const lastUser = [...context.messages].reverse().find((m) => m.role === "user");
-					promptText = lastUser
-						? messageContentToText(lastUser.content) || ""
-						: "";
+					promptText = lastUser ? messageContentToText(lastUser.content) || "" : "";
 					lastContextLength = context.messages.length;
 				}
 
@@ -641,7 +496,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 				});
 			}
 
-			// Wire session update handler for this call
+			// Wire session update handler
 			sessionUpdateHandler = (update: SessionUpdate) => {
 				pushStart();
 
@@ -657,12 +512,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 							}
 							const block = blocks[textBlockIndex] as { type: "text"; text: string };
 							block.text += text;
-							stream.push({
-								type: "text_delta",
-								contentIndex: textBlockIndex,
-								delta: text,
-								partial: output,
-							});
+							stream.push({ type: "text_delta", contentIndex: textBlockIndex, delta: text, partial: output });
 						}
 						break;
 					}
@@ -678,28 +528,22 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 							}
 							const block = blocks[thinkingBlockIndex] as { type: "thinking"; thinking: string };
 							block.thinking += text;
-							stream.push({
-								type: "thinking_delta",
-								contentIndex: thinkingBlockIndex,
-								delta: text,
-								partial: output,
-							});
+							stream.push({ type: "thinking_delta", contentIndex: thinkingBlockIndex, delta: text, partial: output });
 						}
 						break;
 					}
 
 					case "tool_call":
 					case "tool_call_update":
-						// ACP handles built-in tools internally.
-						// Custom tools go through MCP bridge (pendingToolCall).
-						// TODO: show tool calls in Pi once we can prevent
-						// sendMessage from triggering extra agent turns.
+						// All tool calls go through MCP bridge → Pi executes them
 						break;
 
 					case "usage_update": {
 						const usage = update as { used?: number; size?: number } & { sessionUpdate: string };
-						if (usage.used != null) output.usage.totalTokens = usage.used;
-						if (usage.used != null) output.usage.input = usage.used;
+						if (usage.used != null) {
+							output.usage.totalTokens = usage.used;
+							output.usage.input = usage.used;
+						}
 						calculateCost(model, output.usage);
 						break;
 					}
@@ -709,7 +553,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 				}
 			};
 
-			// Set up abort handling
+			// Abort handling
 			const onAbort = () => {
 				if (activeSessionId && acpConnection) {
 					acpConnection.cancel({ sessionId: activeSessionId });
@@ -725,9 +569,8 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 			}
 
 			try {
-				// Race: prompt completion vs custom tool call via bridge
-				const hasCustomTools = customTools.length > 0;
-				const raceResult: RaceResult = hasCustomTools
+				// Race: prompt completion vs tool call via bridge
+				const raceResult: RaceResult = tools.length > 0
 					? await Promise.race([
 						activePromise!.then((r): RaceResult => ({ kind: "done", result: r })),
 						waitForToolCall().then((): RaceResult => ({ kind: "toolCall" })),
@@ -735,7 +578,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 					: await activePromise!.then((r): RaceResult => ({ kind: "done", result: r }));
 
 				if (raceResult.kind === "toolCall" && pendingToolCall) {
-					// Custom tool call detected — return toolUse to Pi
+					// Tool call detected — return toolUse so Pi executes it
 					closeOpenBlocks();
 					pushStart();
 
@@ -755,7 +598,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 					stream.end();
 					// activePromise stays alive — next streamSimple call will resume
 				} else {
-					// Prompt completed — no pending tool call
+					// Prompt completed
 					activePromise = null;
 					closeOpenBlocks();
 
