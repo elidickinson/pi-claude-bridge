@@ -439,11 +439,15 @@ async function ensureConnection(): Promise<ClientSideConnection> {
 	});
 	acpProcess = child;
 
-	child.stderr?.on("data", () => {
-		// Suppress stderr noise from npx/agent startup
+	let stderrBuffer = "";
+	child.stderr?.on("data", (chunk: Buffer) => {
+		stderrBuffer += chunk.toString();
 	});
 
-	child.on("close", () => {
+	child.on("close", (code) => {
+		if (code && code !== 0 && stderrBuffer.trim()) {
+			console.error(`[claude-code-acp] ACP process exited ${code}:\n${stderrBuffer.trim()}`);
+		}
 		acpProcess = null;
 		killConnection();
 	});
