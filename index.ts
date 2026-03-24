@@ -1,12 +1,17 @@
-import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
+import { calculateCost, createAssistantMessageEventStream, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION, type SessionNotification, type SessionUpdate, type RequestPermissionRequest, type RequestPermissionResponse, type ReadTextFileRequest, type ReadTextFileResponse, type WriteTextFileRequest, type WriteTextFileResponse, type CreateTerminalRequest, type CreateTerminalResponse, type TerminalOutputRequest, type TerminalOutputResponse, type WaitForTerminalExitRequest, type WaitForTerminalExitResponse, type KillTerminalRequest, type KillTerminalResponse, type ReleaseTerminalRequest, type ReleaseTerminalResponse } from "@agentclientprotocol/sdk";
+import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION, type SessionNotification, type SessionUpdate, type PromptResponse, type RequestPermissionRequest, type RequestPermissionResponse, type ReadTextFileRequest, type ReadTextFileResponse, type WriteTextFileRequest, type WriteTextFileResponse, type CreateTerminalRequest, type CreateTerminalResponse, type TerminalOutputRequest, type TerminalOutputResponse, type WaitForTerminalExitRequest, type WaitForTerminalExitResponse, type KillTerminalRequest, type KillTerminalResponse, type ReleaseTerminalRequest, type ReleaseTerminalResponse } from "@agentclientprotocol/sdk";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { Writable, Readable } from "node:stream";
 
 const PROVIDER_ID = "claude-code-acp";
+
+const BUILTIN_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "grep", "find", "glob"]);
+const MCP_SERVER_NAME = "pi-tools";
 
 const LATEST_MODEL_IDS = new Set(["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]);
 
@@ -21,6 +26,19 @@ const MODELS = getModels("anthropic")
 		contextWindow: model.contextWindow,
 		maxTokens: model.maxTokens,
 	}));
+
+// --- Tool partitioning ---
+
+function partitionTools(tools?: Tool[]): { customTools: Tool[] } {
+	if (!tools) return { customTools: [] };
+	const customTools: Tool[] = [];
+	for (const tool of tools) {
+		if (!BUILTIN_TOOL_NAMES.has(tool.name.toLowerCase())) {
+			customTools.push(tool);
+		}
+	}
+	return { customTools };
+}
 
 // --- Prompt building ---
 
@@ -100,6 +118,173 @@ function assistantContentToText(
 		.join("\n");
 }
 
+// --- HTTP bridge for custom tool calls ---
+
+interface PendingToolCall {
+	toolName: string;
+	args: Record<string, unknown>;
+	resolve: (result: string) => void;
+}
+
+let bridgeServer: Server | null = null;
+let bridgePort: number | null = null;
+let pendingToolCall: PendingToolCall | null = null;
+let toolCallDetected: (() => void) | null = null;
+
+async function ensureBridgeServer(): Promise<number> {
+	if (bridgeServer && bridgePort != null) return bridgePort;
+
+	return new Promise((resolve) => {
+		const server = createServer((req, res) => {
+			if (req.method !== "POST") {
+				res.writeHead(405);
+				res.end();
+				return;
+			}
+
+			let body = "";
+			req.on("data", (chunk: Buffer) => { body += chunk; });
+			req.on("end", () => {
+				try {
+					const { toolName, args } = JSON.parse(body);
+					pendingToolCall = {
+						toolName,
+						args: args ?? {},
+						resolve: (result: string) => {
+							res.writeHead(200, { "Content-Type": "application/json" });
+							res.end(JSON.stringify({ result }));
+						},
+					};
+					toolCallDetected?.();
+				} catch (e) {
+					res.writeHead(400);
+					res.end("Bad request");
+				}
+			});
+		});
+
+		server.listen(0, "127.0.0.1", () => {
+			const addr = server.address() as { port: number };
+			bridgeServer = server;
+			bridgePort = addr.port;
+			resolve(addr.port);
+		});
+	});
+}
+
+// --- MCP server script generation ---
+
+let mcpServerScriptPath: string | null = null;
+
+function generateMcpServerScript(customTools: Tool[], bridgeUrl: string): string {
+	const toolSchemas = customTools.map((t) => ({
+		name: t.name,
+		description: t.description,
+		inputSchema: t.parameters,
+	}));
+
+	return `const http = require("http");
+const BRIDGE_URL = ${JSON.stringify(bridgeUrl)};
+const TOOLS = ${JSON.stringify(toolSchemas)};
+
+let buffer = "";
+process.stdin.setEncoding("utf-8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  while (true) {
+    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+    if (headerEnd === -1) break;
+    const header = buffer.slice(0, headerEnd);
+    const match = header.match(/Content-Length:\\s*(\\d+)/i);
+    if (!match) { buffer = buffer.slice(headerEnd + 4); continue; }
+    const len = parseInt(match[1], 10);
+    const bodyStart = headerEnd + 4;
+    if (buffer.length < bodyStart + len) break;
+    const body = buffer.slice(bodyStart, bodyStart + len);
+    buffer = buffer.slice(bodyStart + len);
+    handleMessage(JSON.parse(body));
+  }
+});
+
+function send(msg) {
+  const body = JSON.stringify(msg);
+  const header = "Content-Length: " + Buffer.byteLength(body) + "\\r\\n\\r\\n";
+  process.stdout.write(header + body);
+}
+
+function handleMessage(msg) {
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: {
+      protocolVersion: "2024-11-05",
+      capabilities: { tools: {} },
+      serverInfo: { name: "pi-tools", version: "1.0.0" }
+    }});
+  } else if (msg.method === "notifications/initialized") {
+    // no-op
+  } else if (msg.method === "tools/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: TOOLS }});
+  } else if (msg.method === "tools/call") {
+    const toolName = msg.params.name;
+    const args = msg.params.arguments || {};
+    const postData = JSON.stringify({ toolName, args });
+    const url = new URL(BRIDGE_URL);
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) }
+    }, (res) => {
+      let body = "";
+      res.on("data", (c) => body += c);
+      res.on("end", () => {
+        try {
+          const { result } = JSON.parse(body);
+          send({ jsonrpc: "2.0", id: msg.id, result: {
+            content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }]
+          }});
+        } catch (e) {
+          send({ jsonrpc: "2.0", id: msg.id, result: {
+            content: [{ type: "text", text: "Error: " + e.message }], isError: true
+          }});
+        }
+      });
+    });
+    req.on("error", (e) => {
+      send({ jsonrpc: "2.0", id: msg.id, result: {
+        content: [{ type: "text", text: "Bridge error: " + e.message }], isError: true
+      }});
+    });
+    req.end(postData);
+  }
+}
+`;
+}
+
+async function ensureMcpServerScript(customTools: Tool[], bridgeUrl: string): Promise<string> {
+	const script = generateMcpServerScript(customTools, bridgeUrl);
+	const path = join(tmpdir(), `pi-tools-mcp-${process.pid}.js`);
+	await writeFile(path, script, "utf-8");
+	mcpServerScriptPath = path;
+	return path;
+}
+
+// --- Tool result extraction ---
+
+function extractLastToolResult(context: Context): { toolName: string; content: string } | null {
+	for (let i = context.messages.length - 1; i >= 0; i--) {
+		const msg = context.messages[i];
+		if (msg.role === "toolResult") {
+			return {
+				toolName: msg.toolName,
+				content: messageContentToText(msg.content),
+			};
+		}
+		if (msg.role === "user") break;
+	}
+	return null;
+}
+
 // --- ACP connection management ---
 
 interface TerminalState {
@@ -114,6 +299,7 @@ let acpConnection: ClientSideConnection | null = null;
 let sessionUpdateHandler: ((update: SessionUpdate) => void) | null = null;
 let activeSessionId: string | null = null;
 let activeModelId: string | null = null;
+let activePromise: Promise<PromptResponse> | null = null;
 let lastContextLength = 0;
 let nextTerminalId = 1;
 const terminals = new Map<string, TerminalState>();
@@ -235,8 +421,26 @@ function killConnection() {
 	sessionUpdateHandler = null;
 	activeSessionId = null;
 	activeModelId = null;
+	activePromise = null;
 	lastContextLength = 0;
 	nextTerminalId = 1;
+
+	if (pendingToolCall) {
+		pendingToolCall.resolve("Error: connection killed");
+		pendingToolCall = null;
+	}
+	toolCallDetected = null;
+
+	if (bridgeServer) {
+		bridgeServer.close();
+		bridgeServer = null;
+		bridgePort = null;
+	}
+
+	if (mcpServerScriptPath) {
+		unlink(mcpServerScriptPath).catch(() => {});
+		mcpServerScriptPath = null;
+	}
 }
 
 async function ensureConnection(): Promise<ClientSideConnection> {
@@ -314,6 +518,16 @@ process.on("SIGTERM", () => killConnection());
 
 // --- Core streaming function ---
 
+type RaceResult =
+	| { kind: "done"; result: PromptResponse }
+	| { kind: "toolCall" };
+
+function waitForToolCall(): Promise<void> {
+	return new Promise((resolve) => {
+		toolCallDetected = resolve;
+	});
+}
+
 function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 
@@ -339,6 +553,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 		const blocks = output.content as Array<
 			| { type: "text"; text: string }
 			| { type: "thinking"; thinking: string }
+			| { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> }
 		>;
 
 		let started = false;
@@ -353,37 +568,83 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 			}
 		};
 
+		const closeOpenBlocks = () => {
+			if (thinkingBlockIndex !== -1) {
+				const block = blocks[thinkingBlockIndex] as { type: "thinking"; thinking: string };
+				stream.push({ type: "thinking_end", contentIndex: thinkingBlockIndex, content: block.thinking, partial: output });
+				thinkingBlockIndex = -1;
+			}
+			if (textBlockIndex !== -1) {
+				const block = blocks[textBlockIndex] as { type: "text"; text: string };
+				stream.push({ type: "text_end", contentIndex: textBlockIndex, content: block.text, partial: output });
+				textBlockIndex = -1;
+			}
+		};
+
 		try {
 			const connection = await ensureConnection();
+			const { customTools } = partitionTools(context.tools);
 
-			// TODO: consider prepending pi skills or other pi-specific context to
-			// the first prompt. Claude Code loads its own CLAUDE.md so we don't
-			// send that, but pi skills aren't visible to Claude Code.
-
-			// Determine if we need a new session or can reuse
-			let promptText: string;
-			if (!activeSessionId) {
-				// First call or session was lost — new session with full context
-				const session = await connection.newSession({ cwd: process.cwd(), mcpServers: [] });
-				sessionId = session.sessionId;
-				activeSessionId = sessionId;
-				await connection.setSessionMode({ sessionId, modeId: "bypassPermissions" });
-				await connection.unstable_setSessionModel({ sessionId, modelId: model.id });
-				activeModelId = model.id;
-				promptText = buildPromptText(context);
-				lastContextLength = context.messages.length;
-			} else {
-				// Continuation — ACP already has prior context, just send latest user message
+			// --- Mode B: Resume with tool result ---
+			if (activePromise && pendingToolCall) {
 				sessionId = activeSessionId;
-				if (activeModelId !== model.id) {
+				const toolResult = extractLastToolResult(context);
+				if (toolResult) {
+					pendingToolCall.resolve(toolResult.content || "OK");
+				} else {
+					pendingToolCall.resolve("No tool result provided");
+				}
+				pendingToolCall = null;
+				lastContextLength = context.messages.length;
+
+			// --- Mode A: Fresh prompt ---
+			} else {
+				// TODO: consider prepending pi skills or other pi-specific context to
+				// the first prompt. Claude Code loads its own CLAUDE.md so we don't
+				// send that, but pi skills aren't visible to Claude Code.
+
+				let promptText: string;
+				if (!activeSessionId) {
+					// First call — new session with full context
+					const mcpServers: Array<{ command: string; args: string[]; env: Array<{ name: string; value: string }>; name: string }> = [];
+					if (customTools.length > 0) {
+						const port = await ensureBridgeServer();
+						const bridgeUrl = `http://127.0.0.1:${port}`;
+						const scriptPath = await ensureMcpServerScript(customTools, bridgeUrl);
+						mcpServers.push({
+							command: "node",
+							args: [scriptPath],
+							env: [],
+							name: MCP_SERVER_NAME,
+						});
+					}
+
+					const session = await connection.newSession({ cwd: process.cwd(), mcpServers });
+					sessionId = session.sessionId;
+					activeSessionId = sessionId;
+					await connection.setSessionMode({ sessionId, modeId: "bypassPermissions" });
 					await connection.unstable_setSessionModel({ sessionId, modelId: model.id });
 					activeModelId = model.id;
+					promptText = buildPromptText(context);
+					lastContextLength = context.messages.length;
+				} else {
+					// Continuation — ACP already has prior context, just send latest user message
+					sessionId = activeSessionId;
+					if (activeModelId !== model.id) {
+						await connection.unstable_setSessionModel({ sessionId, modelId: model.id });
+						activeModelId = model.id;
+					}
+					const lastUser = [...context.messages].reverse().find((m) => m.role === "user");
+					promptText = lastUser
+						? messageContentToText(lastUser.content) || ""
+						: "";
+					lastContextLength = context.messages.length;
 				}
-				const lastUser = [...context.messages].reverse().find((m) => m.role === "user");
-				promptText = lastUser
-					? messageContentToText(lastUser.content) || ""
-					: "";
-				lastContextLength = context.messages.length;
+
+				activePromise = connection.prompt({
+					sessionId: sessionId!,
+					prompt: [{ type: "text", text: promptText }],
+				});
 			}
 
 			// Wire session update handler for this call
@@ -435,13 +696,13 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 
 					case "tool_call":
 					case "tool_call_update":
-						// ACP executes tools internally — don't emit to pi
+						// Built-in tools: ACP handles internally, ignore
+						// Custom tools: handled via MCP bridge (pendingToolCall)
 						break;
 
 					case "usage_update": {
-						const usage = update as { used?: number; size?: number; cost?: { total?: number } } & { sessionUpdate: string };
+						const usage = update as { used?: number; size?: number } & { sessionUpdate: string };
 						if (usage.used != null) output.usage.totalTokens = usage.used;
-						// ACP doesn't break down input/output/cache — put total in input
 						if (usage.used != null) output.usage.input = usage.used;
 						calculateCost(model, output.usage);
 						break;
@@ -454,8 +715,12 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 
 			// Set up abort handling
 			const onAbort = () => {
-				if (sessionId && acpConnection) {
-					acpConnection.cancel({ sessionId });
+				if (activeSessionId && acpConnection) {
+					acpConnection.cancel({ sessionId: activeSessionId });
+				}
+				if (pendingToolCall) {
+					pendingToolCall.resolve("Error: aborted");
+					pendingToolCall = null;
 				}
 			};
 			if (options?.signal) {
@@ -464,45 +729,63 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 			}
 
 			try {
-				const result = await connection.prompt({
-					sessionId,
-					prompt: [{ type: "text", text: promptText }],
-				});
+				// Race: prompt completion vs custom tool call via bridge
+				const hasCustomTools = customTools.length > 0;
+				const raceResult: RaceResult = hasCustomTools
+					? await Promise.race([
+						activePromise!.then((r): RaceResult => ({ kind: "done", result: r })),
+						waitForToolCall().then((): RaceResult => ({ kind: "toolCall" })),
+					])
+					: await activePromise!.then((r): RaceResult => ({ kind: "done", result: r }));
 
-				// Close any open blocks
-				if (thinkingBlockIndex !== -1) {
-					const thinkBlock = blocks[thinkingBlockIndex] as { type: "thinking"; thinking: string };
-					stream.push({ type: "thinking_end", contentIndex: thinkingBlockIndex, content: thinkBlock.thinking, partial: output });
-				}
-				if (textBlockIndex !== -1) {
-					const textBlock = blocks[textBlockIndex] as { type: "text"; text: string };
-					stream.push({ type: "text_end", contentIndex: textBlockIndex, content: textBlock.text, partial: output });
-				}
+				if (raceResult.kind === "toolCall" && pendingToolCall) {
+					// Custom tool call detected — return toolUse to Pi
+					closeOpenBlocks();
+					pushStart();
 
-				if (options?.signal?.aborted) {
-					output.stopReason = "aborted";
-					output.errorMessage = "Operation aborted";
-					stream.push({ type: "error", reason: "aborted", error: output });
+					const tc = {
+						type: "toolCall" as const,
+						id: `mcp-tc-${Date.now()}`,
+						name: pendingToolCall.toolName,
+						arguments: pendingToolCall.args,
+					};
+					blocks.push(tc);
+					const idx = blocks.length - 1;
+					stream.push({ type: "toolcall_start", contentIndex: idx, partial: output });
+					stream.push({ type: "toolcall_end", contentIndex: idx, toolCall: tc, partial: output });
+
+					output.stopReason = "toolUse";
+					stream.push({ type: "done", reason: "toolUse", message: output });
 					stream.end();
-					return;
-				}
+					// activePromise stays alive — next streamSimple call will resume
+				} else {
+					// Prompt completed — no pending tool call
+					activePromise = null;
+					closeOpenBlocks();
 
-				output.stopReason = result.stopReason === "cancelled" ? "aborted" : "stop";
-				pushStart();
-				stream.push({
-					type: "done",
-					reason: "stop",
-					message: output,
-				});
-				stream.end();
+					if (options?.signal?.aborted) {
+						output.stopReason = "aborted";
+						output.errorMessage = "Operation aborted";
+						stream.push({ type: "error", reason: "aborted", error: output });
+						stream.end();
+						return;
+					}
+
+					const result = (raceResult as { kind: "done"; result: PromptResponse }).result;
+					output.stopReason = result.stopReason === "cancelled" ? "aborted" : "stop";
+					pushStart();
+					stream.push({ type: "done", reason: "stop", message: output });
+					stream.end();
+				}
 			} finally {
 				if (options?.signal) {
 					options.signal.removeEventListener("abort", onAbort);
 				}
 				sessionUpdateHandler = null;
+				toolCallDetected = null;
 			}
 		} catch (error) {
-			// If connection failed, reset for retry on next call
+			activePromise = null;
 			if (!acpConnection || acpProcess === null) {
 				killConnection();
 			}
