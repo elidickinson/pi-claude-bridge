@@ -267,7 +267,6 @@ function extractLastToolResult(context: Context): { toolName: string; content: s
 				content: messageContentToText(msg.content),
 			};
 		}
-		if (msg.role === "user") break;
 	}
 	return null;
 }
