@@ -189,44 +189,29 @@ function generateMcpServerScript(customTools: Tool[], bridgeUrl: string): string
 		inputSchema: t.parameters,
 	}));
 
+	// Claude Code uses ndjson (newline-delimited JSON) for MCP stdio, not Content-Length framing
 	return `const http = require("http");
 const BRIDGE_URL = ${JSON.stringify(bridgeUrl)};
 const TOOLS = ${JSON.stringify(toolSchemas)};
 
-let buffer = "";
-process.stdin.setEncoding("utf-8");
-process.stdin.on("data", (chunk) => {
-  buffer += chunk;
-  while (true) {
-    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
-    if (headerEnd === -1) break;
-    const header = buffer.slice(0, headerEnd);
-    const match = header.match(/Content-Length:\\s*(\\d+)/i);
-    if (!match) { buffer = buffer.slice(headerEnd + 4); continue; }
-    const len = parseInt(match[1], 10);
-    const bodyStart = headerEnd + 4;
-    if (buffer.length < bodyStart + len) break;
-    const body = buffer.slice(bodyStart, bodyStart + len);
-    buffer = buffer.slice(bodyStart + len);
-    handleMessage(JSON.parse(body));
-  }
+const rl = require("readline").createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  try { handleMessage(JSON.parse(line)); } catch {}
 });
 
 function send(msg) {
-  const body = JSON.stringify(msg);
-  const header = "Content-Length: " + Buffer.byteLength(body) + "\\r\\n\\r\\n";
-  process.stdout.write(header + body);
+  process.stdout.write(JSON.stringify(msg) + "\\n");
 }
 
 function handleMessage(msg) {
   if (msg.method === "initialize") {
     send({ jsonrpc: "2.0", id: msg.id, result: {
-      protocolVersion: "2024-11-05",
+      protocolVersion: "2025-11-25",
       capabilities: { tools: {} },
       serverInfo: { name: "pi-tools", version: "1.0.0" }
     }});
   } else if (msg.method === "notifications/initialized") {
-    // no-op
   } else if (msg.method === "tools/list") {
     send({ jsonrpc: "2.0", id: msg.id, result: { tools: TOOLS }});
   } else if (msg.method === "tools/call") {
@@ -235,10 +220,7 @@ function handleMessage(msg) {
     const postData = JSON.stringify({ toolName, args });
     const url = new URL(BRIDGE_URL);
     const req = http.request({
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname,
-      method: "POST",
+      hostname: url.hostname, port: url.port, path: url.pathname, method: "POST",
       headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) }
     }, (res) => {
       let body = "";
@@ -458,8 +440,9 @@ async function ensureConnection(): Promise<ClientSideConnection> {
 	});
 	acpProcess = child;
 
-	child.stderr?.on("data", () => {
-		// Suppress stderr noise from npx/agent startup
+	child.stderr?.on("data", (chunk: Buffer) => {
+		// Forward stderr so MCP server debug logs are visible
+		process.stderr.write(chunk);
 	});
 
 	child.on("close", () => {
@@ -590,6 +573,10 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 		try {
 			const connection = await ensureConnection();
 			const { customTools } = partitionTools(context.tools);
+			if (context.tools) {
+				console.error(`[claude-code-acp] tools: [${context.tools.map(t => t.name).join(", ")}]`);
+				console.error(`[claude-code-acp] custom: [${customTools.map(t => t.name).join(", ")}]`);
+			}
 
 			// --- Mode B: Resume with tool result ---
 			if (activePromise && pendingToolCall) {
@@ -617,6 +604,8 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 						const port = await ensureBridgeServer();
 						const bridgeUrl = `http://127.0.0.1:${port}`;
 						const scriptPath = await ensureMcpServerScript(customTools, bridgeUrl);
+						console.error(`[claude-code-acp] MCP server script: ${scriptPath}`);
+						console.error(`[claude-code-acp] Bridge URL: ${bridgeUrl}`);
 						mcpServers.push({
 							command: "node",
 							args: [scriptPath],
@@ -625,7 +614,20 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 						});
 					}
 
-					const session = await connection.newSession({ cwd: process.cwd(), mcpServers });
+					const _meta: Record<string, unknown> = {};
+					if (customTools.length > 0) {
+						_meta.claudeCode = {
+							options: {
+								allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
+							},
+						};
+					}
+					console.error(`[claude-code-acp] newSession mcpServers: ${JSON.stringify(mcpServers)}`);
+					console.error(`[claude-code-acp] newSession _meta: ${JSON.stringify(_meta)}`);
+					const session = await connection.newSession({ cwd: process.cwd(), mcpServers, _meta } as any);
+					console.error(`[claude-code-acp] session created: ${session.sessionId}`);
+					console.error(`[claude-code-acp] session response: ${JSON.stringify(session)}`);
+
 					sessionId = session.sessionId;
 					activeSessionId = sessionId;
 					await connection.setSessionMode({ sessionId, modeId: "bypassPermissions" });
