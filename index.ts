@@ -279,6 +279,7 @@ async function ensureBridgeServer(): Promise<number> {
 			const addr = server.address() as { port: number };
 			bridgeServer = server;
 			bridgePort = addr.port;
+			server.unref();
 			resolve(addr.port);
 		});
 	});
@@ -428,6 +429,13 @@ async function ensureConnection(): Promise<ClientSideConnection> {
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	acpProcess = child;
+	// Don't let the child process or its stdio pipes prevent the parent from
+	// exiting. Print mode (-p) doesn't emit session_shutdown, so without this
+	// the process hangs. Cleanup still happens via process.on("exit").
+	child.unref();
+	child.stdin?.unref();
+	child.stdout?.unref();
+	child.stderr?.unref();
 
 	let stderrBuffer = "";
 	child.stderr?.on("data", (chunk: Buffer) => {
