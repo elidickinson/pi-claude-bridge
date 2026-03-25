@@ -30,7 +30,7 @@ Boolean. Disables all of Claude Code's built-in tools (Read, Write, Edit, Bash, 
 _meta: { disableBuiltInTools: true }
 ```
 
-**Used in:** Provider mode (all tools routed through MCP bridge) and `mode: "none"` in AskClaude.
+**Caveat:** Does not work when `bypassPermissions` session mode is active. Use `disallowedTools` instead.
 
 ## `_meta.claudeCode.options`
 
@@ -38,7 +38,7 @@ Nested object passed through to the Claude Agent SDK's query options. Supported 
 
 ### `allowedTools`
 
-Array of tool name strings or glob patterns. Restricts which tools Claude Code can use.
+Array of tool name strings or glob patterns. Pre-approves listed tools in the permission pipeline.
 
 ```typescript
 _meta: {
@@ -52,7 +52,23 @@ _meta: {
 
 Supports MCP tool globs: `"mcp__server-name__*"`.
 
-**Use case:** Restrict to read-only tools, or exclude MCP tools by only listing built-in names.
+**Caveat:** This is a whitelist for permission approval, NOT a restriction. Tools not in the list still go through the permission check and can be approved. Does not restrict tool availability when `bypassPermissions` is active. Use `disallowedTools` to actually block tools.
+
+### `disallowedTools`
+
+Array of tool name strings. Blocks listed tools — works even with `bypassPermissions`.
+
+```typescript
+_meta: {
+  claudeCode: {
+    options: {
+      disallowedTools: ["Write", "Edit", "Bash", "NotebookEdit"]
+    }
+  }
+}
+```
+
+**Use case:** The only reliable way to restrict tools when using `bypassPermissions`.
 
 ### `resume`
 

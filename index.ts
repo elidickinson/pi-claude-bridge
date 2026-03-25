@@ -137,7 +137,6 @@ function extractSkillsBlock(systemPrompt: string): string | undefined {
 
 const MODE_PRESETS: Record<string, Record<string, unknown>> = {
 	full: {},
-	// disallowedTools works with bypassPermissions; allowedTools does not
 	read: { claudeCode: { options: { disallowedTools: [
 		"Write", "Edit", "Bash", "NotebookEdit",
 		"EnterWorktree", "ExitWorktree",
@@ -537,6 +536,7 @@ async function promptAndWait(
 		_meta: meta,
 	} as any);
 	const sid = session.sessionId;
+	// Not strictly needed (requestPermission callback auto-approves) but avoids per-tool round-trip latency
 	await connection.setSessionMode({ sessionId: sid, modeId: "bypassPermissions" });
 
 	let responseText = "";
