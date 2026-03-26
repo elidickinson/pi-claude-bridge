@@ -20,6 +20,9 @@
     "screenshot.png",
     "docs/"
   ],
+  "scripts": {
+    "test": "./smoke-test.sh"
+  },
   "type": "module",
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.16.1",
