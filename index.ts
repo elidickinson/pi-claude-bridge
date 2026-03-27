@@ -499,8 +499,16 @@ interface PendingToolCall {
 
 /** Active query that's waiting for a tool result via the MCP bridge. */
 let activeQuery: ReturnType<typeof query> | null = null;
-
 let pendingToolCall: PendingToolCall | null = null;
+let onPendingToolCall: (() => void) | null = null;
+
+/**
+ * When Mode B provides a tool result, the active query continues generating.
+ * This function is set by Mode A's async block to receive the new pi stream
+ * that Mode B events should be pushed to.
+ */
+let modeBStream: ReturnType<typeof createAssistantMessageEventStream> | null = null;
+let onModeBStream: (() => void) | null = null;
 
 function resolveMcpTools(context: Context): {
 	mcpTools: Tool[];
@@ -533,12 +541,15 @@ function buildMcpServers(tools: Tool[]): Record<string, ReturnType<typeof create
 		description: tool.description,
 		inputSchema: tool.parameters as unknown,
 		handler: async () => {
-			// Block until pi provides the tool result
+			// Block until pi provides the tool result via Mode B
 			return new Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>((resolve) => {
 				pendingToolCall = {
 					toolName: tool.name,
 					resolve: (result: string) => resolve({ content: [{ type: "text", text: result }] }),
 				};
+				// Signal that the MCP handler is ready for Mode B
+				onPendingToolCall?.();
+				onPendingToolCall = null;
 			});
 		},
 	}));
@@ -595,133 +606,134 @@ function parsePartialJson(input: string, fallback: Record<string, unknown>): Rec
 
 
 // --- Provider: streaming function ---
+//
+// Tool execution uses an MCP bridge pattern:
+// 1. Claude Code calls MCP tool → handler blocks on a Promise (pendingToolCall)
+// 2. We see the tool_use in stream events → push toolcall_end + done(toolUse) to pi
+// 3. Pi executes the tool externally, then calls streamSimple again (Mode B)
+// 4. Mode B resolves the pending Promise with the tool result
+// 5. Claude Code continues generating → we push new events to Mode B's stream
+// 6. The for-await loop runs continuously; only the pi-facing stream switches between calls
+//
+// The key constraint is that pi requires the stream to END before executing tools.
+// So on tool_use we push done+end to the current stream but keep consuming the
+// SDK generator. The MCP handler blocks naturally, pausing the generator until
+// Mode B resolves it. Then new events flow and get pushed to Mode B's stream.
 
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 
-	(async () => {
-		const output: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			usage: {
-				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
+	// --- Mode B: tool result turn → resolve the pending MCP handler ---
+	// The query is still alive from Mode A. We provide the new pi stream and resolve
+	// the tool call so Claude Code continues generating into this stream.
+	if (activeQuery) {
+		const resolveToolCall = () => {
+			const toolResult = extractLastToolResult(context);
+			sessionLog(`provider: Mode B, resolving ${pendingToolCall!.toolName}, result=${(toolResult?.content ?? "").slice(0, 60)}`);
+
+			// Give the running Mode A loop the new stream to push events to
+			modeBStream = stream;
+			onModeBStream?.();
+			onModeBStream = null;
+
+			// Resolve the MCP handler — Claude Code continues, new events flow
+			pendingToolCall!.resolve(toolResult?.content ?? "OK");
+			pendingToolCall = null;
+			if (sharedSession) sharedSession.cursor = context.messages.length;
 		};
 
-		let sdkQuery: ReturnType<typeof query> | undefined;
-		let wasAborted = false;
-		const requestAbort = () => {
-			const q = sdkQuery ?? activeQuery;
-			if (!q) return;
-			void q.interrupt().catch(() => { try { q?.close(); } catch {} });
+		if (pendingToolCall) {
+			// MCP handler already called — resolve immediately
+			resolveToolCall();
+		} else {
+			// MCP handler not yet called (race with message_stop).
+			// Wait for it asynchronously — events will flow once resolved.
+			onPendingToolCall = () => resolveToolCall();
+		}
+		return stream;
+	}
+
+	// --- Mode A: fresh prompt → create query and consume events ---
+	(async () => {
+		// Clean up stale query
+		if (activeQuery) { try { activeQuery.close(); } catch {} activeQuery = null; }
+
+		const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
+		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+		const { sessionId: resumeSessionId } = syncSharedSession(context.messages, cwd, customToolNameToSdk, model.id);
+		const prompt = extractUserPrompt(context.messages) ?? "";
+		sessionLog(`provider: Mode A, ${context.messages.length} msgs, resume=${resumeSessionId?.slice(0, 8) ?? "none"}, prompt=${prompt.slice(0, 60)}`);
+
+		const mcpServers = buildMcpServers(mcpTools);
+		const providerSettings = loadProviderSettings();
+		const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
+		const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
+		const skillsAppend = appendSystemPrompt ? extractSkillsAppend(context.systemPrompt) : undefined;
+		const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
+		const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+		const allowSkillAliasRewrite = Boolean(skillsAppend);
+
+		const settingSources: SettingSource[] | undefined = appendSystemPrompt
+			? undefined
+			: providerSettings.settingSources ?? ["user", "project"];
+		const strictMcpConfigEnabled = !appendSystemPrompt && providerSettings.strictMcpConfig !== false;
+
+		const extraArgs: Record<string, string | null> = { model: model.id };
+		if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
+
+		const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+			cwd,
+			disallowedTools: DISALLOWED_BUILTIN_TOOLS,
+			allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
+			permissionMode: "bypassPermissions",
+			includePartialMessages: true,
+			systemPrompt: {
+				type: "preset", preset: "claude_code",
+				append: systemPromptAppend ? systemPromptAppend : undefined,
+			},
+			extraArgs,
+			...(settingSources ? { settingSources } : {}),
+			...(mcpServers ? { mcpServers } : {}),
+			...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		};
+
+		const maxThinkingTokens = mapThinkingTokens(options?.reasoning, model.id, options?.thinkingBudgets);
+		if (maxThinkingTokens != null) queryOptions.maxThinkingTokens = maxThinkingTokens;
+
+		let wasAborted = false;
+		const sdkQuery = query({ prompt, options: queryOptions });
+		activeQuery = sdkQuery;
+
+		const requestAbort = () => { void sdkQuery.interrupt().catch(() => { try { sdkQuery.close(); } catch {} }); };
 		const onAbort = () => { wasAborted = true; requestAbort(); };
 		if (options?.signal) {
 			if (options.signal.aborted) onAbort();
 			else options.signal.addEventListener("abort", onAbort, { once: true });
 		}
 
-		const blocks = output.content as Array<
-			| { type: "text"; text: string; index: number }
-			| { type: "thinking"; thinking: string; thinkingSignature?: string; index: number }
-			| { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown>; partialJson: string; index: number }
-		>;
+		// Current pi-facing stream. Starts as the Mode A stream.
+		// Switches to Mode B's stream after each tool-use pause.
+		let piStream = stream;
 
+		// Fresh output state for each pi turn
+		const makeOutput = (): AssistantMessage => ({
+			role: "assistant", content: [],
+			api: model.api, provider: model.provider, model: model.id,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			stopReason: "stop", timestamp: Date.now(),
+		});
+		let output = makeOutput();
+		let blocks = output.content as Array<any>;
 		let started = false;
 		let sawStreamEvent = false;
 		let sawToolCall = false;
-		let shouldStopEarly = false;
 		let capturedSessionId: string | undefined;
 
 		try {
-			const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
-			const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-
-			// --- Mode B: Tool result → resolve pending MCP handler ---
-			// Wait briefly for the MCP handler to be called (race between message_stop and MCP invocation)
-			if (activeQuery && !pendingToolCall) {
-				await new Promise<void>((r) => {
-					const check = () => { if (pendingToolCall) r(); else setTimeout(check, 10); };
-					setTimeout(check, 10);
-					setTimeout(r, 2000); // give up after 2s
-				});
-			}
-			if (activeQuery && pendingToolCall) {
-				const toolResult = extractLastToolResult(context);
-				sessionLog(`provider: Mode B (tool result), resolving ${pendingToolCall.toolName}, result=${(toolResult?.content ?? "").slice(0, 60)}`);
-				pendingToolCall.resolve(toolResult?.content ?? "OK");
-				pendingToolCall = null;
-				// Update cursor to include the tool result message
-				if (sharedSession) sharedSession.cursor = context.messages.length;
-				// The active query continues processing via its MCP handler.
-				// We need to keep consuming the stream for pi events.
-				sdkQuery = activeQuery;
-
-				// Don't close the query in finally — it's still alive
-				if (wasAborted) requestAbort();
-
-			// --- Mode A: Fresh prompt ---
-			} else {
-				// Clean up any stale active query
-				if (activeQuery) { try { activeQuery.close(); } catch {} activeQuery = null; }
-
-
-				const { sessionId: resumeSessionId } = syncSharedSession(context.messages, cwd, customToolNameToSdk, model.id);
-				const prompt = extractUserPrompt(context.messages) ?? "";
-				sessionLog(`provider: Mode A, ${context.messages.length} msgs, resume=${resumeSessionId?.slice(0, 8) ?? "none"}, prompt=${prompt.slice(0, 60)}`);
-
-				const mcpServers = buildMcpServers(mcpTools);
-				const providerSettings = loadProviderSettings();
-				const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-				const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
-				const skillsAppend = appendSystemPrompt ? extractSkillsAppend(context.systemPrompt) : undefined;
-				const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
-				const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
-				const allowSkillAliasRewrite = Boolean(skillsAppend);
-
-				const settingSources: SettingSource[] | undefined = appendSystemPrompt
-					? undefined
-					: providerSettings.settingSources ?? ["user", "project"];
-
-				const strictMcpConfigEnabled = !appendSystemPrompt && providerSettings.strictMcpConfig !== false;
-
-				const extraArgs: Record<string, string | null> = { model: model.id };
-				if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
-
-				const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
-					cwd,
-					disallowedTools: DISALLOWED_BUILTIN_TOOLS,
-					allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
-					permissionMode: "bypassPermissions",
-					includePartialMessages: true,
-					systemPrompt: {
-						type: "preset", preset: "claude_code",
-						append: systemPromptAppend ? systemPromptAppend : undefined,
-					},
-					extraArgs,
-					...(settingSources ? { settingSources } : {}),
-					...(mcpServers ? { mcpServers } : {}),
-					...(resumeSessionId ? { resume: resumeSessionId } : {}),
-				};
-
-				const maxThinkingTokens = mapThinkingTokens(options?.reasoning, model.id, options?.thinkingBudgets);
-				if (maxThinkingTokens != null) queryOptions.maxThinkingTokens = maxThinkingTokens;
-
-				sdkQuery = query({ prompt, options: queryOptions });
-				activeQuery = sdkQuery;
-				if (wasAborted) requestAbort();
-			}
-
-			const allowSkillAliasRewrite = Boolean(extractSkillsAppend(context.systemPrompt));
-
 			for await (const message of sdkQuery) {
-				if (!started) { stream.push({ type: "start", partial: output }); started = true; }
+				if (wasAborted) break;
+				if (!started) { piStream.push({ type: "start", partial: output }); started = true; }
 
 				switch (message.type) {
 					case "stream_event": {
@@ -742,10 +754,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 						if (event?.type === "content_block_start") {
 							if (event.content_block?.type === "text") {
 								blocks.push({ type: "text", text: "", index: event.index });
-								stream.push({ type: "text_start", contentIndex: blocks.length - 1, partial: output });
+								piStream.push({ type: "text_start", contentIndex: blocks.length - 1, partial: output });
 							} else if (event.content_block?.type === "thinking") {
 								blocks.push({ type: "thinking", thinking: "", thinkingSignature: "", index: event.index });
-								stream.push({ type: "thinking_start", contentIndex: blocks.length - 1, partial: output });
+								piStream.push({ type: "thinking_start", contentIndex: blocks.length - 1, partial: output });
 							} else if (event.content_block?.type === "tool_use") {
 								sawToolCall = true;
 								blocks.push({
@@ -754,36 +766,36 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 									arguments: (event.content_block.input as Record<string, unknown>) ?? {},
 									partialJson: "", index: event.index,
 								});
-								stream.push({ type: "toolcall_start", contentIndex: blocks.length - 1, partial: output });
+								piStream.push({ type: "toolcall_start", contentIndex: blocks.length - 1, partial: output });
 							}
 							break;
 						}
 
 						if (event?.type === "content_block_delta") {
 							if (event.delta?.type === "text_delta") {
-								const index = blocks.findIndex((b) => b.index === event.index);
+								const index = blocks.findIndex((b: any) => b.index === event.index);
 								const block = blocks[index];
 								if (block?.type === "text") {
 									block.text += event.delta.text;
-									stream.push({ type: "text_delta", contentIndex: index, delta: event.delta.text, partial: output });
+									piStream.push({ type: "text_delta", contentIndex: index, delta: event.delta.text, partial: output });
 								}
 							} else if (event.delta?.type === "thinking_delta") {
-								const index = blocks.findIndex((b) => b.index === event.index);
+								const index = blocks.findIndex((b: any) => b.index === event.index);
 								const block = blocks[index];
 								if (block?.type === "thinking") {
 									block.thinking += event.delta.thinking;
-									stream.push({ type: "thinking_delta", contentIndex: index, delta: event.delta.thinking, partial: output });
+									piStream.push({ type: "thinking_delta", contentIndex: index, delta: event.delta.thinking, partial: output });
 								}
 							} else if (event.delta?.type === "input_json_delta") {
-								const index = blocks.findIndex((b) => b.index === event.index);
+								const index = blocks.findIndex((b: any) => b.index === event.index);
 								const block = blocks[index];
 								if (block?.type === "toolCall") {
 									block.partialJson += event.delta.partial_json;
 									block.arguments = parsePartialJson(block.partialJson, block.arguments);
-									stream.push({ type: "toolcall_delta", contentIndex: index, delta: event.delta.partial_json, partial: output });
+									piStream.push({ type: "toolcall_delta", contentIndex: index, delta: event.delta.partial_json, partial: output });
 								}
 							} else if (event.delta?.type === "signature_delta") {
-								const index = blocks.findIndex((b) => b.index === event.index);
+								const index = blocks.findIndex((b: any) => b.index === event.index);
 								const block = blocks[index];
 								if (block?.type === "thinking") {
 									block.thinkingSignature = (block.thinkingSignature ?? "") + event.delta.signature;
@@ -793,21 +805,21 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 						}
 
 						if (event?.type === "content_block_stop") {
-							const index = blocks.findIndex((b) => b.index === event.index);
+							const index = blocks.findIndex((b: any) => b.index === event.index);
 							const block = blocks[index];
 							if (!block) break;
-							delete (block as any).index;
+							delete block.index;
 							if (block.type === "text") {
-								stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: output });
+								piStream.push({ type: "text_end", contentIndex: index, content: block.text, partial: output });
 							} else if (block.type === "thinking") {
-								stream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
+								piStream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
 							} else if (block.type === "toolCall") {
 								sawToolCall = true;
 								block.arguments = mapToolArgs(
 									block.name, parsePartialJson(block.partialJson, block.arguments), allowSkillAliasRewrite,
 								);
-								delete (block as any).partialJson;
-								stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: output });
+								delete block.partialJson;
+								piStream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: output });
 							}
 							break;
 						}
@@ -825,8 +837,30 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 						}
 
 						if (event?.type === "message_stop" && sawToolCall) {
+							// Tool call complete. Tell pi to execute it by ending this stream.
+							// The query stays alive — the MCP handler will block until Mode B
+							// provides the tool result, at which point new events flow and we
+							// push them to Mode B's stream.
 							output.stopReason = "toolUse";
-							shouldStopEarly = true;
+							piStream.push({ type: "done", reason: "toolUse", message: output });
+							piStream.end();
+
+							if (sharedSession) sharedSession.cursor += blocks.length; // approximate
+
+							// Wait for Mode B to provide the next stream + resolve the tool
+							piStream = await new Promise<ReturnType<typeof createAssistantMessageEventStream>>((resolve) => {
+								onModeBStream = () => resolve(modeBStream!);
+								// If modeBStream was already set (unlikely race), resolve now
+								if (modeBStream) { resolve(modeBStream); onModeBStream = null; }
+							});
+							modeBStream = null;
+
+							// Reset for the next pi turn
+							output = makeOutput();
+							blocks = output.content as Array<any>;
+							started = false;
+							sawStreamEvent = false;
+							sawToolCall = false;
 							break;
 						}
 
@@ -847,13 +881,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 						break;
 					}
 				}
-
-				if (shouldStopEarly) break;
 			}
 
-			// Update shared session state
+			// Update session state
 			if (!wasAborted) {
-				const sessionId = capturedSessionId ?? (sharedSession?.sessionId);
+				const sessionId = capturedSessionId ?? sharedSession?.sessionId;
 				if (sessionId) {
 					sharedSession = { sessionId, cursor: context.messages.length, cwd };
 				}
@@ -862,36 +894,23 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			if (wasAborted || options?.signal?.aborted) {
 				output.stopReason = "aborted";
 				output.errorMessage = "Operation aborted";
-				stream.push({ type: "error", reason: "aborted", error: output });
-				stream.end();
-				activeQuery = null;
-
-				return;
+				piStream.push({ type: "error", reason: "aborted", error: output });
+				piStream.end();
+			} else {
+				piStream.push({ type: "done", reason: output.stopReason === "length" ? "length" : "stop", message: output });
+				piStream.end();
 			}
-
-			const isToolUse = output.stopReason === "toolUse";
-			stream.push({
-				type: "done",
-				reason: isToolUse ? "toolUse" : output.stopReason === "length" ? "length" : "stop",
-				message: output,
-			});
-			stream.end();
-
-			// If NOT a tool use stop, the query is done — clean up
-			if (!isToolUse) {
-				activeQuery = null;
-
-			}
+			activeQuery = null;
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : String(error);
-			stream.push({ type: "error", reason: output.stopReason as "aborted" | "error", error: output });
-			stream.end();
+			piStream.push({ type: "error", reason: output.stopReason as "aborted" | "error", error: output });
+			piStream.end();
 			activeQuery = null;
 		} finally {
 			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
-			// Don't close the query if it's still active (waiting for tool result)
-			if (sdkQuery && sdkQuery !== activeQuery) sdkQuery.close();
+			if (activeQuery === sdkQuery) activeQuery = null;
+			sdkQuery.close();
 		}
 	})();
 
