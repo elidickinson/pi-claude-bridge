@@ -102,7 +102,19 @@ function tcPath(tc: ToolCallState): string | undefined {
 
 function shortPath(p: string): string {
 	const cwd = process.cwd();
-	return p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p;
+	if (p.startsWith(cwd + "/")) return p.slice(cwd.length + 1);
+	// For absolute paths outside cwd, keep last 2 segments for brevity
+	if (p.startsWith("/")) {
+		const parts = p.split("/");
+		if (parts.length > 3) return parts.slice(-2).join("/");
+	}
+	return p;
+}
+
+const ABS_PATH_RE = /\/(?:Users|home|tmp|var|opt|usr|private|nix)\b[^\s`'"]{10,}/g;
+
+function shortenName(name: string): string {
+	return name.replace(ABS_PATH_RE, shortPath);
 }
 
 function buildActionSummary(calls: Map<string, ToolCallState>): string {
@@ -121,7 +133,7 @@ function buildActionSummary(calls: Map<string, ToolCallState>): string {
 		} else if (verb === "bash" || verb === "terminal") {
 			commands.push(path ?? "command");
 		} else {
-			other.push(tc.name);
+			other.push(shortenName(tc.name));
 		}
 	}
 
