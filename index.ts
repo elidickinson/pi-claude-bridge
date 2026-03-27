@@ -4,6 +4,7 @@ import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION, type SessionNotif
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile, unlink } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
@@ -342,7 +343,7 @@ function handleMessage(msg) {
 
 async function writeMcpServerScript(tools: Tool[], bridgeUrl: string): Promise<string> {
 	const script = generateMcpServerScript(tools, bridgeUrl);
-	const path = join(tmpdir(), `pi-tools-mcp-${process.pid}.js`);
+	const path = join(tmpdir(), `pi-tools-mcp-${randomUUID()}.js`);
 	await writeFile(path, script, "utf-8");
 	mcpServerScriptPath = path;
 	return path;
