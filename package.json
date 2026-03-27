@@ -21,7 +21,7 @@
     "docs/"
   ],
   "scripts": {
-    "test": "./smoke-test.sh"
+    "test": "./smoke-test.sh && ./multi-turn-test.sh && ./session-resume-test.mjs"
   },
   "type": "module",
   "dependencies": {

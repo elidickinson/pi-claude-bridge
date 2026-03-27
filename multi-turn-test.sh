@@ -4,6 +4,7 @@
 # Requires: pi CLI, Claude Code (for ACP subprocess), jq.
 
 set -euo pipefail
+echo "=== multi-turn-test.sh ==="
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required but not installed"; exit 1; }
 

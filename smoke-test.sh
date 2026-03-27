@@ -5,6 +5,7 @@
 # produces no output, the test fails.
 
 set -euo pipefail
+echo "=== smoke-test.sh ==="
 
 # npm prepends node_modules/.bin to PATH, which shadows the system pi
 # with the vendored pi-coding-agent (used only for types). Strip it.

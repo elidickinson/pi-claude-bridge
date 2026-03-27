@@ -8,6 +8,8 @@
 //
 // Requires: pi CLI, Claude Code (for ACP subprocess).
 
+console.log("=== session-resume-test.mjs ===");
+
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { dirname } from "node:path";
