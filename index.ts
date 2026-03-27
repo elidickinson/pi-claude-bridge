@@ -1,5 +1,5 @@
 import { calculateCost, createAssistantMessageEventStream, getModels, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION, type SessionNotification, type SessionUpdate, type PromptResponse } from "@agentclientprotocol/sdk";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
@@ -431,6 +431,21 @@ function mirrorPiMessages(session: Session, messages: Context["messages"], skipO
 	}
 }
 
+/** Mirror pi messages into a CC session JSONL, creating or appending as needed. */
+function ensureMirrorSession(messages: Context["messages"], cwd: string, skipOwnAssistant = false): string {
+	if (mirrorSessionId) {
+		const ccSession = openSession({ sessionId: mirrorSessionId, projectPath: cwd });
+		mirrorPiMessages(ccSession, messages.slice(-MAX_MIRROR_MESSAGES), skipOwnAssistant);
+		ccSession.save();
+	} else {
+		const ccSession = createSession({ projectPath: cwd });
+		mirrorPiMessages(ccSession, messages.slice(-MAX_MIRROR_MESSAGES));
+		ccSession.save();
+		mirrorSessionId = ccSession.sessionId;
+	}
+	return mirrorSessionId!;
+}
+
 function resetMirror(): void {
 	mirrorSessionId = null;
 	mirrorCursor = 0;
@@ -559,11 +574,14 @@ async function promptAndWait(
 	mode: "full" | "read" | "none",
 	toolCalls: Map<string, ToolCallState>,
 	signal?: AbortSignal,
-	options?: { systemPrompt?: string; appendSkills?: boolean; onStreamUpdate?: (responseText: string) => void; model?: string; thinking?: string },
+	options?: {
+		systemPrompt?: string; appendSkills?: boolean; onStreamUpdate?: (responseText: string) => void;
+		model?: string; thinking?: string; isolated?: boolean; context?: Context["messages"];
+	},
 ): Promise<{ responseText: string; stopReason: string }> {
-	const connection = await ensureConnection();
+	const cwd = process.cwd();
 
-	// Build _meta: mode preset + skills append + MCP suppression
+	// Build _meta: mode preset + skills append
 	const modePreset = MODE_PRESETS[mode] ?? {};
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
@@ -582,14 +600,26 @@ async function promptAndWait(
 		},
 	};
 
-	const session = await connection.newSession({
-		cwd: process.cwd(),
-		mcpServers: [],
-		_meta: meta,
-	} as any);
-	const sid = session.sessionId;
-	// Not strictly needed (requestPermission callback auto-approves) but avoids per-tool round-trip latency
-	await connection.setSessionMode({ sessionId: sid, modeId: "bypassPermissions" });
+	let connection: ClientSideConnection;
+	let sid: string;
+
+	if (options?.isolated) {
+		// Isolated mode: fresh session, no conversation history
+		connection = await ensureConnection();
+		const session = await connection.newSession({ cwd, mcpServers: [], _meta: meta } as any);
+		sid = session.sessionId;
+		await connection.setSessionMode({ sessionId: sid, modeId: "bypassPermissions" });
+	} else {
+		// Shared mode (default): mirror pi context into CC session, kill/reconnect to resume
+		if (options?.context && options.context.length > 0) {
+			ensureMirrorSession(options.context, cwd, true);
+		}
+		killConnection();
+		connection = await ensureConnection();
+		sid = await createAcpSession(connection, cwd, [], mirrorSessionId || undefined, meta);
+		activeSessionId = null; // provider's session is stale after kill
+	}
+
 	await connection.unstable_setSessionModel({ sessionId: sid, modelId: resolveModelId(options?.model ?? "opus") });
 
 	let responseText = "";
@@ -668,15 +698,22 @@ function waitForToolCall(): Promise<void> {
 let askClaudeToolName = "AskClaude";
 
 async function createAcpSession(
-	conn: ClientSideConnection, cwd: string, mcpServers: McpServer[], resume?: string,
+	conn: ClientSideConnection, cwd: string, mcpServers: McpServer[],
+	resume?: string, meta?: Record<string, unknown>,
 ): Promise<string> {
+	const metaOptions = (meta as any)?.claudeCode?.options ?? {};
 	const session = await conn.newSession({
 		cwd,
 		mcpServers,
 		_meta: {
+			...meta,
 			claudeCode: { options: {
+				...metaOptions,
 				allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
-				disallowedTools: DISALLOWED_BUILTIN_TOOLS,
+				disallowedTools: [
+					...DISALLOWED_BUILTIN_TOOLS,
+					...(metaOptions.disallowedTools ?? []),
+				],
 				...(resume ? { resume } : {}),
 			} },
 		},
@@ -764,12 +801,8 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 				if (!activeSessionId) {
 					// First call — seed JSONL with recent context, set up MCP, create session
 					const contextWithoutLast = context.messages.slice(0, -1);
-					const toMirror = contextWithoutLast.slice(-MAX_MIRROR_MESSAGES);
-					if (toMirror.length > 0) {
-						const ccSession = createSession({ projectPath: cwd });
-						mirrorPiMessages(ccSession, toMirror);
-						ccSession.save();
-						mirrorSessionId = ccSession.sessionId;
+					if (contextWithoutLast.length > 0) {
+						ensureMirrorSession(contextWithoutLast, cwd);
 					}
 
 					const mcpServers = await buildMcpServers(tools);
@@ -784,10 +817,7 @@ function streamClaudeAcp(model: Model<any>, context: Context, options?: SimpleSt
 					sessionId = activeSessionId;
 					const missed = context.messages.slice(mirrorCursor, -1);
 					if (missed.length > 0 && mirrorSessionId) {
-						// Messages from another provider — mirror into JSONL, kill, resume
-						const ccSession = openSession({ sessionId: mirrorSessionId, projectPath: cwd });
-						mirrorPiMessages(ccSession, missed.slice(-MAX_MIRROR_MESSAGES), true);
-						ccSession.save();
+						ensureMirrorSession(missed, cwd, true);
 
 						killConnection();
 						const mcpServers = await buildMcpServers(tools);
@@ -1007,10 +1037,11 @@ export default function (pi: ExtensionAPI) {
 			label: askConf?.label ?? "Ask Claude Code",
 			description: askConf?.description ?? (allowFull ? DEFAULT_TOOL_DESCRIPTION_FULL : DEFAULT_TOOL_DESCRIPTION),
 			parameters: Type.Object({
-				prompt: Type.String({ description: "The question or task for Claude Code. Claude only sees this prompt (no conversation history) — include the user's original question and any relevant context. Don't research up front, let Claude explore." }),
+				prompt: Type.String({ description: "The question or task for Claude Code. By default Claude sees the full conversation history. Don't research up front, let Claude explore." }),
 				mode: Type.Optional(StringEnum(modeValues, { description: modeDesc })),
 				model: Type.Optional(Type.String({ description: 'Claude model (e.g. "opus", "sonnet", "haiku", or full ID). Defaults to "opus".' })),
 				thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const, { description: 'Thinking effort level. Defaults to "medium".' })),
+				isolated: Type.Optional(Type.Boolean({ description: "When true, Claude sees only this prompt (clean session). When false (default), Claude sees the full conversation history." })),
 			}),
 			renderCall(args, theme) {
 				let text = theme.fg("mdLink", theme.bold("AskClaude "));
@@ -1019,6 +1050,7 @@ export default function (pi: ExtensionAPI) {
 				if (mode !== "full") tags.push(`tools=${mode}`);
 				if (args.model) tags.push(`model=${args.model}`);
 				if (args.thinking) tags.push(`thinking=${args.thinking}`);
+				if (args.isolated) tags.push("isolated");
 				if (tags.length) text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
 				const truncated = args.prompt.length > PREVIEW_MAX_CHARS ? args.prompt.substring(0, PREVIEW_MAX_CHARS) : args.prompt;
 				const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
@@ -1084,6 +1116,8 @@ export default function (pi: ExtensionAPI) {
 						appendSkills: askConf?.appendSkills,
 						model: params.model,
 						thinking: params.thinking,
+						isolated: params.isolated,
+						context: params.isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
 					});
 					clearInterval(progressInterval);
 					const executionTime = Date.now() - start;

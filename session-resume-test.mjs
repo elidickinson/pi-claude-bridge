@@ -23,7 +23,12 @@ const TIMEOUT = 180_000;
 
 const ACP_MODEL = "claude-code-acp/claude-haiku-4-5";
 const OTHER_PROVIDER = "openrouter";
-const OTHER_MODEL = "qwen/qwen3.5-9b";
+const OTHER_MODEL = "openai/gpt-oss-120b";
+
+// Random words to avoid Claude memorizing test values across runs
+const WORD_A = `alpha${Math.random().toString(36).slice(2, 6)}`;
+const WORD_B = `beta${Math.random().toString(36).slice(2, 6)}`;
+
 
 // Strip node_modules/.bin from PATH (shadows pi with vendored types package)
 process.env.PATH = process.env.PATH
@@ -89,6 +94,12 @@ function waitForIdle(timeout = TIMEOUT) {
       if (msg.type === "agent_end") {
         clearTimeout(timer);
         listeners.splice(listeners.indexOf(handler), 1);
+        // Extract last tool result text for assertion
+        const toolResults = msg.messages?.filter((m) => m.role === "toolResult") ?? [];
+        if (toolResults.length > 0) {
+          const last = toolResults[toolResults.length - 1];
+          lastToolResult = last.content?.map((c) => c.text ?? "").join("") ?? "";
+        }
         resolve(msg);
       }
     });
@@ -106,6 +117,8 @@ function collectText() {
   listeners.push(handler);
   return { stop() { listeners.splice(listeners.indexOf(handler), 1); return text; } };
 }
+
+let lastToolResult = null;
 
 async function promptAndWait(message) {
   const collector = collectText();
@@ -127,7 +140,7 @@ await new Promise((r) => setTimeout(r, 2000));
 try {
   // Turn 1: ACP prompt — establishes the ACP session
   console.log("Turn 1: ACP prompt (establish session)...");
-  const text1 = await promptAndWait("The secret word is 'mango'. Acknowledge and be very brief.");
+  const text1 = await promptAndWait(`The secret word is '${WORD_A}'. Acknowledge and be very brief.`);
   if (!text1) finish(1, "FAIL: Turn 1 produced no text");
   console.log(`  Response: ${text1.slice(0, 80)}`);
 
@@ -137,7 +150,7 @@ try {
 
   // Turn 2: Non-ACP prompt — these messages won't be in the CC session
   console.log("Turn 2: Non-ACP prompt (creates missed messages)...");
-  const text2 = await promptAndWait("The backup word is 'kiwi'. Acknowledge briefly.");
+  const text2 = await promptAndWait(`The backup word is '${WORD_B}'. Acknowledge briefly.`);
   if (!text2) finish(1, "FAIL: Turn 2 produced no text");
   console.log(`  Response: ${text2.slice(0, 80)}`);
 
@@ -155,8 +168,29 @@ try {
 
   // Assertions
   const lower = text3.toLowerCase();
-  if (!lower.includes("mango")) finish(1, `FAIL: Turn 3 response missing 'mango': ${text3}`);
-  if (!lower.includes("kiwi")) finish(1, `FAIL: Turn 3 response missing 'kiwi': ${text3}`);
+  if (!lower.includes(WORD_A)) finish(1, `FAIL: Turn 3 response missing '${WORD_A}': ${text3}`);
+  if (!lower.includes(WORD_B)) finish(1, `FAIL: Turn 3 response missing '${WORD_B}': ${text3}`);
+
+  // Turn 4: AskClaude shared mode — should see WORD_B which was only told to the non-ACP model
+  console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
+  await send({ type: "set_model", provider: OTHER_PROVIDER, modelId: OTHER_MODEL });
+
+  console.log("Turn 4: AskClaude shared mode (should see non-ACP context)...");
+  const text4 = await promptAndWait(
+    'Use the AskClaude tool with prompt="What was the backup word mentioned earlier? Reply with just the word."'
+  );
+  // Check AskClaude's tool result (not the calling model's response, which knows WORD_B from its own context)
+  console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
+  if (!lastToolResult?.toLowerCase().includes(WORD_B)) finish(1, `FAIL: Turn 4 AskClaude tool result missing '${WORD_B}': ${lastToolResult}`);
+
+  // Turn 5: AskClaude isolated mode — should NOT see conversation history
+  console.log("Turn 5: AskClaude isolated mode (should not see context)...");
+  lastToolResult = null;
+  const text5 = await promptAndWait(
+    'Use the AskClaude tool with prompt="What was the backup word mentioned earlier? If you don\'t know, say UNKNOWN." and isolated=true'
+  );
+  console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
+  if (lastToolResult?.toLowerCase().includes(WORD_B)) finish(1, `FAIL: Turn 5 isolated AskClaude should not know '${WORD_B}': ${lastToolResult}`);
 
   finish(0, "PASS");
 } catch (e) {
