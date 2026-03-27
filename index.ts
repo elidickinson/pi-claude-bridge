@@ -399,6 +399,11 @@ function mirrorPiMessages(session: Session, messages: Context["messages"], skipO
 			session.addUserMessage(text);
 		} else if (msg.role === "assistant") {
 			if (skipOwnAssistant && (msg as any).provider === PROVIDER_ID) continue;
+			// Thinking signatures are model-specific — only signatures from our own
+			// provider (i.e. produced by CC itself) are safe to replay on resume.
+			// Other providers (including native anthropic with a different model)
+			// may have incompatible signatures that the API rejects.
+			const isOwnProvider = (msg as any).provider === PROVIDER_ID;
 			const blocks: Array<{ type: "text"; text: string } | { type: "thinking"; thinking: string; signature: string } | { type: "tool_use"; id: string; name: string; input: unknown }> = [];
 			if (typeof msg.content === "string") {
 				blocks.push({ type: "text", text: msg.content });
@@ -407,10 +412,8 @@ function mirrorPiMessages(session: Session, messages: Context["messages"], skipO
 					if (block.type === "text") {
 						blocks.push({ type: "text", text: block.text ?? "" });
 					} else if (block.type === "thinking") {
-						// Only include thinking blocks with a valid signature — the
-						// Anthropic API rejects empty/invalid signatures on resume.
 						const sig = (block as any).thinkingSignature;
-						if (sig) {
+						if (isOwnProvider && sig) {
 							blocks.push({ type: "thinking", thinking: block.thinking ?? "", signature: sig });
 						}
 					} else if (block.type === "toolCall") {
