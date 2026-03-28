@@ -12,10 +12,10 @@ import { homedir } from "os";
 import { dirname, join, relative, resolve } from "path";
 
 // --- Debug logging ---
-// CLAUDE_ACP_DEBUG=1 enables debug logging to ~/.pi/agent/claude-acp.log
+// CLAUDE_BRIDGE_DEBUG=1 enables debug logging to ~/.pi/agent/claude-bridge.log
 
-const DEBUG = process.env.CLAUDE_ACP_DEBUG === "1";
-const DEBUG_LOG_PATH = join(homedir(), ".pi", "agent", "claude-acp.log");
+const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
+const DEBUG_LOG_PATH = join(homedir(), ".pi", "agent", "claude-bridge.log");
 
 function debug(...args: unknown[]) {
 	if (!DEBUG) return;
@@ -878,11 +878,12 @@ function processStreamEvent(
 }
 
 // Fallback for when stream_event messages are absent (e.g. post-tool continuations).
-// Only handles text blocks — thinking and tool_use blocks are lost in this path.
-function processAssistantMessage(message: SDKMessage, model: Model<any>): void {
+// Synthesizes pi stream events from the complete assistant message.
+function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, allowSkillAliasRewrite: boolean): void {
 	if (turnSawStreamEvent) return; // stream events already handled this turn
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
+	sessionLog(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}`);
 	for (const block of assistantMsg.content) {
 		if (block.type === "text" && block.text) {
 			ensureTurnStarted();
@@ -891,8 +892,28 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>): void {
 			currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: turnOutput });
 			currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: turnOutput });
 			currentPiStream?.push({ type: "text_end", contentIndex: idx, content: block.text, partial: turnOutput });
-		} else if (block.type !== "text") {
-			debug("processAssistantMessage: dropping block type", block.type);
+		} else if (block.type === "thinking") {
+			ensureTurnStarted();
+			turnBlocks.push({ type: "thinking", thinking: block.thinking ?? "", thinkingSignature: block.signature ?? "" });
+			const idx = turnBlocks.length - 1;
+			currentPiStream?.push({ type: "thinking_start", contentIndex: idx, partial: turnOutput });
+			if (block.thinking) currentPiStream?.push({ type: "thinking_delta", contentIndex: idx, delta: block.thinking, partial: turnOutput });
+			currentPiStream?.push({ type: "thinking_end", contentIndex: idx, content: block.thinking ?? "", partial: turnOutput });
+		} else if (block.type === "tool_use") {
+			ensureTurnStarted();
+			turnSawToolCall = true;
+			const mappedArgs = mapToolArgs(mapToolName(block.name, customToolNameToPi), block.input, allowSkillAliasRewrite);
+			turnBlocks.push({
+				type: "toolCall", id: block.id,
+				name: mapToolName(block.name, customToolNameToPi),
+				arguments: mappedArgs,
+			});
+			const idx = turnBlocks.length - 1;
+			const toolBlock = turnBlocks[idx];
+			currentPiStream?.push({ type: "toolcall_start", contentIndex: idx, partial: turnOutput });
+			currentPiStream?.push({ type: "toolcall_end", contentIndex: idx, toolCall: toolBlock as any, partial: turnOutput });
+		} else {
+			debug("processAssistantMessage: unhandled block type", block.type);
 		}
 	}
 	if (assistantMsg.usage && turnOutput) updateUsage(turnOutput, assistantMsg.usage, model);
@@ -919,7 +940,7 @@ async function consumeQuery(
 				processStreamEvent(message, customToolNameToPi, allowSkillAliasRewrite, model);
 				break;
 			case "assistant":
-				processAssistantMessage(message, model);
+				processAssistantMessage(message, model, customToolNameToPi, allowSkillAliasRewrite);
 				break;
 			case "result":
 				if (!turnSawStreamEvent && message.subtype === "success") {
