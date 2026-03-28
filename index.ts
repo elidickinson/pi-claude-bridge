@@ -11,6 +11,19 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, relative, resolve } from "path";
 
+// --- Debug logging ---
+// CLAUDE_ACP_DEBUG=1 enables debug logging to ~/.pi/agent/claude-acp.log
+
+const DEBUG = process.env.CLAUDE_ACP_DEBUG === "1";
+const DEBUG_LOG_PATH = join(homedir(), ".pi", "agent", "claude-acp.log");
+
+function debug(...args: unknown[]) {
+	if (!DEBUG) return;
+	const ts = new Date().toISOString();
+	const msg = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+	appendFileSync(DEBUG_LOG_PATH, `[${ts}] ${msg}\n`);
+}
+
 // --- Constants ---
 
 const PROVIDER_ID = "claude-bridge";
@@ -108,8 +121,8 @@ function messageContentToText(
 	let hasText = false;
 	for (const block of content) {
 		if (block.type === "text" && block.text) { parts.push(block.text); hasText = true; }
-		else if (block.type === "image") { /* text-only */ }
-		else { parts.push(`[${block.type}]`); }
+		else if (block.type === "image") { debug("messageContentToText: dropping image (text-only path)"); }
+		else { debug("messageContentToText: unhandled block type", block.type); parts.push(`[${block.type}]`); }
 	}
 	return hasText ? parts.join("\n") : "";
 }
@@ -224,6 +237,8 @@ function convertAndImportMessages(
 					if (block.type === "text" && block.text) parts.push({ type: "text", text: block.text });
 					else if (block.type === "image" && block.data && block.mimeType) {
 						parts.push({ type: "image", source: { type: "base64", media_type: block.mimeType, data: block.data } });
+					} else if (block.type !== "text" && block.type !== "image") {
+						debug("convertAndImportMessages: dropping user block type", (block as any).type);
 					}
 				}
 				anthropicMessages.push({ role: "user", content: parts.length ? parts : "[image]" });
@@ -242,11 +257,14 @@ function convertAndImportMessages(
 						|| (msg as any).api === "anthropic";
 					if (isAnthropicProvider && sig) {
 						blocks.push({ type: "thinking", thinking: block.thinking ?? "", signature: sig });
+					} else {
+						debug("convertAndImportMessages: dropping thinking block (non-Anthropic or no signature)");
 					}
-					// Non-Anthropic thinking blocks (DeepSeek etc.) have no valid signature — drop
 				} else if (block.type === "toolCall") {
 					const toolName = mapPiToolNameToSdk(block.name, customToolNameToSdk);
 					blocks.push({ type: "tool_use", id: block.id, name: toolName, input: block.arguments ?? {} });
+				} else {
+					debug("convertAndImportMessages: dropping assistant block type", (block as any).type);
 				}
 			}
 			if (blocks.length) anthropicMessages.push({ role: "assistant", content: blocks });
@@ -288,19 +306,33 @@ function extractUserPrompt(messages: Context["messages"]): string | null {
 function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockParam[] | null {
 	const last = messages[messages.length - 1];
 	if (!last || last.role !== "user") return null;
-	if (typeof last.content === "string") return null;
-	if (!Array.isArray(last.content)) return null;
+	if (typeof last.content === "string") {
+		sessionLog(`extractUserPromptBlocks: content is string (length=${last.content.length})`);
+		return null;
+	}
+	if (!Array.isArray(last.content)) {
+		sessionLog(`extractUserPromptBlocks: content is ${typeof last.content}`);
+		return null;
+	}
+	sessionLog(`extractUserPromptBlocks: ${last.content.length} blocks, types=${last.content.map((b: any) => b.type).join(",")}`);
 	let hasImage = false;
 	const blocks: ContentBlockParam[] = [];
 	for (const block of last.content) {
 		if (block.type === "text" && block.text) {
 			blocks.push({ type: "text", text: block.text });
-		} else if (block.type === "image" && block.data && block.mimeType) {
+		} else if (block.type === "image") {
+			sessionLog(`image block: mimeType=${(block as any).mimeType}, data length=${((block as any).data ?? "").length}, keys=${Object.keys(block).join(",")}`);
+			if (!(block as any).data || !(block as any).mimeType) {
+				sessionLog(`image block missing data or mimeType, skipping`);
+				continue;
+			}
 			hasImage = true;
 			blocks.push({
 				type: "image",
 				source: { type: "base64", media_type: block.mimeType as Base64ImageSource["media_type"], data: block.data },
 			});
+		} else if (block.type !== "text") {
+			debug("extractUserPromptBlocks: dropping block type", block.type);
 		}
 	}
 	return hasImage ? blocks : null;
@@ -757,6 +789,8 @@ function processStreamEvent(
 				partialJson: "", index: event.index,
 			});
 			currentPiStream.push({ type: "toolcall_start", contentIndex: turnBlocks.length - 1, partial: turnOutput });
+		} else {
+			debug("processStreamEvent: unhandled content_block_start type", event.content_block?.type);
 		}
 		return;
 	}
@@ -790,6 +824,8 @@ function processStreamEvent(
 			if (block?.type === "thinking") {
 				block.thinkingSignature = (block.thinkingSignature ?? "") + event.delta.signature;
 			}
+		} else {
+			debug("processStreamEvent: unhandled content_block_delta type", event.delta?.type);
 		}
 		return;
 	}
@@ -838,6 +874,10 @@ function processStreamEvent(
 		if (sharedSession) sharedSession.cursor += turnBlocks.length;
 		return;
 	}
+
+	if (event?.type !== "message_stop" && event?.type !== "ping") {
+		debug("processStreamEvent: unhandled event type", event?.type);
+	}
 }
 
 /** Fallback for when stream_event messages are absent (e.g. post-tool continuations).
@@ -854,6 +894,8 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>): void {
 			currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: turnOutput });
 			currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: turnOutput });
 			currentPiStream?.push({ type: "text_end", contentIndex: idx, content: block.text, partial: turnOutput });
+		} else if (block.type !== "text") {
+			debug("processAssistantMessage: dropping block type", block.type);
 		}
 	}
 	// Update usage from complete message
@@ -902,6 +944,9 @@ async function consumeQuery(
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
 				}
+				break;
+			default:
+				debug("consumeQuery: unhandled SDK message type", message.type);
 				break;
 		}
 	}
