@@ -5,14 +5,47 @@
 // with resume, then verifies the resulting JSONL has one connected chain
 // (no orphaned synthetic records).
 
-import { createSession, parseJsonlFile } from "cc-session-io";
+import { createSession, parseJsonlFile, serializeJsonl } from "cc-session-io";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { realpathSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Use this project's directory so cc-session-io and the SDK agree on path
 const projectPath = realpathSync(dirname(fileURLToPath(import.meta.url)));
+
+/**
+ * Fix the parent chain after the SDK appends records to a synthetic session.
+ * The SDK doesn't always chain its first record to the last synthetic record,
+ * creating orphaned branches. This patches the JSONL so all message records
+ * form a single connected chain.
+ */
+function patchSessionChain(jsonlPath, syntheticRecordCount) {
+	const records = parseJsonlFile(jsonlPath);
+	if (records.length <= syntheticRecordCount) return; // nothing to patch
+
+	// Find the last synthetic record's UUID
+	let lastSynUuid = null;
+	for (let i = syntheticRecordCount - 1; i >= 0; i--) {
+		if (records[i].uuid) { lastSynUuid = records[i].uuid; break; }
+	}
+	if (!lastSynUuid) return;
+
+	// Find the first SDK message record (user/assistant) and fix its parent
+	let patched = false;
+	for (let i = syntheticRecordCount; i < records.length; i++) {
+		const rec = records[i];
+		if ((rec.type === "user" || rec.type === "assistant") && rec.parentUuid !== lastSynUuid) {
+			rec.parentUuid = lastSynUuid;
+			patched = true;
+			break;
+		}
+	}
+
+	if (patched) {
+		writeFileSync(jsonlPath, serializeJsonl(records), "utf-8");
+	}
+}
 
 // --- Step 1: Create synthetic session with 2 user/assistant turns ---
 const session = createSession({ projectPath, model: "claude-haiku-4-5-20251001" });
@@ -25,9 +58,11 @@ session.addAssistantMessage([{ type: "text", text: "The secret word is banana." 
 
 session.save();
 
+const syntheticRecordCount = session.records.length;
+
 console.log(`Session: ${session.sessionId}`);
 console.log(`JSONL:   ${session.jsonlPath}`);
-console.log(`Records before SDK query: ${session.records.length}`);
+console.log(`Records before SDK query: ${syntheticRecordCount}`);
 
 // --- Step 2: Resume session with SDK query ---
 const sdkQuery = query({
@@ -45,6 +80,9 @@ const sdkQuery = query({
 for await (const msg of sdkQuery) {
 	// Just consume — we only care about the JSONL output
 }
+
+// --- Step 2b: Patch the parent chain ---
+patchSessionChain(session.jsonlPath, syntheticRecordCount);
 
 // --- Step 3: Read resulting JSONL and verify parent chain ---
 const records = parseJsonlFile(session.jsonlPath);

@@ -5,8 +5,8 @@ import { z } from "zod";
 import { pascalCase } from "change-case";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
-import { createSession, openSession } from "cc-session-io";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { createSession, openSession, parseJsonlFile, serializeJsonl, getSessionPath } from "cc-session-io";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, relative, resolve } from "path";
 
@@ -189,6 +189,8 @@ interface SessionState {
 	sessionId: string;
 	cursor: number;
 	cwd: string;
+	/** Number of synthetic records from cc-session-io; null once patched. */
+	syntheticRecordCount: number | null;
 }
 
 let sharedSession: SessionState | null = null;
@@ -200,6 +202,43 @@ function sessionLog(msg: string) {
 		mkdirSync(dirname(SESSION_LOG), { recursive: true });
 		appendFileSync(SESSION_LOG, `[${new Date().toISOString()}] ${msg}\n`);
 	} catch {}
+}
+
+/**
+ * Fix the parent chain after the SDK appends records to a synthetic session.
+ * The SDK doesn't chain its first record to the last synthetic record,
+ * creating orphaned branches. This patches the JSONL so all message records
+ * form a single connected chain.
+ */
+function patchSessionChain(sessionId: string, cwd: string, syntheticRecordCount: number): void {
+	try {
+		const jsonlPath = getSessionPath(sessionId, cwd);
+		const records = parseJsonlFile(jsonlPath);
+		if (records.length <= syntheticRecordCount) return;
+
+		let lastSynUuid: string | null = null;
+		for (let i = syntheticRecordCount - 1; i >= 0; i--) {
+			if ((records[i] as any).uuid) { lastSynUuid = (records[i] as any).uuid; break; }
+		}
+		if (!lastSynUuid) return;
+
+		let patched = false;
+		for (let i = syntheticRecordCount; i < records.length; i++) {
+			const rec = records[i] as any;
+			if ((rec.type === "user" || rec.type === "assistant") && rec.parentUuid !== lastSynUuid) {
+				rec.parentUuid = lastSynUuid;
+				patched = true;
+				break;
+			}
+		}
+
+		if (patched) {
+			writeFileSync(jsonlPath, serializeJsonl(records as any), "utf-8");
+			sessionLog(`patched parent chain: first SDK record now points to last synthetic record`);
+		}
+	} catch (e) {
+		sessionLog(`patchSessionChain error: ${e}`);
+	}
 }
 
 /** Convert pi messages to Anthropic API format and import into a cc-session-io session. */
@@ -295,7 +334,7 @@ function syncSharedSession(
 		const session = createSession({ projectPath: cwd, ...(modelId ? { model: modelId } : {}) });
 		convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 		session.save();
-		sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
+		sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd, syntheticRecordCount: session.records.length };
 		sessionLog(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
 		return { sessionId: session.sessionId };
 	}
@@ -312,7 +351,7 @@ function syncSharedSession(
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 	session.save();
 	const oldSessionId = sharedSession.sessionId;
-	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd: sharedSession.cwd };
+	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd: sharedSession.cwd, syntheticRecordCount: session.records.length };
 	sessionLog(`Case 4: ${missed.length} missed messages, ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${oldSessionId.slice(0, 8)}), ${session.messages.length} records`);
 	return { sessionId: session.sessionId };
 }
@@ -958,9 +997,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		.then(({ capturedSessionId }) => {
 			// Update session state
 			if (!wasAborted) {
+				// Patch parent chain if this was the first query on a synthetic session
+				if (sharedSession?.syntheticRecordCount) {
+					patchSessionChain(sharedSession.sessionId, sharedSession.cwd, sharedSession.syntheticRecordCount);
+					sharedSession.syntheticRecordCount = null;
+				}
 				const sessionId = capturedSessionId ?? sharedSession?.sessionId;
 				if (sessionId) {
-					sharedSession = { sessionId, cursor: context.messages.length, cwd };
+					sharedSession = { sessionId, cursor: context.messages.length, cwd, syntheticRecordCount: null };
 				}
 			}
 
