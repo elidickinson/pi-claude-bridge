@@ -1,6 +1,7 @@
 import { calculateCost, createAssistantMessageEventStream, getModels, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@mariozechner/pi-ai";
 import { buildSessionContext, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { z } from "zod";
 import { pascalCase } from "change-case";
 import { Type } from "@sinclair/typebox";
@@ -215,8 +216,20 @@ function convertAndImportMessages(
 
 	for (const msg of capped) {
 		if (msg.role === "user") {
-			const text = typeof msg.content === "string" ? msg.content : messageContentToText(msg.content);
-			anthropicMessages.push({ role: "user", content: text || "[image]" });
+			if (typeof msg.content === "string") {
+				anthropicMessages.push({ role: "user", content: msg.content || "[empty]" });
+			} else if (Array.isArray(msg.content)) {
+				const parts: unknown[] = [];
+				for (const block of msg.content) {
+					if (block.type === "text" && block.text) parts.push({ type: "text", text: block.text });
+					else if (block.type === "image" && block.data && block.mimeType) {
+						parts.push({ type: "image", source: { type: "base64", media_type: block.mimeType, data: block.data } });
+					}
+				}
+				anthropicMessages.push({ role: "user", content: parts.length ? parts : "[image]" });
+			} else {
+				anthropicMessages.push({ role: "user", content: "[empty]" });
+			}
 		} else if (msg.role === "assistant") {
 			const content = Array.isArray(msg.content) ? msg.content : [];
 			const blocks: unknown[] = [];
@@ -268,6 +281,37 @@ function extractUserPrompt(messages: Context["messages"]): string | null {
 	if (!last || last.role !== "user") return null;
 	if (typeof last.content === "string") return last.content;
 	return messageContentToText(last.content) || "";
+}
+
+/** Extract the last user message as ContentBlockParam[] (preserving images).
+ *  Returns null if no images — caller should fall back to string prompt. */
+function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockParam[] | null {
+	const last = messages[messages.length - 1];
+	if (!last || last.role !== "user") return null;
+	if (typeof last.content === "string") return null;
+	if (!Array.isArray(last.content)) return null;
+	let hasImage = false;
+	const blocks: ContentBlockParam[] = [];
+	for (const block of last.content) {
+		if (block.type === "text" && block.text) {
+			blocks.push({ type: "text", text: block.text });
+		} else if (block.type === "image" && block.data && block.mimeType) {
+			hasImage = true;
+			blocks.push({
+				type: "image",
+				source: { type: "base64", media_type: block.mimeType as Base64ImageSource["media_type"], data: block.data },
+			});
+		}
+	}
+	return hasImage ? blocks : null;
+}
+
+async function* wrapPromptStream(blocks: ContentBlockParam[]): AsyncIterable<SDKUserMessage> {
+	yield {
+		type: "user",
+		message: { role: "user", content: blocks } as MessageParam,
+		parent_tool_use_id: null,
+	};
 }
 
 
@@ -903,8 +947,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	const { sessionId: resumeSessionId } = syncSharedSession(context.messages, cwd, customToolNameToSdk, model.id);
-	const prompt = extractUserPrompt(context.messages) ?? "";
-	sessionLog(`provider: fresh query, ${context.messages.length} msgs, resume=${resumeSessionId?.slice(0, 8) ?? "none"}, prompt=${prompt.slice(0, 60)}`);
+	const promptBlocks = extractUserPromptBlocks(context.messages);
+	const promptText = extractUserPrompt(context.messages) ?? "";
+	const prompt: string | AsyncIterable<SDKUserMessage> = promptBlocks
+		? wrapPromptStream(promptBlocks)
+		: promptText;
+	sessionLog(`provider: fresh query, ${context.messages.length} msgs, resume=${resumeSessionId?.slice(0, 8) ?? "none"}, prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
 	const mcpServers = buildMcpServers(mcpTools);
 	const providerSettings = loadProviderSettings();
