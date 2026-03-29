@@ -195,7 +195,31 @@ await test("isError flag flows through both paths", async () => {
 	assert.equal(got2.isError, false);
 });
 
-// --- Scenario G: property-based fuzz (FUZZ=1 to enable) ---
+// --- Scenario G: fresh query after drain (no stale state) ---
+
+console.log("Scenario G: fresh query after drain");
+
+await test("new query sees clean state after drain", async () => {
+	const bridge = createBridge();
+	// Query 1: deliver results and handlers, then drain mid-flight
+	bridge.deliverResult({ content: [{ type: "text", text: "q1-stale" }] });
+	const p = bridge.waitForResult();
+	bridge.deliverResult({ content: [{ type: "text", text: "q1-stale2" }] });
+	await p; // resolves with q1-stale
+	assert.equal(bridge.resultsQueued, 1); // q1-stale2 sitting in queue
+	bridge.drain({ content: [] });
+	assert.equal(bridge.resultsQueued, 0);
+	assert.equal(bridge.handlersWaiting, 0);
+
+	// Query 2: fresh start — handler must not see q1 data
+	const p2 = bridge.waitForResult();
+	assert.equal(bridge.handlersWaiting, 1);
+	bridge.deliverResult({ content: [{ type: "text", text: "q2-fresh" }] });
+	const got = await p2;
+	assert.equal(got.content[0].text, "q2-fresh");
+});
+
+// --- Scenario H: property-based fuzz (FUZZ=1 to enable) ---
 
 if (process.env.FUZZ) {
 console.log("Scenario G: fuzz (1000 random orderings)");
