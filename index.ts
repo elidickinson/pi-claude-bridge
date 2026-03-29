@@ -734,11 +734,8 @@ function buildMcpServers(tools: Tool[]): Record<string, ReturnType<typeof create
 					toolName: tool.name,
 					resolve: (content: McpContent) => resolve({ content }),
 				});
-				// Signal that the MCP handler has set its first pending entry
-				if (pendingToolCalls.length === 1) {
-					toolCallDetected?.();
-					toolCallDetected = null;
-				}
+				// Signal that a new MCP handler is pending — triggers chained resolve
+				toolCallDetected?.();
 			});
 		},
 	}));
@@ -1051,14 +1048,16 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		pending.resolve(mcpContent);
 		// Auto-resolve subsequent handlers from remaining results in context
 		if (allResults.length > 0) {
-			toolCallDetected = () => {
+			const resolveFromRemaining = () => {
 				while (pendingToolCalls.length > 0 && allResults.length > 0) {
 					const next = pendingToolCalls.shift()!;
 					debug(`provider: chained resolve ${next.toolName}`);
 					next.resolve(allResults.shift()!);
 				}
-				toolCallDetected = null;
+				// Keep callback alive while results remain; clear when drained
+				toolCallDetected = allResults.length > 0 ? resolveFromRemaining : null;
 			};
+			toolCallDetected = resolveFromRemaining;
 		}
 		if (sharedSession) sharedSession.cursor = context.messages.length;
 		return stream;
