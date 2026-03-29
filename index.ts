@@ -262,8 +262,8 @@ function convertAndImportMessages(
 			const content = Array.isArray(msg.content) ? msg.content : [];
 			const blocks: unknown[] = [];
 			for (const block of content) {
-				if (block.type === "text") {
-					blocks.push({ type: "text", text: block.text ?? "" });
+				if (block.type === "text" && block.text) {
+					blocks.push({ type: "text", text: block.text });
 				} else if (block.type === "thinking") {
 					const sig = (block as any).thinkingSignature;
 					const isAnthropicProvider = (msg as any).provider === PROVIDER_ID
@@ -290,6 +290,17 @@ function convertAndImportMessages(
 		}
 	}
 
+	debug(`convertAndImportMessages: ${capped.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
+	debug(`convertAndImportMessages: imported roles:`, anthropicMessages.map((m, i) => {
+		const c = m.content;
+		if (typeof c === "string") return `[${i}]${m.role}:text`;
+		if (Array.isArray(c)) return `[${i}]${m.role}:${(c as any[]).map((b: any) => b.type).join("+")}`;
+		return `[${i}]${m.role}:?`;
+	}).join(" "));
+	if (sanitizedIds.size > 0) {
+		debug(`convertAndImportMessages: sanitized ${sanitizedIds.size} tool IDs:`,
+			[...sanitizedIds.entries()].map(([orig, clean]) => orig === clean ? orig : `${orig}→${clean}`).join(", "));
+	}
 	if (anthropicMessages.length) session.importMessages(anthropicMessages as any);
 }
 
@@ -308,14 +319,24 @@ function toolResultToMcpContent(
 	return blocks.length ? blocks : [{ type: "text", text: "" }];
 }
 
+function msgPreview(msg: { role: string; content?: unknown }): string {
+	const c = msg.content;
+	const text = typeof c === "string" ? c : Array.isArray(c) ? (c[0] as any)?.text ?? (c[0] as any)?.type ?? "?" : "?";
+	return `${msg.role}:${JSON.stringify(typeof text === "string" ? text.slice(0, 60) : text)}`;
+}
+
 function extractLastToolResult(context: Context): { content: McpContent; isError: boolean } | null {
 	for (let i = context.messages.length - 1; i >= 0; i--) {
 		const msg = context.messages[i];
 		if (msg.role === "toolResult") {
 			const blocks = toolResultToMcpContent(msg.content);
+			debug(`extractLastToolResult: found at index ${i}/${context.messages.length}, preview:`, JSON.stringify(blocks).slice(0, 150));
 			return { content: blocks, isError: msg.isError };
 		}
-		if (msg.role === "user") break;
+		if (msg.role === "user") {
+			debug(`extractLastToolResult: hit user at index ${i}, no toolResult found`);
+			break;
+		}
 	}
 	return null;
 }
@@ -324,10 +345,16 @@ function extractLastToolResult(context: Context): { content: McpContent; isError
 // Order matches the assistant's tool_use blocks since pi preserves ordering.
 function extractAllToolResults(context: Context): McpContent[] {
 	const results: McpContent[] = [];
+	let stopIdx = -1;
 	for (let i = context.messages.length - 1; i >= 0; i--) {
 		const msg = context.messages[i];
 		if (msg.role === "toolResult") results.unshift(toolResultToMcpContent(msg.content));
-		else if (msg.role === "user") break;
+		else if (msg.role === "user") { stopIdx = i; break; }
+	}
+	debug(`extractAllToolResults: ${results.length} results from ${context.messages.length} msgs, stopped at user index ${stopIdx}`);
+	debug(`extractAllToolResults: all msg roles:`, context.messages.map((m, i) => `[${i}]${m.role}`).join(" "));
+	for (let r = 0; r < results.length; r++) {
+		debug(`extractAllToolResults: result[${r}] preview:`, JSON.stringify(results[r]).slice(0, 150));
 	}
 	return results;
 }
@@ -1019,7 +1046,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		const allResults = extractAllToolResults(context);
 		const pending = pendingToolCalls.shift()!;
 		const mcpContent = allResults.shift() ?? [{ type: "text" as const, text: "OK" }];
-		debug(`provider: tool result, resolving ${pending.toolName}, results=${allResults.length + 1}`);
+		debug(`provider: TOOL_RESULT resolving ${pending.toolName}, ${allResults.length + 1} results, ctx.msgs=${context.messages.length}`);
+		debug(`provider: TOOL_RESULT content:`, JSON.stringify(mcpContent).slice(0, 300));
 		pending.resolve(mcpContent);
 		// Auto-resolve subsequent handlers from remaining results in context
 		if (allResults.length > 0) {
@@ -1040,11 +1068,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	if (activeQuery && pendingToolCalls.length === 0) {
 		currentPiStream = stream;
 		resetTurnState(model);
+		debug(`provider: DEFERRED path — MCP handler not yet called, ctx.msgs=${context.messages.length}`);
+		debug(`provider: DEFERRED context snapshot:`, context.messages.slice(-5).map((m, i) => msgPreview(m)).join(" | "));
 		toolCallDetected = () => {
+			debug(`provider: DEFERRED callback fired, ctx.msgs=${context.messages.length} (same ref=${context === context})`);
+			debug(`provider: DEFERRED context NOW:`, context.messages.slice(-5).map((m, i) => msgPreview(m)).join(" | "));
 			const toolResult = extractLastToolResult(context);
 			const mcpContent = toolResult?.content ?? [{ type: "text" as const, text: "OK" }];
 			const pending = pendingToolCalls.shift()!;
-			debug(`provider: deferred tool result, resolving ${pending.toolName}, blocks=${mcpContent.length}`);
+			debug(`provider: DEFERRED resolving ${pending.toolName}, content:`, JSON.stringify(mcpContent).slice(0, 300));
 			pending.resolve(mcpContent);
 			if (sharedSession) sharedSession.cursor = context.messages.length;
 		};
