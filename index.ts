@@ -230,6 +230,15 @@ function convertAndImportMessages(
 		: messages;
 	if (messages.length > MAX_MIRROR_MESSAGES) debug(`convertAndImportMessages: capped ${messages.length} → ${MAX_MIRROR_MESSAGES} messages`);
 	const anthropicMessages: Array<{ role: string; content: unknown }> = [];
+	// Anthropic requires tool IDs matching ^[a-zA-Z0-9_-]+$ — sanitize IDs from other providers
+	const sanitizedIds = new Map<string, string>();
+	const sanitizeToolId = (id: string): string => {
+		const existing = sanitizedIds.get(id);
+		if (existing) return existing;
+		const clean = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+		sanitizedIds.set(id, clean);
+		return clean;
+	};
 
 	for (const msg of capped) {
 		if (msg.role === "user") {
@@ -266,7 +275,7 @@ function convertAndImportMessages(
 					}
 				} else if (block.type === "toolCall") {
 					const toolName = mapPiToolNameToSdk(block.name, customToolNameToSdk);
-					blocks.push({ type: "tool_use", id: block.id, name: toolName, input: block.arguments ?? {} });
+					blocks.push({ type: "tool_use", id: sanitizeToolId(block.id), name: toolName, input: block.arguments ?? {} });
 				} else {
 					debug("convertAndImportMessages: dropping assistant block type", (block as any).type);
 				}
@@ -276,7 +285,7 @@ function convertAndImportMessages(
 			const text = typeof msg.content === "string" ? msg.content : messageContentToText(msg.content);
 			anthropicMessages.push({
 				role: "user",
-				content: [{ type: "tool_result", tool_use_id: msg.toolCallId, content: text || "", is_error: msg.isError }],
+				content: [{ type: "tool_result", tool_use_id: sanitizeToolId(msg.toolCallId), content: text || "", is_error: msg.isError }],
 			});
 		}
 	}
