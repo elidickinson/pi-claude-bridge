@@ -73,6 +73,17 @@ run_json "multi-turn: tool use, context, history" \
      "Now read README.md and tell me the first heading. Be brief." \
      "What was the secret word I told you earlier? Reply with just the word."
 
+# Multiple tool calls in a single turn — the scenario that caused the deadlock
+# when processAssistantMessage didn't end the stream on tool_use.
+run_json "single-turn: multiple sequential tool calls" \
+  '([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "toolcall_end")] | length) >= 2 and
+   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("pi-claude-bridge")) and
+   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end")] | length) > 0' \
+  pi --no-session -ne -e "$DIR" \
+  --model "claude-bridge/claude-haiku-4-5" \
+  --mode json \
+  -p "Read both package.json and README.md, then tell me the package name and the first word of the README heading."
+
 # --- Summary ---
 
 echo ""

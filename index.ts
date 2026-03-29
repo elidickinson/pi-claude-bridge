@@ -308,6 +308,18 @@ function extractLastToolResult(context: Context): { content: McpContent; isError
 	return null;
 }
 
+// Extract all tool results from the end of context (before the last user message).
+// Order matches the assistant's tool_use blocks since pi preserves ordering.
+function extractAllToolResults(context: Context): McpContent[] {
+	const results: McpContent[] = [];
+	for (let i = context.messages.length - 1; i >= 0; i--) {
+		const msg = context.messages[i];
+		if (msg.role === "toolResult") results.unshift(toolResultToMcpContent(msg.content));
+		else if (msg.role === "user") break;
+	}
+	return results;
+}
+
 /** Extract the last user message from context as a prompt string. Returns null if last message is not a user message. */
 function extractUserPrompt(messages: Context["messages"]): string | null {
 	const last = messages[messages.length - 1];
@@ -677,7 +689,7 @@ function buildMcpServers(tools: Tool[]): Record<string, ReturnType<typeof create
 		description: tool.description,
 		inputSchema: jsonSchemaToZodShape(tool.parameters),
 		handler: async () => {
-			debug(`mcp handler invoked: ${tool.name}`);
+			debug(`mcp handler: ${tool.name}`);
 			return new Promise<{ content: McpContent; isError?: boolean }>((resolve) => {
 				pendingToolCalls.push({
 					toolName: tool.name,
@@ -985,15 +997,29 @@ async function consumeQuery(
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 
-	// --- Tool result turn: swap stream, resolve tool, generator unblocks ---
+	// --- Tool result turn: resolve tool(s), generator unblocks ---
+	// Pi puts all tool results in context before calling back. The SDK serializes
+	// MCP handlers — resolving one immediately triggers the next. We resolve the
+	// first here and use toolCallDetected to auto-resolve the rest.
 	if (activeQuery && pendingToolCalls.length > 0) {
 		currentPiStream = stream;
 		resetTurnState(model);
-		const toolResult = extractLastToolResult(context);
-		const mcpContent = toolResult?.content ?? [{ type: "text" as const, text: "OK" }];
+		const allResults = extractAllToolResults(context);
 		const pending = pendingToolCalls.shift()!;
-		debug(`provider: tool result, resolving ${pending.toolName}, blocks=${mcpContent.length}`);
+		const mcpContent = allResults.shift() ?? [{ type: "text" as const, text: "OK" }];
+		debug(`provider: tool result, resolving ${pending.toolName}, results=${allResults.length + 1}`);
 		pending.resolve(mcpContent);
+		// Auto-resolve subsequent handlers from remaining results in context
+		if (allResults.length > 0) {
+			toolCallDetected = () => {
+				while (pendingToolCalls.length > 0 && allResults.length > 0) {
+					const next = pendingToolCalls.shift()!;
+					debug(`provider: chained resolve ${next.toolName}`);
+					next.resolve(allResults.shift()!);
+				}
+				toolCallDetected = null;
+			};
+		}
 		if (sharedSession) sharedSession.cursor = context.messages.length;
 		return stream;
 	}
@@ -1411,7 +1437,6 @@ export default function (pi: ExtensionAPI) {
 				} catch (err) {
 					clearInterval(progressInterval);
 					debug(`askClaude error: mode=${mode}, model=${params.model ?? "default"}, isolated=${params.isolated ?? false}, error=`, err);
-					console.error("[claude-bridge] AskClaude error:", err);
 					const msg = errorMessage(err);
 					return {
 						content: [{ type: "text" as const, text: `Error: ${msg}` }],
