@@ -9,7 +9,8 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
 
 Uses your Claude Max/Pro subscription. Only the real Claude Code touches Anthropic's API so as best I can tell using this with pi complies with Anthropic terms. Obviously this extension is not endorsed or supported by Anthropic.
 
-<a href="screenshot.png"><img src="screenshot.png" width="600"></a>
+<a href="claude-bridge1.png"><img src="claude-bridge1.png" width="600"></a>
+<a href="claude-bridge2.png"><img src="claude-bridge2.png" width="600"></a>
 
 ## Setup
 
@@ -26,7 +27,7 @@ Uses your Claude Max/Pro subscription. Only the real Claude Code touches Anthrop
 
 Use `/model` to select `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
 
-Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi.
+Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default.
 
 ## AskClaude Tool
 

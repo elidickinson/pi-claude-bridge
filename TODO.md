@@ -11,6 +11,11 @@
 - **`/claude:btw` command** for ephemeral questions: response displayed but
   not added to LLM context.
 
+- **Audit tool parameter mismatches**: The bash timeout default (120s) was added
+  because pi's bash has no default while Claude Code expects one. Other bridged
+  tools may have similar mismatches (units, defaults, optional-vs-required params).
+  Compare Claude Code's tool schemas against pi's for read, write, edit, grep, find.
+
 ## Deferred
 
 - **Session JSONL cleanup**: Track session IDs created during a pi session. On
