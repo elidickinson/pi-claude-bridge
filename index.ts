@@ -16,12 +16,24 @@ import { dirname, join, relative, resolve } from "path";
 
 const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
 const DEBUG_LOG_PATH = join(homedir(), ".pi", "agent", "claude-bridge.log");
+const DIAG_LOG_PATH = join(homedir(), ".pi", "agent", "claude-bridge-diag.log");
+
+// Unique per module evaluation — confirms whether subagents share module state
+const moduleInstanceId = Math.random().toString(36).slice(2, 8);
 
 function debug(...args: unknown[]) {
 	if (!DEBUG) return;
 	const ts = new Date().toISOString();
 	const msg = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
-	appendFileSync(DEBUG_LOG_PATH, `[${ts}] ${msg}\n`);
+	appendFileSync(DEBUG_LOG_PATH, `[${ts}] [${moduleInstanceId}] ${msg}\n`);
+}
+
+/** Unconditional diagnostic dump — for "should never happen" paths */
+function diagDump(label: string, data: Record<string, unknown>) {
+	const ts = new Date().toISOString();
+	const entry = { ts, moduleInstanceId, label, ...data };
+	appendFileSync(DIAG_LOG_PATH, JSON.stringify(entry) + "\n");
+	debug(`DIAG: ${label} (see ${DIAG_LOG_PATH})`);
 }
 
 // --- Constants ---
@@ -628,7 +640,10 @@ interface PendingToolCall {
 }
 
 // Module-level state for the push-based streaming pattern.
-// Assumes pi calls streamSimple sequentially — concurrent calls will clobber state.
+// WARNING: pi loads extensions in-process via jiti. Despite moduleCache:false,
+// Node's native import cache (tryNative:true) can cause extensions that spawn
+// their own pi sessions (subagents, AskClaude, etc.) to share this module instance.
+// The queryStateStack below protects the parent query's state from reentrant corruption.
 let activeQuery: ReturnType<typeof query> | null = null;
 let currentPiStream: ReturnType<typeof createAssistantMessageEventStream> | null = null;
 
@@ -640,6 +655,16 @@ let currentPiStream: ReturnType<typeof createAssistantMessageEventStream> | null
 // and pi delivers results in the same order.
 let pendingToolCalls: PendingToolCall[] = [];
 let pendingResults: McpResult[] = [];
+
+// State stack: when a subagent starts a fresh query while the main query is active,
+// we save the main's state and restore it when the subagent's query ends.
+interface SavedQueryState {
+	activeQuery: typeof activeQuery;
+	currentPiStream: typeof currentPiStream;
+	pendingToolCalls: PendingToolCall[];
+	pendingResults: McpResult[];
+}
+const queryStateStack: SavedQueryState[] = [];
 
 // Per-turn output state (reset on each streamSimple call that starts a new pi turn)
 let turnOutput: AssistantMessage | null = null;
@@ -1065,6 +1090,21 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	}
 
 	// --- Fresh query ---
+
+	// If a query is already active, a reentrant call is starting (e.g. subagent,
+	// AskClaude, or any extension spawning its own pi session) while the parent
+	// query is suspended. Save the parent's state so we can restore it when done.
+	const isReentrant = activeQuery !== null;
+	if (isReentrant) {
+		queryStateStack.push({
+			activeQuery,
+			currentPiStream,
+			pendingToolCalls: [...pendingToolCalls],
+			pendingResults: [...pendingResults],
+		});
+		debug(`provider: saving state (stack depth ${queryStateStack.length}), reentrant fresh query`);
+	}
+
 	currentPiStream = stream;
 	pendingToolCalls.length = 0;
 	pendingResults.length = 0;
@@ -1074,7 +1114,25 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	const { sessionId: resumeSessionId } = syncSharedSession(context.messages, cwd, customToolNameToSdk, model.id);
 	const promptBlocks = extractUserPromptBlocks(context.messages);
-	const promptText = extractUserPrompt(context.messages) ?? "";
+	let promptText = extractUserPrompt(context.messages) ?? "";
+
+	// Guard: empty prompt means the last context message isn't a user message.
+	// This should never happen with the state stack fix — dump diagnostics if it does.
+	if (!promptText && !promptBlocks) {
+		const lastMsg = context.messages[context.messages.length - 1];
+		diagDump("empty_prompt", {
+			contextLength: context.messages.length,
+			lastMsgRole: lastMsg?.role,
+			isReentrant,
+			stackDepth: queryStateStack.length,
+			activeQueryExists: activeQuery !== null,
+			sharedSession: sharedSession ? { sessionId: sharedSession.sessionId.slice(0, 8), cursor: sharedSession.cursor } : null,
+			messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
+		});
+		// Recover: use a continuation prompt so the SDK doesn't send an empty text block
+		promptText = "[continue]";
+	}
+
 	const prompt: string | AsyncIterable<SDKUserMessage> = promptBlocks
 		? wrapPromptStream(promptBlocks)
 		: promptText;
@@ -1185,11 +1243,24 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		.finally(() => {
 			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
 			if (activeQuery === sdkQuery) {
-				activeQuery = null;
-				// Drain queues: resolve any MCP handlers still blocked, discard stale results
+				// Drain this query's queues before restoring parent state
 				for (const pending of pendingToolCalls) { pending.resolve({ content: [{ type: "text", text: "Query ended" }] }); }
 				pendingToolCalls.length = 0;
 				pendingResults.length = 0;
+
+				// If this was a reentrant query, restore the parent's state
+				if (isReentrant && queryStateStack.length > 0) {
+					const saved = queryStateStack.pop()!;
+					activeQuery = saved.activeQuery;
+					currentPiStream = saved.currentPiStream;
+					pendingToolCalls.length = 0;
+					pendingToolCalls.push(...saved.pendingToolCalls);
+					pendingResults.length = 0;
+					pendingResults.push(...saved.pendingResults);
+					debug(`provider: restored state (stack depth ${queryStateStack.length})`);
+				} else {
+					activeQuery = null;
+				}
 			}
 			sdkQuery.close();
 		});
