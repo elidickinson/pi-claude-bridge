@@ -212,7 +212,8 @@ function buildActionSummary(calls: Map<string, ToolCallState>): string {
 }
 
 // AskClaude mode presets — controls which CC tools are blocked per mode.
-// AskUserQuestion and plan tools are always blocked: subagents can't interact with the user.
+// Only block tools that can't work (no pi TUI for user interaction).
+// Other CC tools (Agent, SendMessage, RemoteTrigger, Tasks, etc.) are intentionally not blocked.
 const ASKCLAUDE_ALWAYS_BLOCKED = [
 	"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 	"ToolSearch", // probes for blocked tools, wastes tokens

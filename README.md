@@ -1,5 +1,7 @@
 # pi-claude-bridge
 
+[![npm version](https://img.shields.io/npm/v/pi-claude-bridge)](https://www.npmjs.com/package/pi-claude-bridge)
+
 Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript).
 
 > Built on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal — the provider skeleton, tool name mapping, and settings loading originate from that project. This fork adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and the AskClaude tool.
@@ -59,7 +61,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
   "maxHistoryMessages": 40,
   "askClaude": {
     "enabled": true,
-    "allowFullMode": true,
+    "allowFullMode": false,
     "description": "Custom tool description override"
   }
 }

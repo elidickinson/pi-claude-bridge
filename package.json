@@ -23,7 +23,8 @@
     "index.ts",
     "README.md",
     "LICENSE",
-    "screenshot.png"
+    "claude-bridge1.png",
+    "claude-bridge2.png"
   ],
   "scripts": {
     "test:unit": "node tests/test-queue.mjs && node tests/test-import.mjs",
