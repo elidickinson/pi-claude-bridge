@@ -180,34 +180,37 @@ function shortPath(p: string): string {
 	return p;
 }
 
-function buildActionSummary(calls: Map<string, ToolCallState>): string {
-	const reads = new Set<string>();
-	const edits = new Set<string>();
-	const commands: string[] = [];
-	const other: string[] = [];
-
-	for (const [, tc] of calls) {
-		const path = extractPath(tc.rawInput);
-		const verb = tc.name.toLowerCase().split(/\s/)[0];
-		if (verb === "read" || verb === "readfile") {
-			if (path) reads.add(shortPath(path));
-		} else if (verb === "edit" || verb === "write" || verb === "writefile" || verb === "multiedit") {
-			if (path) edits.add(shortPath(path));
-		} else if (verb === "bash" || verb === "terminal") {
-			commands.push(path ?? "command");
-		} else if (verb === "agent") {
-			const input = tc.rawInput as Record<string, unknown> | undefined;
-			other.push(`Agent(${String(input?.description ?? "").slice(0, 40)})`);
-		} else {
-			other.push(tc.name);
-		}
+function formatToolAction(tc: ToolCallState): string | undefined {
+	const path = extractPath(tc.rawInput);
+	const verb = tc.name.toLowerCase().split(/\s/)[0];
+	if (verb === "read" || verb === "readfile") {
+		return path ? `read ${shortPath(path)}` : undefined;
+	} else if (verb === "edit" || verb === "write" || verb === "writefile" || verb === "multiedit") {
+		return path ? `edit ${shortPath(path)}` : undefined;
+	} else if (verb === "bash" || verb === "terminal") {
+		return `ran ${path ?? "command"}`;
+	} else if (verb === "agent") {
+		const input = tc.rawInput as Record<string, unknown> | undefined;
+		return `Agent(${String(input?.description ?? "").slice(0, 40)})`;
+	} else if (verb === "grep") {
+		const input = tc.rawInput as Record<string, unknown> | undefined;
+		const pat = typeof input?.pattern === "string" ? input.pattern.slice(0, 40) : "";
+		return pat ? `Grep(${pat})` : "Grep";
+	} else if (verb === "todowrite") {
+		const todos = Array.isArray((tc.rawInput as any)?.todos) ? (tc.rawInput as any).todos : [];
+		const current = todos.find((t: any) => t.status === "in_progress") ?? todos.find((t: any) => t.status === "pending");
+		const label = current ? String(current.content ?? "").slice(0, 40) : "";
+		return label || undefined;
 	}
+	return tc.name;
+}
 
+function buildActionSummary(calls: Map<string, ToolCallState>): string {
 	const parts: string[] = [];
-	if (reads.size) parts.push(`read ${[...reads].join(", ")}`);
-	if (edits.size) parts.push(`edited ${[...edits].join(", ")}`);
-	if (commands.length) parts.push(`ran ${commands.join("; ")}`);
-	if (other.length) parts.push(other.join("; "));
+	for (const [, tc] of calls) {
+		const action = formatToolAction(tc);
+		if (action) parts.push(action);
+	}
 	return parts.join("; ");
 }
 
@@ -1176,6 +1179,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 	const allowSkillAliasRewrite = Boolean(skillsAppend);
 
+	// MCP auto-loading suppression: CC auto-loads MCP servers from ~/.claude.json and
+	// .mcp.json when filesystem settings are loaded. Since pi executes tools (not CC),
+	// auto-loaded MCP tools are pure token overhead. Two mechanisms prevent this:
+	//   appendSystemPrompt=true  (default): settingSources=undefined → SDK isolation mode,
+	//     no filesystem settings loaded, so no MCP auto-discovery occurs.
+	//   appendSystemPrompt=false: settingSources loads user/project settings, but
+	//     --strict-mcp-config tells CC to ignore auto-discovered MCP configs.
 	const settingSources: SettingSource[] | undefined = appendSystemPrompt
 		? undefined
 		: providerSettings.settingSources ?? ["user", "project"];
@@ -1570,6 +1580,7 @@ export default function (pi: ExtensionAPI) {
 						context: params.isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
 					});
 					clearInterval(progressInterval);
+					onUpdate?.({ content: [{ type: "text", text: "" }], details: {} });
 					const executionTime = Date.now() - start;
 					const actions = buildActionSummary(toolCalls);
 
