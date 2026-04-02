@@ -40,6 +40,22 @@ function diagDump(label: string, data: Record<string, unknown>) {
 
 const PROVIDER_ID = "claude-bridge";
 
+// Global key to prevent re-registration of the provider across module reloads.
+//
+// When pi-subagents spawns a subagent, the subagent's session loads this module
+// again. Without this guard, the subagent's call to registerProvider() would
+// overwrite the parent's `streamSimple` function reference in the shared
+// ModelRegistry. When the parent later delivers a tool result, it would call
+// the subagent's `streamSimple` (which has empty state) instead of its own.
+//
+// By storing the active streamSimple in a Symbol.for() global (shared across all
+// module instances), we ensure only the FIRST instance to register takes effect.
+// Subsequent instances wrap the stored function instead of overwriting it.
+//
+// On session_shutdown (including /reload), clearSession() resets this so a fresh
+// registration can occur for the next session.
+const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
+
 const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash", grep: "grep", glob: "find",
 };
@@ -1494,20 +1510,46 @@ export default function (pi: ExtensionAPI) {
 	const clearSession = (event: string) => {
 		debug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
 		sharedSession = null;
+
+		// Clear the global streamSimple if this instance registered it.
+		// This allows /reload to work — the old instance clears the flag so
+		// the new instance can register fresh without wrapping stale state.
+		const g = globalThis as Record<symbol, any>;
+		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
+			debug(`${event}: clearing ACTIVE_STREAM_SIMPLE_KEY`);
+			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
+		}
 	};
 	pi.on("session_switch", () => clearSession("session_switch"));
 	pi.on("session_fork", () => clearSession("session_fork"));
 	pi.on("session_shutdown", () => clearSession("session_shutdown"));
 
 	// --- Provider ---
+	//
+	// Guard against re-registration when the module is loaded multiple times
+	// (e.g., when spawning subagents). The shared ModelRegistry would otherwise
+	// overwrite the parent's streamSimple, breaking tool result delivery.
+	// See ACTIVE_STREAM_SIMPLE_KEY for the full mechanism.
 
-	pi.registerProvider(PROVIDER_ID, {
-		baseUrl: "claude-bridge",
-		apiKey: "not-used",
-		api: "claude-bridge",
-		models: MODELS,
-		streamSimple: streamClaudeAgentSdk,
-	});
+	const g = globalThis as Record<symbol, any>;
+	if (!g[ACTIVE_STREAM_SIMPLE_KEY]) {
+		// First instance: store our streamSimple and register.
+		g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
+		pi.registerProvider(PROVIDER_ID, {
+			baseUrl: "claude-bridge",
+			apiKey: "not-used",
+			api: "claude-bridge",
+			models: MODELS,
+			streamSimple: streamClaudeAgentSdk,
+		});
+	} else {
+		// Subsequent instance (subagent session): skip registration entirely.
+		// The subagent already has access to claude-bridge models via the shared
+		// ModelRegistry from the parent's registration. Calls to those models
+		// will route through the parent's streamSimple via the reentrant
+		// queryStateStack mechanism.
+		debug(`provider: skipping re-registration, parent instance active (module=${moduleInstanceId})`);
+	}
 
 	// --- AskClaude tool ---
 
