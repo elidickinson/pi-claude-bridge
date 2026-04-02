@@ -874,6 +874,8 @@ function ensureTurnStarted(): void {
 
 function finalizeCurrentStream(stopReason?: string): void {
 	if (!currentPiStream || !turnOutput) return;
+	// DEBUG: trace stream finalization
+	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: turnOutput.stopReason, error: turnOutput.errorMessage})}`);
 	if (!turnStarted) ensureTurnStarted();
 	const reason = stopReason === "length" ? "length" : "stop";
 	currentPiStream.push({ type: "done", reason, message: turnOutput });
@@ -1116,6 +1118,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				const pending = pendingToolCalls.shift()!;
 				debug(`provider: resolving ${pending.toolName}${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
 				pending.resolve(result);
+				debug(`provider: pending.resolve called, SDK should continue...`);
 			} else {
 				pendingResults.push(result);
 				debug(`provider: queued result (${pendingResults.length} pending)`);
@@ -1264,6 +1267,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Background consumer — runs until query ends
 	consumeQuery(sdkQuery, customToolNameToPi, allowSkillAliasRewrite, model, () => wasAborted)
 		.then(({ capturedSessionId }) => {
+			// DEBUG: trace what happens after tool result
+			debug(`provider: consumeQuery completed, stopReason=${turnOutput?.stopReason}, error=${turnOutput?.errorMessage}`);
 			// Capture the SDK session ID for future resume. The `context` closure is
 			// from the initial streamSimple call and is stale — tool result deliveries
 			// advanced sharedSession.cursor past it. We keep whichever is higher.
