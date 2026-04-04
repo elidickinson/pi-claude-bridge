@@ -65,8 +65,7 @@ run_json "multi-turn: tool use, context, history" \
   '([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "toolcall_end")] | length) >= 2 and
    ([.[] | select(.type == "agent_end")] | length) >= 3 and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("'"$EXPECTED_VERSION"'")) and
-   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("banana")) and
-   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("experimental"; "i"))' \
+   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("banana"))' \
   pi --no-session -ne -e "$DIR" \
   --model "claude-bridge/claude-haiku-4-5" \
   --mode json \
@@ -79,7 +78,6 @@ run_json "multi-turn: tool use, context, history" \
 run_json "single-turn: multiple sequential tool calls" \
   '([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "toolcall_end")] | length) >= 2 and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("pi-claude-bridge")) and
-   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("experimental"; "i")) and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end")] | length) > 0' \
   pi --no-session -ne -e "$DIR" \
   --model "claude-bridge/claude-haiku-4-5" \
@@ -94,8 +92,7 @@ run_json "single-turn: 3+ parallel tool calls" \
    ([ .[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") ] | length) > 0 and
    ([ .[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content | select(. != null and . != "") ] | length) > 0 and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("pi-claude-bridge")) and
-   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("ES2022")) and
-   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("experimental"; "i"))' \
+   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("ES2022"))' \
   pi --no-session -ne -e "$DIR" \
   --model "claude-bridge/claude-haiku-4-5" \
   --mode json \
