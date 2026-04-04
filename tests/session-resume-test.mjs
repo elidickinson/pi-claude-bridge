@@ -8,7 +8,8 @@
 // isolated mode (clean slate).
 //
 // Requires: pi CLI, Claude Code (for Agent SDK subprocess).
-// Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "openrouter/z-ai/glm-4.7-flash")
+// Requires: CLAUDE_BRIDGE_TESTING_ALT_PROVIDER (e.g. "minimax")
+// Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "MiniMax-M2.7-highspeed")
 
 console.log("=== session-resume-test.mjs ===");
 
@@ -18,8 +19,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 
-if (!process.env.CLAUDE_BRIDGE_TESTING_ALT_MODEL) {
-  console.error("ERROR: CLAUDE_BRIDGE_TESTING_ALT_MODEL not set (e.g. openrouter/z-ai/glm-4.7-flash)");
+if (!process.env.CLAUDE_BRIDGE_TESTING_ALT_PROVIDER || !process.env.CLAUDE_BRIDGE_TESTING_ALT_MODEL) {
+  console.error("ERROR: CLAUDE_BRIDGE_TESTING_ALT_PROVIDER and CLAUDE_BRIDGE_TESTING_ALT_MODEL must be set (e.g. minimax / MiniMax-M2.7-highspeed)");
   process.exit(1);
 }
 
@@ -29,8 +30,8 @@ const LOGFILE = `${LOGDIR}/session-resume.log`;
 const TIMEOUT = 180_000;
 
 const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
-const [OTHER_PROVIDER, ...modelParts] = process.env.CLAUDE_BRIDGE_TESTING_ALT_MODEL.split("/");
-const OTHER_MODEL = modelParts.join("/");
+const OTHER_PROVIDER = process.env.CLAUDE_BRIDGE_TESTING_ALT_PROVIDER;
+const OTHER_MODEL = process.env.CLAUDE_BRIDGE_TESTING_ALT_MODEL;
 
 // Random words to avoid Claude memorizing test values across runs
 const WORD_A = `alpha${Math.random().toString(36).slice(2, 6)}`;

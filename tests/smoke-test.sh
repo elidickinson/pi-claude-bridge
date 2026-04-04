@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Smoke tests for pi-claude-bridge provider.
 # Requires: pi CLI, Claude Code (for Agent SDK subprocess).
-# Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "openrouter/z-ai/glm-4.7-flash")
+# Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "MiniMax-M2.7-highspeed")
 
 set -euo pipefail
 echo "=== smoke-test.sh ==="
 
 if [ -z "${CLAUDE_BRIDGE_TESTING_ALT_MODEL:-}" ]; then
-  echo "ERROR: CLAUDE_BRIDGE_TESTING_ALT_MODEL not set (e.g. openrouter/z-ai/glm-4.7-flash)"
+  echo "ERROR: CLAUDE_BRIDGE_TESTING_ALT_MODEL not set (e.g. MiniMax-M2.7-highspeed)"
   exit 1
 fi
 ALT_MODEL="$CLAUDE_BRIDGE_TESTING_ALT_MODEL"
