@@ -491,8 +491,17 @@ function syncSharedSession(
 	}
 
 	const missed = priorMessages.slice(sharedSession.cursor);
-	if (missed.length === 0) {
-		debug(`Case 3: no missed messages, resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
+	// Case 3: no missed messages, OR just the trailing final-assistant from the previous turn.
+	// pi appends the final assistant message after streamSimple returns, so our cursor is always
+	// 1 behind by exactly that one message. It's already in CC's own session JSONL (the SDK
+	// persisted it when the query ended), so a plain resume is safe — no need to rebuild.
+	const isTrailingAssistantOnly =
+		missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
+	if (missed.length === 0 || isTrailingAssistantOnly) {
+		if (isTrailingAssistantOnly) {
+			sharedSession = { ...sharedSession, cursor: priorMessages.length };
+		}
+		debug(`Case 3: ${isTrailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
 		return { sessionId: sharedSession.sessionId };
 	}
 
@@ -1304,8 +1313,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// from the initial streamSimple call and is stale — tool result deliveries
 			// advanced sharedSession.cursor past it. We keep whichever is higher.
 			// Note: pi appends the final assistant message AFTER streamSimple returns,
-			// so cursor is always 1 behind — syncSharedSession will trigger a Case 4
-			// rebuild on the next turn. This is correct but not efficient.
+			// so cursor is 1 behind by exactly that message — syncSharedSession's
+			// trailing-assistant tolerance handles it on the next turn (no rebuild).
 			if (!wasAborted) {
 				const sessionId = capturedSessionId ?? sharedSession?.sessionId;
 				if (sessionId) {
