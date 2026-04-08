@@ -193,25 +193,45 @@ try {
   if (!lower4.includes(WORD_B)) finish(1, `FAIL: Turn 4 response missing '${WORD_B}': ${text4}`);
   if (!lower4.includes(WORD_C)) finish(1, `FAIL: Turn 4 response missing '${WORD_C}': ${text4}`);
 
-  // Turn 5: AskClaude shared mode — should see WORD_C which was only told to the non-provider model
+  // Turn 5: Abort mid-stream — session should be invalidated, next turn should recover
+  console.log("Turn 5: Abort mid-stream (session recovery)...");
+  await send({ type: "prompt", message: "Write a detailed 500-word essay about the history of timekeeping." });
+  // Set up idle listener before abort so we don't miss agent_end
+  const idle5 = waitForIdle();
+  await new Promise((r) => setTimeout(r, 2000));
+  await send({ type: "abort" });
+  await idle5;
+
+  // Turn 6: Provider turn after abort — should NOT get "conversation not found"
+  console.log("Turn 6: Provider turn after abort (should recover)...");
+  const text6 = await promptAndWait(
+    "What were all three words from earlier? Reply with just the three words separated by commas."
+  );
+  console.log(`  Response: ${text6.slice(0, 80)}`);
+  const lower6 = text6.toLowerCase();
+  if (!lower6.includes(WORD_A)) finish(1, `FAIL: Turn 6 response missing '${WORD_A}': ${text6}`);
+  if (!lower6.includes(WORD_B)) finish(1, `FAIL: Turn 6 response missing '${WORD_B}': ${text6}`);
+  if (!lower6.includes(WORD_C)) finish(1, `FAIL: Turn 6 response missing '${WORD_C}': ${text6}`);
+
+  // Turn 7: AskClaude shared mode — should see WORD_C which was only told to the non-provider model
   console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
   await send({ type: "set_model", provider: OTHER_PROVIDER, modelId: OTHER_MODEL });
 
-  console.log("Turn 5: AskClaude shared mode (should see non-provider context)...");
-  const text5 = await promptAndWait(
+  console.log("Turn 7: AskClaude shared mode (should see non-provider context)...");
+  const text7 = await promptAndWait(
     'Use the AskClaude tool with prompt="What was the third word mentioned earlier? Reply with just the word."'
   );
   console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
-  if (!lastToolResult?.toLowerCase().includes(WORD_C)) finish(1, `FAIL: Turn 5 AskClaude tool result missing '${WORD_C}': ${lastToolResult}`);
+  if (!lastToolResult?.toLowerCase().includes(WORD_C)) finish(1, `FAIL: Turn 7 AskClaude tool result missing '${WORD_C}': ${lastToolResult}`);
 
-  // Turn 6: AskClaude isolated mode — should NOT see conversation history
-  console.log("Turn 6: AskClaude isolated mode (should not see context)...");
+  // Turn 8: AskClaude isolated mode — should NOT see conversation history
+  console.log("Turn 8: AskClaude isolated mode (should not see context)...");
   lastToolResult = null;
-  const text6 = await promptAndWait(
+  const text8 = await promptAndWait(
     'Use the AskClaude tool with prompt="What was the third word mentioned earlier? If you don\'t know, say UNKNOWN." and isolated=true'
   );
   console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
-  if (lastToolResult?.toLowerCase().includes(WORD_C)) finish(1, `FAIL: Turn 6 isolated AskClaude should not know '${WORD_C}': ${lastToolResult}`);
+  if (lastToolResult?.toLowerCase().includes(WORD_C)) finish(1, `FAIL: Turn 8 isolated AskClaude should not know '${WORD_C}': ${lastToolResult}`);
 
   finish(0, "PASS");
 } catch (e) {

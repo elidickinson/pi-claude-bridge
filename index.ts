@@ -1299,24 +1299,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Background consumer — runs until query ends
 	consumeQuery(sdkQuery, customToolNameToPi, allowSkillAliasRewrite, model, () => wasAborted)
 		.then(({ capturedSessionId }) => {
-			// DEBUG: trace what happens after tool result
-			debug(`provider: consumeQuery completed, stopReason=${turnOutput?.stopReason}, error=${turnOutput?.errorMessage}`);
-			// Capture the SDK session ID for future resume. The `context` closure is
-			// from the initial streamSimple call and is stale — tool result deliveries
-			// advanced sharedSession.cursor past it. We keep whichever is higher.
-			// Note: pi appends the final assistant message AFTER streamSimple returns,
-			// so cursor is always 1 behind — syncSharedSession will trigger a Case 4
-			// rebuild on the next turn. This is correct but not efficient.
-			if (!wasAborted) {
-				const sessionId = capturedSessionId ?? sharedSession?.sessionId;
-				if (sessionId) {
-					const cursor = Math.max(context.messages.length, sharedSession?.cursor ?? 0);
-					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-					sharedSession = { sessionId, cursor, cwd };
-				}
-			}
+			debug(`provider: consumeQuery completed, stopReason=${turnOutput?.stopReason}, error=${turnOutput?.errorMessage}, aborted=${wasAborted}`);
 
+			// Check abort FIRST — don't update sharedSession with a session ID
+			// from a query that was force-killed. The SDK subprocess may not have
+			// persisted the session, so resuming it later → "conversation not found".
 			if (wasAborted || options?.signal?.aborted) {
+				sharedSession = null;
+				debug(`provider: abort detected, cleared sharedSession`);
 				if (turnOutput) {
 					turnOutput.stopReason = "aborted";
 					turnOutput.errorMessage = "Operation aborted";
@@ -1324,12 +1314,26 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				currentPiStream?.push({ type: "error", reason: "aborted", error: turnOutput! });
 				currentPiStream?.end();
 				currentPiStream = null;
-			} else {
-				finalizeCurrentStream(turnOutput?.stopReason);
+				return;
 			}
+
+			// Capture the SDK session ID for future resume. The `context` closure is
+			// from the initial streamSimple call and is stale — tool result deliveries
+			// advanced sharedSession.cursor past it. We keep whichever is higher.
+			// Note: pi appends the final assistant message AFTER streamSimple returns,
+			// so cursor is always 1 behind — syncSharedSession will trigger a Case 4
+			// rebuild on the next turn. This is correct but not efficient.
+			const sessionId = capturedSessionId ?? sharedSession?.sessionId;
+			if (sessionId) {
+				const cursor = Math.max(context.messages.length, sharedSession?.cursor ?? 0);
+				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
+				sharedSession = { sessionId, cursor, cwd };
+			}
+			finalizeCurrentStream(turnOutput?.stopReason);
 		})
 		.catch((error) => {
 			debug(`provider: query error, model=${model.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
+			if (wasAborted || options?.signal?.aborted) sharedSession = null; // don't resume a killed session
 			if (turnOutput) {
 				turnOutput.stopReason = options?.signal?.aborted ? "aborted" : "error";
 				turnOutput.errorMessage = error instanceof Error ? error.message : String(error);
