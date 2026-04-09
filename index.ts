@@ -499,7 +499,7 @@ function syncSharedSession(
 		missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
 	if (missed.length === 0 || isTrailingAssistantOnly) {
 		if (isTrailingAssistantOnly) {
-			sharedSession = { ...sharedSession, cursor: priorMessages.length };
+			sharedSession = { ...sharedSession, cursor: priorMessages.length, cwd };
 		}
 		debug(`Case 3: ${isTrailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
 		return { sessionId: sharedSession.sessionId };
@@ -507,11 +507,11 @@ function syncSharedSession(
 
 	// Case 4: create fresh session with ALL prior messages (injecting into existing session
 	// creates a branch that Claude Code doesn't follow on resume)
-	const session = createSession({ projectPath: sharedSession.cwd, ...(modelId ? { model: modelId } : {}) });
+	const session = createSession({ projectPath: cwd, ...(modelId ? { model: modelId } : {}) });
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 	session.save();
 	const oldSessionId = sharedSession.sessionId;
-	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd: sharedSession.cwd };
+	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
 	debug(`Case 4: ${missed.length} missed messages, ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${oldSessionId.slice(0, 8)}), ${session.messages.length} records`);
 	return { sessionId: session.sessionId };
 }
