@@ -3,6 +3,11 @@
 # Runs a multi-turn conversation and verifies Anthropic prompt caching is working.
 # Expects: cacheRead grows across turns (system prompt + history are cache-hit),
 #   cacheWrite is small after the first turn (only new content is written).
+#
+# Also checks session sync correctness: consecutive same-provider turns must
+# resume the session (Case 3), not rebuild it (Case 4). A rebuild would reset
+# prompt caching. This catches the off-by-one cursor bug where pi's post-return
+# assistant message append caused syncSharedSession to see 1 "missed" message.
 
 set -euo pipefail
 echo "=== cache-test.sh ==="
@@ -18,11 +23,16 @@ mkdir -p "$LOGDIR"
 kill_descendants() { pkill -P $$ 2>/dev/null || true; sleep 1; }
 trap kill_descendants EXIT
 
+DEBUG_LOG="$HOME/.pi/agent/claude-bridge.log"
+
 TMPFILE="$LOGDIR/cache-test-scratch.txt"
 rm -f "$TMPFILE"
 
+# Clear debug log so we only see entries from this run
+> "$DEBUG_LOG" 2>/dev/null || true
+
 echo "Running 5-turn conversation (text + tool use)..."
-timeout 180 pi --no-session -ne -e "$DIR" \
+CLAUDE_BRIDGE_DEBUG=1 timeout 180 pi --no-session -ne -e "$DIR" \
   --model "claude-bridge/claude-haiku-4-5" \
   --mode json \
   -p "The secret number is 42. Acknowledge briefly." \
@@ -84,10 +94,40 @@ if [ "$TURN" -lt 7 ]; then
   echo "WARNING: Only $TURN turns detected (expected >= 7 with tool use sub-turns)."
 fi
 
+# --- Assert session resume (no spurious rebuilds) ---
+# With the off-by-one cursor bug, every follow-up turn triggered Case 4 (full
+# rebuild) instead of Case 3 (resume), because pi appends the final assistant
+# message after streamSimple returns, making the cursor lag by 1.
+
+echo ""
+echo "Session sync cases:"
+
+CASE2_COUNT=$(grep -c "Case 2:" "$DEBUG_LOG" 2>/dev/null || echo 0)
+CASE3_COUNT=$(grep -c "Case 3:" "$DEBUG_LOG" 2>/dev/null || echo 0)
+CASE4_COUNT=$(grep -c "Case 4:" "$DEBUG_LOG" 2>/dev/null || echo 0)
+echo "  Case 2 (first turn): $CASE2_COUNT"
+echo "  Case 3 (resume):     $CASE3_COUNT"
+echo "  Case 4 (rebuild):    $CASE4_COUNT"
+
+if [ "$CASE4_COUNT" -gt 0 ]; then
+  echo "  FAIL: $CASE4_COUNT spurious Case 4 rebuilds (expected 0 for consecutive same-provider turns)"
+  echo "    Likely cause: off-by-one cursor — trailing assistant message misidentified as missed"
+  FAIL=$((FAIL + 1))
+fi
+
+if [ "$CASE3_COUNT" -lt 2 ]; then
+  echo "  FAIL: Expected at least 2 Case 3 resumes for turns 2+, got $CASE3_COUNT"
+  FAIL=$((FAIL + 1))
+fi
+
+# --- Summary ---
+
+echo ""
 if [ "$FAIL" -eq 0 ]; then
-  echo "PASS: Prompt caching is working across turns"
+  echo "PASS: Prompt caching and session resume working correctly"
 else
-  echo "FAIL: $FAIL cache assertions failed"
+  echo "FAIL: $FAIL assertions failed"
   echo "  Log: $LOGFILE"
+  echo "  Debug: $DEBUG_LOG"
   exit 1
 fi
