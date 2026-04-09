@@ -221,6 +221,10 @@ function formatToolAction(tc: ToolCallState): string | undefined {
 		const input = tc.rawInput as Record<string, unknown> | undefined;
 		const pat = typeof input?.pattern === "string" ? input.pattern.slice(0, 40) : "";
 		return pat ? `Grep(${pat})` : "Grep";
+	} else if (verb === "skill") {
+		const input = tc.rawInput as Record<string, unknown> | undefined;
+		const name = typeof input?.skill === "string" ? input.skill.slice(0, 40) : "";
+		return name ? `Skill(${name})` : "Skill";
 	} else if (verb === "todowrite") {
 		const todos = Array.isArray((tc.rawInput as any)?.todos) ? (tc.rawInput as any).todos : [];
 		const current = todos.find((t: any) => t.status === "in_progress") ?? todos.find((t: any) => t.status === "pending");
