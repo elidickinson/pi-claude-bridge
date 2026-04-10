@@ -214,8 +214,10 @@ function formatToolAction(tc: ToolCallState): string | undefined {
 		return pat ? `Glob(${pat})` : "Glob";
 	} else if (verb === "edit" || verb === "write" || verb === "writefile" || verb === "multiedit") {
 		return path ? `Edit(${shortPath(path)})` : "Edit";
+	} else if (verb === "bashoutput") {
+		return undefined; // redundant with preceding Bash call
 	} else if (verb === "bash" || verb === "terminal") {
-		return `ran ${path ?? "command"}`;
+		return path ? `Bash(${path})` : "Bash";
 	} else if (verb === "agent") {
 		const input = tc.rawInput as Record<string, unknown> | undefined;
 		return `Agent(${String(input?.description ?? "").slice(0, 40)})`;
@@ -227,32 +229,32 @@ function formatToolAction(tc: ToolCallState): string | undefined {
 		const input = tc.rawInput as Record<string, unknown> | undefined;
 		const name = typeof input?.skill === "string" ? input.skill.slice(0, 40) : "";
 		return name ? `Skill(${name})` : "Skill";
-	} else if (verb === "todowrite") {
+	} else if (verb === "todowrite" || verb === "taskcreate" || verb === "taskupdate") {
 		const todos = Array.isArray((tc.rawInput as any)?.todos) ? (tc.rawInput as any).todos : [];
 		const current = todos.find((t: any) => t.status === "in_progress") ?? todos.find((t: any) => t.status === "pending");
 		const label = current ? String(current.content ?? "").slice(0, 40) : "";
 		return label || undefined;
+	} else if (verb === "askclaude") {
+		// Recursive — don't show AskClaude in its own action summary
+		return undefined;
 	}
 	return tc.name;
 }
 
-const COLLAPSIBLE_VERBS = new Set(["read", "readfile", "grep", "glob", "find"]);
-
 function buildActionSummary(calls: Map<string, ToolCallState>): string {
 	const parts: string[] = [];
-	let prevCollapsible = false;
+	let prevVerb = "";
 	for (const [, tc] of calls) {
 		const action = formatToolAction(tc);
 		if (!action) continue;
 		const verb = tc.name.toLowerCase().split(/\s/)[0];
-		const collapsible = COLLAPSIBLE_VERBS.has(verb);
-		// Collapse consecutive collapsible tools — keep only the latest in a run
-		if (collapsible && prevCollapsible) {
+		// Collapse consecutive calls to the same tool — keep only the latest
+		if (verb === prevVerb) {
 			parts[parts.length - 1] = action;
 		} else {
 			parts.push(action);
 		}
-		prevCollapsible = collapsible;
+		prevVerb = verb;
 	}
 	return parts.join("; ");
 }
@@ -1597,7 +1599,7 @@ async function promptAndWait(
 					if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") {
 						debug(`askClaude: tool_use start: ${event.content_block.name}`);
 						toolCalls.set(event.content_block.id, {
-							name: event.content_block.name,
+							name: mapToolName(event.content_block.name),
 							status: "running",
 						});
 					}
@@ -1608,7 +1610,7 @@ async function promptAndWait(
 					for (const block of (message as any).message?.content ?? []) {
 						if (block.type === "tool_use") {
 							toolCalls.set(block.id, {
-								name: block.name,
+								name: mapToolName(block.name),
 								status: "complete",
 								rawInput: block.input,
 							});

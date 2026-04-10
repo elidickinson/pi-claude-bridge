@@ -13,3 +13,4 @@
 - Add `defaultBackground` and `defaultIsolated` config options for AskClaude
 - Remove skill path aliasing (`.pi/` → `.claude/` round-trip); pass through real paths instead
 - Rewrite skills block to reference MCP-bridged read tool (`mcp__custom-tools__read`)
+- **Fix: AskClaude action summary showed raw SDK tool names** — normalize `mcp__custom-tools__*` and SDK names at creation; hide redundant `BashOutput` and recursive `AskClaude`; collapse only consecutive same-tool calls
