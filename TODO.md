@@ -40,8 +40,11 @@
   save/restore or reentrant queries corrupt parent state. Consider encapsulating into a
   class instance keyed by session/query ID.
 
-- **Per-turn queries** (alternative to long-running query + reentrant delivery):
-  Core architecture validated — see [plan](docs/per-turn-queries-plan.md).
+- ~~**Per-turn queries**~~ — investigated and abandoned. The SDK has no supported
+  path to inject tool_results externally: resuming a session that ends in
+  `user(tool_result)` with a new prompt forces a fresh user turn instead of
+  letting the model respond to the tool result. MCP handler blocking is the
+  sanctioned mechanism. See `per-turn-queries` branch for the writeup.
 
 ## Testing Gaps
 
