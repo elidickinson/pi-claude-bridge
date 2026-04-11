@@ -9,20 +9,14 @@
 # prompt caching. This catches the off-by-one cursor bug where pi's post-return
 # assistant message append caused syncSharedSession to see 1 "missed" message.
 
-set -euo pipefail
+source "$(dirname "$0")/lib/bash-setup.sh"
+
 echo "=== cache-test.sh ==="
 
-# npm prepends node_modules/.bin to PATH, which shadows the system pi
-PATH=$(echo "$PATH" | tr ':' '\n' | grep -v node_modules | tr '\n' ':')
+setup_test_env "cache-test" ".ndjson"
 
-DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LOGDIR="$DIR/.test-output"
 LOGFILE="$LOGDIR/cache-test.ndjson"
-mkdir -p "$LOGDIR"
-export CLAUDE_BRIDGE_DEBUG=1
-export CLAUDE_BRIDGE_DEBUG_PATH="$LOGDIR/cache-test-debug.log"
 
-kill_descendants() { pkill -P $$ 2>/dev/null || true; sleep 1; }
 trap kill_descendants EXIT
 
 TMPFILE="$LOGDIR/cache-test-scratch.txt"

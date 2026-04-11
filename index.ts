@@ -1992,5 +1992,60 @@ export default function (pi: ExtensionAPI) {
 				}
 			},
 		});
+
+		if (enableBackground) {
+			const statusToolName = `${askClaudeToolName}Status`;
+			const abortToolName = `${askClaudeToolName}Abort`;
+
+			const describeTask = (t: BackgroundTask): string => {
+				const elapsed = Math.floor((Date.now() - t.startedAt) / 1000);
+				const preview = t.prompt.replace(/\s+/g, " ").slice(0, 80);
+				const summary = buildActionSummary(t.toolCalls) || "working...";
+				return `${t.id} [${t.status}] ${elapsed}s — ${summary}\n  prompt: ${preview}`;
+			};
+
+			pi.registerTool({
+				name: statusToolName,
+				label: `${askClaudeToolName} Status`,
+				description: `Check status of background ${askClaudeToolName} tasks. Omit id to list all known tasks (running and recently finished).`,
+				parameters: Type.Object({
+					id: Type.Optional(Type.String({ description: "Background task id (e.g. claude-bg-1). Omit to list all." })),
+				}),
+				renderCall(args, theme) {
+					const suffix = args.id ?? "(all)";
+					return new Text(theme.fg("mdLink", theme.bold(`${statusToolName} `)) + theme.fg("muted", suffix), 0, 0);
+				},
+				async execute(_id, params) {
+					if (params.id) {
+						const task = backgroundTasks.get(params.id);
+						if (!task) return { content: [{ type: "text" as const, text: `No background task with id ${params.id}` }], details: {} };
+						return { content: [{ type: "text" as const, text: describeTask(task) }], details: {} };
+					}
+					const all = [...backgroundTasks.values()];
+					if (!all.length) return { content: [{ type: "text" as const, text: "No background tasks." }], details: {} };
+					return { content: [{ type: "text" as const, text: all.map(describeTask).join("\n\n") }], details: {} };
+				},
+			});
+
+			pi.registerTool({
+				name: abortToolName,
+				label: `${askClaudeToolName} Abort`,
+				description: `Abort a running background ${askClaudeToolName} task by id. The final result (marked aborted) will still arrive as a follow-up message.`,
+				parameters: Type.Object({
+					id: Type.String({ description: "Background task id to abort (e.g. claude-bg-1)." }),
+				}),
+				renderCall(args, theme) {
+					return new Text(theme.fg("mdLink", theme.bold(`${abortToolName} `)) + theme.fg("muted", args.id ?? ""), 0, 0);
+				},
+				async execute(_id, params) {
+					const task = backgroundTasks.get(params.id);
+					if (!task) return { content: [{ type: "text" as const, text: `No background task with id ${params.id}` }], details: {} };
+					if (task.status !== "running") return { content: [{ type: "text" as const, text: `Task ${params.id} is already ${task.status}` }], details: {} };
+					debug(`askClaude bg ${params.id}: aborting via ${abortToolName}`);
+					task.abortController.abort();
+					return { content: [{ type: "text" as const, text: `Abort signal sent to ${params.id}. Result will arrive as a follow-up message.` }], details: {} };
+				},
+			});
+		}
 	}
 }

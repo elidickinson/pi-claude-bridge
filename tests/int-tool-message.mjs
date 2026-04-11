@@ -5,150 +5,35 @@
 
 import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { StringDecoder } from "node:string_decoder";
+import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
-const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const LOGDIR = `${DIR}/.test-output`;
-mkdirSync(LOGDIR, { recursive: true });
-const RPC_LOG = `${LOGDIR}/tool-message.log`;
-const DEBUG_LOG = `${LOGDIR}/tool-message-debug.log`;
 const TEST_TIMEOUT = 30_000;
 
-// Strip node_modules/.bin from PATH
-process.env.PATH = process.env.PATH
-	.split(":")
-	.filter((p) => !p.includes("node_modules"))
-	.join(":");
+const harness = createRpcHarness({
+	name: "tool-message",
+	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-4-5"],
+	defaultTimeout: TEST_TIMEOUT,
+});
 
 describe("tool-message integration", () => {
-	let pi, buffer, listeners, reqId, rpcLog;
-
-	// --- Pi RPC harness ---
-
-	function startPi() {
-		rpcLog = createWriteStream(RPC_LOG, { flags: "a" });
-		buffer = "";
-		listeners = [];
-		reqId = 0;
-
-		pi = spawn("pi", [
-			"--no-session", "-ne",
-			"-e", DIR,
-			"-e", `${DIR}/tests/slow-tool-extension.ts`,
-			"--model", "claude-bridge/claude-haiku-4-5",
-			"--mode", "rpc",
-		], {
-			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG },
-		});
-
-		pi.stderr.on("data", (d) => rpcLog.write(d));
-
-		const decoder = new StringDecoder("utf8");
-		pi.stdout.on("data", (chunk) => {
-			buffer += decoder.write(chunk);
-			while (true) {
-				const i = buffer.indexOf("\n");
-				if (i === -1) break;
-				const line = buffer.slice(0, i);
-				buffer = buffer.slice(i + 1);
-				try {
-					const msg = JSON.parse(line);
-					rpcLog.write(`< ${line}\n`);
-					for (const fn of listeners) fn(msg);
-				} catch {}
-			}
-		});
-	}
-
-	function stopPi() {
-		pi.kill();
-		return new Promise((r) => rpcLog.end(r));
-	}
-
-	function send(cmd) {
-		const id = `req_${++reqId}`;
-		const full = { ...cmd, id };
-		rpcLog.write(`> ${JSON.stringify(full)}\n`);
-		pi.stdin.write(JSON.stringify(full) + "\n");
-		return new Promise((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error(`Timeout: ${cmd.type}`)), TEST_TIMEOUT);
-			listeners.push(function handler(msg) {
-				if (msg.type === "response" && msg.id === id) {
-					clearTimeout(timer);
-					listeners.splice(listeners.indexOf(handler), 1);
-					if (msg.success) resolve(msg.data);
-					else reject(new Error(`${cmd.type}: ${msg.error}`));
-				}
-			});
-		});
-	}
-
-	function waitForEvent(type, timeout = TEST_TIMEOUT) {
-		return new Promise((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error(`Timeout waiting for ${type}`)), timeout);
-			listeners.push(function handler(msg) {
-				if (msg.type === type) {
-					clearTimeout(timer);
-					listeners.splice(listeners.indexOf(handler), 1);
-					resolve(msg);
-				}
-			});
-		});
-	}
-
-	function waitForMatch(predicate, description, timeout = TEST_TIMEOUT) {
-		return new Promise((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error(`Timeout waiting for ${description}`)), timeout);
-			listeners.push(function handler(msg) {
-				if (predicate(msg)) {
-					clearTimeout(timer);
-					listeners.splice(listeners.indexOf(handler), 1);
-					resolve(msg);
-				}
-			});
-		});
-	}
-
-	function collectText() {
-		let text = "";
-		const handler = (msg) => {
-			if (msg.type === "message_update") {
-				const ae = msg.assistantMessageEvent;
-				if (ae?.type === "text_delta") text += ae.delta;
-			}
-		};
-		listeners.push(handler);
-		return { stop() { listeners.splice(listeners.indexOf(handler), 1); return text; } };
-	}
-
-	async function promptAndWait(message, timeout = TEST_TIMEOUT) {
-		const collector = collectText();
-		await send({ type: "prompt", message });
-		await waitForEvent("agent_end", timeout);
-		return collector.stop();
-	}
+	const { start, stop, send, waitForEvent, waitForMatch, collectText, promptAndWait, DEBUG_LOG, RPC_LOG } = harness;
 
 	// --- Lifecycle ---
 
 	before(async () => {
-		startPi();
+		harness.start();
 		await new Promise((r) => setTimeout(r, 2000));
 	});
 
 	afterEach(async () => {
-		if (pi.exitCode !== null) {
-			startPi();
+		if (harness.pi().exitCode !== null) {
+			harness.start();
 			await new Promise((r) => setTimeout(r, 2000));
 		}
 	});
 
 	after(async () => {
-		await stopPi();
+		await harness.stop();
 		console.log(`  RPC log: ${RPC_LOG}`);
 		console.log(`  Debug log: ${DEBUG_LOG}`);
 	});

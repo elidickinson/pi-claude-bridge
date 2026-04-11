@@ -8,6 +8,23 @@ import assert from "node:assert/strict";
 // --- Extracted queue logic (mirrors index.ts pendingToolCalls/pendingResults) ---
 // ID-based: both maps are keyed by toolCallId.
 
+// Mirrors the core logic of extractAllToolResults from index.ts.
+// Skips toolResultToMcpContent (content conversion) and debug logging —
+// we're testing the backward walk and stop conditions, not content mapping.
+function extractAllToolResults(messages) {
+	const results = [];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg.role === "toolResult") {
+			results.unshift({ content: msg.content, isError: msg.isError, toolCallId: msg.toolCallId });
+		} else if (msg.role === "assistant") {
+			break;
+		}
+		// user messages: skip (steer/followUp injected mid-tool-execution)
+	}
+	return results;
+}
+
 function createBridge() {
 	const pendingHandlers = new Map(); // toolCallId → { resolve }
 	const pendingResults = new Map();  // toolCallId → { content, isError? }
@@ -219,23 +236,6 @@ describe("fresh query after drain", () => {
 // This fed stale results into the queue, causing result/tool_use mismatches.
 
 describe("extractAllToolResults boundaries", () => {
-	// Mirrors the core logic of extractAllToolResults from index.ts.
-	// Skips toolResultToMcpContent (content conversion) and debug logging —
-	// we're testing the backward walk and stop conditions, not content mapping.
-	// If the real function's walk logic changes, update this to match.
-	function extractAllToolResults(messages) {
-		const results = [];
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.role === "toolResult") {
-				results.unshift({ content: msg.content, isError: msg.isError, toolCallId: msg.toolCallId });
-			} else if (msg.role === "assistant") {
-				break;
-			}
-			// user messages: skip (steer/followUp injected mid-tool-execution)
-		}
-		return results;
-	}
 
 	it("single turn: collects all tool results after assistant", async () => {
 		const messages = [
@@ -290,18 +290,6 @@ describe("extractAllToolResults boundaries", () => {
 // between tool_use and toolResult, breaking the backward walk.
 
 describe("interleaved messages in tool result sequences", () => {
-	function extractAllToolResults(messages) {
-		const results = [];
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.role === "toolResult") {
-				results.unshift({ content: msg.content, isError: msg.isError, toolCallId: msg.toolCallId });
-			} else if (msg.role === "assistant") {
-				break;
-			}
-		}
-		return results;
-	}
 
 	// Helper: extract tool call IDs from the last assistant message (like turnToolCallIds)
 	function getToolCallIds(messages) {
@@ -468,18 +456,6 @@ describe("interleaved messages in tool result sequences", () => {
 // --- Edge cases ---
 
 describe("edge cases", () => {
-	function extractAllToolResults(messages) {
-		const results = [];
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.role === "toolResult") {
-				results.unshift({ content: msg.content, isError: msg.isError, toolCallId: msg.toolCallId });
-			} else if (msg.role === "assistant") {
-				break;
-			}
-		}
-		return results;
-	}
 
 	it("empty context returns empty", () => {
 		assert.equal(extractAllToolResults([]).length, 0);

@@ -11,21 +11,15 @@
 #   model: claude-haiku-4-5 (default), claude-sonnet-4-6, claude-opus-4-6
 #   turns: number of conversation turns (default: 10)
 
-set -euo pipefail
+source "$(dirname "$0")/lib/bash-setup.sh"
+
 echo "=== usage-test.sh ==="
 
-PATH=$(echo "$PATH" | tr ':' '\n' | grep -v node_modules | tr '\n' ':')
-
-DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LOGDIR="$DIR/.test-output"
-mkdir -p "$LOGDIR"
-export CLAUDE_BRIDGE_DEBUG=1
-export CLAUDE_BRIDGE_DEBUG_PATH="$LOGDIR/usage-test-debug.log"
+setup_test_env "usage-test" "none"
 
 MODEL="${1:-claude-haiku-4-5}"
 NUM_TURNS="${2:-10}"
 
-kill_descendants() { pkill -P $$ 2>/dev/null || true; sleep 1; }
 trap kill_descendants EXIT
 
 # --- OAuth token from keychain ---
@@ -199,7 +193,7 @@ LOGFILE_B="$LOGDIR/usage-test-direct.ndjson"
 echo ""
 echo "Running Claude Code direct conversation..."
 
-# Each turn is a separate `claude -p` invocation with --resume to maintain session.
+# Each turn is a separate \`claude -p\` invocation with --resume to maintain session.
 RESUME_ID=""
 TURN_B=0
 TOTAL_B_INPUT=0

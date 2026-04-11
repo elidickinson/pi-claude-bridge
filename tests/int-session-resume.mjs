@@ -13,146 +13,65 @@
 
 console.log("=== session-resume-test.mjs ===");
 
-import { spawn } from "node:child_process";
-import { createWriteStream, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { StringDecoder } from "node:string_decoder";
+import { createRpcHarness, requireEnv } from "./lib/rpc-harness.mjs";
 
-// Load .env.test if present (for standalone runs outside npm test)
-const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-try {
-  for (const line of readFileSync(`${DIR}/.env.test`, "utf8").split("\n")) {
-    const m = line.match(/^(\w+)=(.*)$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
-  }
-} catch {}
+const OTHER_PROVIDER = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER");
+const OTHER_MODEL = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_MODEL");
 
-if (!process.env.CLAUDE_BRIDGE_TESTING_ALT_PROVIDER || !process.env.CLAUDE_BRIDGE_TESTING_ALT_MODEL) {
-  console.error("ERROR: CLAUDE_BRIDGE_TESTING_ALT_PROVIDER and CLAUDE_BRIDGE_TESTING_ALT_MODEL must be set (e.g. minimax / MiniMax-M2.7-highspeed)");
-  process.exit(1);
-}
-
-const LOGDIR = `${DIR}/.test-output`;
-const LOGFILE = `${LOGDIR}/session-resume.log`;
-const DEBUG_LOG = `${LOGDIR}/session-resume-debug.log`;
 const TIMEOUT = 180_000;
-
 const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
-const OTHER_PROVIDER = process.env.CLAUDE_BRIDGE_TESTING_ALT_PROVIDER;
-const OTHER_MODEL = process.env.CLAUDE_BRIDGE_TESTING_ALT_MODEL;
 
 // Random words to avoid Claude memorizing test values across runs
 const WORD_A = `alpha${Math.random().toString(36).slice(2, 6)}`;
 const WORD_B = `beta${Math.random().toString(36).slice(2, 6)}`;
 const WORD_C = `gamma${Math.random().toString(36).slice(2, 6)}`;
 
-
-// Strip node_modules/.bin from PATH (shadows pi with vendored types package)
-process.env.PATH = process.env.PATH
-  .split(":")
-  .filter((p) => !p.includes("node_modules"))
-  .join(":");
-
-const log = createWriteStream(LOGFILE);
-
-// Spawn pi in RPC mode — start on non-provider model to test Case 2 (first provider turn with prior history)
-const pi = spawn("pi", [
-  "--no-session", "-ne",
-  "-e", DIR,
-  "--model", `${OTHER_PROVIDER}/${OTHER_MODEL}`,
-  "--mode", "rpc",
-], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG } });
-
-pi.stderr.on("data", (d) => log.write(d));
-
-// JSONL reader
-let buffer = "";
-const decoder = new StringDecoder("utf8");
-const listeners = [];
-
-pi.stdout.on("data", (chunk) => {
-  buffer += decoder.write(chunk);
-  while (true) {
-    const i = buffer.indexOf("\n");
-    if (i === -1) break;
-    const line = buffer.slice(0, i);
-    buffer = buffer.slice(i + 1);
-    try {
-      const msg = JSON.parse(line);
-      log.write(`< ${line}\n`);
-      for (const fn of listeners) fn(msg);
-    } catch {}
-  }
+// Use harness but with custom args - start on non-provider model
+const harness = createRpcHarness({
+	name: "session-resume",
+	args: ["--model", `${OTHER_PROVIDER}/${OTHER_MODEL}`],
+	defaultTimeout: TIMEOUT,
 });
 
-let reqId = 0;
-function send(cmd) {
-  const id = `req_${++reqId}`;
-  const full = { ...cmd, id };
-  log.write(`> ${JSON.stringify(full)}\n`);
-  pi.stdin.write(JSON.stringify(full) + "\n");
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout: ${cmd.type}`)), 30_000);
-    listeners.push(function handler(msg) {
-      if (msg.type === "response" && msg.id === id) {
-        clearTimeout(timer);
-        listeners.splice(listeners.indexOf(handler), 1);
-        if (msg.success) resolve(msg.data);
-        else reject(new Error(`${cmd.type}: ${msg.error}`));
-      }
-    });
-  });
-}
-
-function waitForIdle(timeout = TIMEOUT) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Timeout waiting for idle")), timeout);
-    listeners.push(function handler(msg) {
-      if (msg.type === "agent_end") {
-        clearTimeout(timer);
-        listeners.splice(listeners.indexOf(handler), 1);
-        // Extract last tool result text for assertion
-        const toolResults = msg.messages?.filter((m) => m.role === "toolResult") ?? [];
-        if (toolResults.length > 0) {
-          const last = toolResults[toolResults.length - 1];
-          lastToolResult = last.content?.map((c) => c.text ?? "").join("") ?? "";
-        }
-        resolve(msg);
-      }
-    });
-  });
-}
-
-function collectText() {
-  let text = "";
-  const handler = (msg) => {
-    if (msg.type === "message_update") {
-      const ae = msg.assistantMessageEvent;
-      if (ae?.type === "text_delta") text += ae.delta;
-    }
-  };
-  listeners.push(handler);
-  return { stop() { listeners.splice(listeners.indexOf(handler), 1); return text; } };
-}
+const { DIR, start, stop, send, addListener, collectText, DEBUG_LOG, RPC_LOG } = harness;
 
 let lastToolResult = null;
 
+// Custom waitForIdle that captures last tool result (harness doesn't do this)
+function waitForIdle(timeout = TIMEOUT) {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error("Timeout waiting for idle")), timeout);
+		const remove = addListener((msg) => {
+			if (msg.type === "agent_end") {
+				clearTimeout(timer);
+				remove();
+				// Extract last tool result text for assertion
+				const toolResults = msg.messages?.filter((m) => m.role === "toolResult") ?? [];
+				if (toolResults.length > 0) {
+					const last = toolResults[toolResults.length - 1];
+					lastToolResult = last.content?.map((c) => c.text ?? "").join("") ?? "";
+				}
+				resolve(msg);
+			}
+		});
+	});
+}
+
 async function promptAndWait(message) {
-  const collector = collectText();
-  await send({ type: "prompt", message });
-  await waitForIdle();
-  return collector.stop();
+	const collector = collectText();
+	await send({ type: "prompt", message });
+	await waitForIdle();
+	return collector.stop();
 }
 
 function finish(code, msg) {
-  console.log(msg);
-  if (code !== 0) console.log(`  Log: ${LOGFILE}`);
-  pi.kill();
-  log.end(() => process.exit(code));
+	console.log(msg);
+	if (code !== 0) console.log(`  Log: ${RPC_LOG}`);
+	stop().then(() => process.exit(code));
 }
 
-// Give pi a moment to initialize
+// Start pi
+harness.start();
 await new Promise((r) => setTimeout(r, 2000));
 
 try {
@@ -166,6 +85,7 @@ try {
   const [bridgeProvider, bridgeModelId] = BRIDGE_MODEL.split("/");
   console.log(`Switching to ${BRIDGE_MODEL}...`);
   await send({ type: "set_model", provider: bridgeProvider, modelId: bridgeModelId });
+
 
   // Turn 2: First provider turn — should see WORD_A from prior non-provider history
   console.log("Turn 2: First provider turn with prior history (Case 2)...");
@@ -191,6 +111,7 @@ try {
   console.log(`Switching back to ${BRIDGE_MODEL}...`);
   await send({ type: "set_model", provider: bridgeProvider, modelId: bridgeModelId });
 
+
   // Turn 4: Provider resumes with missed messages (Case 4)
   console.log("Turn 4: Provider resume with missed messages (Case 4)...");
   const text4 = await promptAndWait(
@@ -211,6 +132,7 @@ try {
   await send({ type: "abort" });
   await idle5;
 
+
   // Turn 6: Provider turn after abort — should NOT get "conversation not found"
   console.log("Turn 6: Provider turn after abort (should recover)...");
   const text6 = await promptAndWait(
@@ -225,6 +147,7 @@ try {
   // Turn 7: AskClaude shared mode — should see WORD_C which was only told to the non-provider model
   console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
   await send({ type: "set_model", provider: OTHER_PROVIDER, modelId: OTHER_MODEL });
+
 
   console.log("Turn 7: AskClaude shared mode (should see non-provider context)...");
   const text7 = await promptAndWait(
@@ -246,3 +169,4 @@ try {
 } catch (e) {
   finish(1, `FAIL: ${e.message}`);
 }
+

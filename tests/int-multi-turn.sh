@@ -3,29 +3,19 @@
 # Verifies tool use and multi-turn context via --mode json output.
 # Requires: pi CLI, Claude Code (for Agent SDK subprocess), jq.
 
-set -euo pipefail
+source "$(dirname "$0")/lib/bash-setup.sh"
+
 echo "=== multi-turn-test.sh ==="
 
-command -v jq >/dev/null 2>&1 || { echo "jq is required but not installed"; exit 1; }
+require_command jq
 
-# npm prepends node_modules/.bin to PATH, which shadows the system pi
-# with the vendored pi-coding-agent (used only for types). Strip it.
-PATH=$(echo "$PATH" | tr ':' '\n' | grep -v node_modules | tr '\n' ':')
+setup_test_env "multi-turn" ".ndjson"
 
 TIMEOUT=180
 PASS=0
 FAIL=0
-DIR="$(cd "$(dirname "$0")/.." && pwd)"
 EXPECTED_VERSION=$(jq -r .version "$DIR/package.json")
-LOGDIR="$DIR/.test-output"
-mkdir -p "$LOGDIR"
-export CLAUDE_BRIDGE_DEBUG=1
-export CLAUDE_BRIDGE_DEBUG_PATH="$LOGDIR/multi-turn-debug.log"
 
-kill_descendants() {
-  pkill -P $$ 2>/dev/null || true
-  sleep 1
-}
 trap kill_descendants EXIT
 
 run_json() {

@@ -3,35 +3,18 @@
 # Requires: pi CLI, Claude Code (for Agent SDK subprocess).
 # Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "MiniMax-M2.7-highspeed")
 
-set -euo pipefail
+source "$(dirname "$0")/lib/bash-setup.sh"
+
 echo "=== smoke-test.sh ==="
 
-DIR="$(cd "$(dirname "$0")/.." && pwd)"
-[ -f "$DIR/.env.test" ] && set -a && . "$DIR/.env.test" && set +a
+setup_test_env "smoke-test"
 
-if [ -z "${CLAUDE_BRIDGE_TESTING_ALT_MODEL:-}" ]; then
-  echo "ERROR: CLAUDE_BRIDGE_TESTING_ALT_MODEL not set (e.g. MiniMax-M2.7-highspeed)"
-  exit 1
-fi
-ALT_MODEL="$CLAUDE_BRIDGE_TESTING_ALT_MODEL"
-
-# npm prepends node_modules/.bin to PATH, which shadows the system pi
-# with the vendored pi-coding-agent (used only for types). Strip it.
-PATH=$(echo "$PATH" | tr ':' '\n' | grep -v node_modules | tr '\n' ':')
+ALT_MODEL=$(require_env CLAUDE_BRIDGE_TESTING_ALT_MODEL)
 
 TIMEOUT=60
 PASS=0
 FAIL=0
-LOGDIR="$DIR/.test-output"
-mkdir -p "$LOGDIR"
-export CLAUDE_BRIDGE_DEBUG=1
-export CLAUDE_BRIDGE_DEBUG_PATH="$LOGDIR/smoke-test-debug.log"
 
-# Kill child processes spawned by pi (Agent SDK, node, etc.) that outlive the test.
-kill_descendants() {
-  pkill -P $$ 2>/dev/null || true
-  sleep 1
-}
 trap kill_descendants EXIT
 
 run() {
