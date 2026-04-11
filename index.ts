@@ -8,7 +8,7 @@ import { pascalCase } from "change-case";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { createSession } from "cc-session-io";
-import { appendFileSync, existsSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 
@@ -32,7 +32,12 @@ const moduleInstanceId = Math.random().toString(36).slice(2, 8);
 function debug(...args: unknown[]) {
 	if (!DEBUG) return;
 	const ts = new Date().toISOString();
-	const msg = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+	const fmt = (a: unknown): string => {
+		if (typeof a === "string") return a;
+		if (a instanceof Error) return `${a.name}: ${a.message}${a.stack ? "\n" + a.stack : ""}`;
+		return JSON.stringify(a);
+	};
+	const msg = args.map(fmt).join(" ");
 	appendFileSync(DEBUG_LOG_PATH, `[${ts}] [${moduleInstanceId}] ${msg}\n`);
 }
 
@@ -568,6 +573,26 @@ interface SyncResult {
  * Ensure the shared session has all messages up to (but not including) the last user message.
  * Returns session ID to resume from, or null if no resume needed.
  */
+// Diagnostic snapshot of where a session file was just written. Catches the
+// class of bugs where pi writes to ~/.claude/projects/<X> but CC SDK reads
+// from ~/.claude/projects/<Y> (symlinks, CLAUDE_CONFIG_DIR, hash mismatch).
+function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void {
+	let realCwd: string | null = null;
+	try { realCwd = realpathSync(cwd); } catch (e) { realCwd = `<realpath failed: ${(e as Error).message}>`; }
+	let fileSize: number | null = null;
+	let fileExists = false;
+	try {
+		const st = statSync(jsonlPath);
+		fileExists = true;
+		fileSize = st.size;
+	} catch { /* file may not exist yet */ }
+	debug(`${label}: cwd=${cwd}`);
+	if (realCwd !== cwd) debug(`${label}: realpath(cwd)=${realCwd} ${realCwd === cwd ? "" : "(DIFFERS — symlink-resolved path is what CC SDK uses)"}`);
+	debug(`${label}: jsonlPath=${jsonlPath}`);
+	debug(`${label}: fileExists=${fileExists}${fileSize != null ? ` size=${fileSize}` : ""}`);
+	debug(`${label}: env.CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? "(unset)"} HOME=${process.env.HOME ?? "(unset)"}`);
+}
+
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
@@ -581,11 +606,12 @@ function syncSharedSession(
 			debug(`Case 1: clean start, ${messages.length} total messages`);
 			return { sessionId: null };
 		}
-		const session = createSession({ projectPath: cwd, ...(modelId ? { model: modelId } : {}) });
+		const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, ...(modelId ? { model: modelId } : {}) });
 		convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 		session.save();
 		sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
+		debugSessionPaths(`Case 2 ${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
 		return { sessionId: session.sessionId };
 	}
 
@@ -606,12 +632,13 @@ function syncSharedSession(
 
 	// Case 4: create fresh session with ALL prior messages (injecting into existing session
 	// creates a branch that Claude Code doesn't follow on resume)
-	const session = createSession({ projectPath: cwd, ...(modelId ? { model: modelId } : {}) });
+	const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, ...(modelId ? { model: modelId } : {}) });
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 	session.save();
 	const oldSessionId = sharedSession.sessionId;
 	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
 	debug(`Case 4: ${missed.length} missed messages, ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${oldSessionId.slice(0, 8)}), ${session.messages.length} records`);
+	debugSessionPaths(`Case 4 ${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
 	return { sessionId: session.sessionId };
 }
 
