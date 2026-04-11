@@ -619,6 +619,19 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	debug(`${label}: env.CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? "(unset)"} HOME=${process.env.HOME ?? "(unset)"}`);
 }
 
+// Two semantic paths:
+//   REUSE — pi's history is in sync with the existing sharedSession (or drifted
+//     only by the trailing final-assistant message that pi appends after
+//     streamSimple returns, which CC's own persisted session already has).
+//     Returns the existing sessionId. Keeps CC's prompt cache warm.
+//   REBUILD — no session yet, or pi's history has diverged (non-trailing
+//     missed messages, e.g. another provider took a turn). Creates a fresh
+//     session file containing all prior messages and resumes that.
+//     Injecting into an existing session was tried before and CC treats the
+//     graft as a branch that --resume doesn't follow, so a full rebuild is
+//     the simplest correct approach.
+// Log strings still say "Case 1/2/3/4" so existing diagnostics (cache-test.sh,
+// session-resume-test) keep grepping the same anchors.
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
@@ -627,44 +640,38 @@ function syncSharedSession(
 ): SyncResult {
 	const priorMessages = messages.slice(0, -1); // everything before the new user prompt
 
-	if (!sharedSession) {
-		if (priorMessages.length === 0) {
-			debug(`Case 1: clean start, ${messages.length} total messages`);
-			return { sessionId: null };
+	// REUSE path
+	if (sharedSession) {
+		const missed = priorMessages.slice(sharedSession.cursor);
+		const trailingAssistantOnly =
+			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
+		if (missed.length === 0 || trailingAssistantOnly) {
+			if (trailingAssistantOnly) {
+				sharedSession = { ...sharedSession, cursor: priorMessages.length, cwd };
+			}
+			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
+			return { sessionId: sharedSession.sessionId };
 		}
-		const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, ...(modelId ? { model: modelId } : {}) });
-		convertAndImportMessages(session, priorMessages, customToolNameToSdk);
-		session.save();
-		sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
-		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
-		debugSessionPaths(`Case 2 ${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
-		return { sessionId: session.sessionId };
 	}
 
-	const missed = priorMessages.slice(sharedSession.cursor);
-	// Case 3: no missed messages, OR just the trailing final-assistant from the previous turn.
-	// pi appends the final assistant message after streamSimple returns, so our cursor is always
-	// 1 behind by exactly that one message. It's already in CC's own session JSONL (the SDK
-	// persisted it when the query ended), so a plain resume is safe — no need to rebuild.
-	const isTrailingAssistantOnly =
-		missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
-	if (missed.length === 0 || isTrailingAssistantOnly) {
-		if (isTrailingAssistantOnly) {
-			sharedSession = { ...sharedSession, cursor: priorMessages.length, cwd };
-		}
-		debug(`Case 3: ${isTrailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
-		return { sessionId: sharedSession.sessionId };
+	// REBUILD path
+	if (priorMessages.length === 0) {
+		debug(`Case 1: clean start, ${messages.length} total messages`);
+		return { sessionId: null };
 	}
-
-	// Case 4: create fresh session with ALL prior messages (injecting into existing session
-	// creates a branch that Claude Code doesn't follow on resume)
 	const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, ...(modelId ? { model: modelId } : {}) });
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 	session.save();
-	const oldSessionId = sharedSession.sessionId;
+	const previousSessionId = sharedSession?.sessionId;
+	const previousCursor = sharedSession?.cursor ?? 0;
 	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
-	debug(`Case 4: ${missed.length} missed messages, ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${oldSessionId.slice(0, 8)}), ${session.messages.length} records`);
-	debugSessionPaths(`Case 4 ${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
+	if (previousSessionId === undefined) {
+		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
+	} else {
+		const missedCount = priorMessages.length - previousCursor;
+		debug(`Case 4: ${missedCount} missed messages, ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId.slice(0, 8)}), ${session.messages.length} records`);
+	}
+	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
 	return { sessionId: session.sessionId };
 }
 
