@@ -34,26 +34,6 @@
 
 ## Architecture Issues (high priority)
 
-- **Module-level mutable state**: 15+ `let` variables coordinate the SDK
-  streaming generator and pi's tool-result callbacks. A `queryStateStack`
-  save/restore pattern protects reentrant queries, but every new variable
-  must be manually added to 6 sites (declaration, interface, push, pop,
-  reset, and possibly `resetTurnState`). Missing one corrupts reentrant
-  queries — `latestCursor` was the latest example (issue #4). Two known
-  gaps remain:
-  - `deferredUserMessages` is NOT saved/restored — a subagent could
-    consume the parent's deferred steers.
-  - Per-turn state (`turnOutput`, `turnBlocks`, `turnStarted`,
-    `turnSawStreamEvent`, `turnSawToolCall`) is NOT saved/restored —
-    clobbered by `resetTurnState` during reentrant queries. Currently
-    appears to work because the parent re-populates from the next
-    generator message, but this is fragile.
-
-  Fix: encapsulate into a `QueryContext` class. Each fresh query creates
-  an instance; reentrant queries push/pop instances on a stack. No manual
-  save/restore bookkeeping. See the comment block above the declarations
-  in `index.ts` for the full inventory and update checklist.
-
 - ~~**Per-turn queries**~~ — investigated and abandoned. The SDK has no supported
   path to inject tool_results externally: resuming a session that ends in
   `user(tool_result)` with a new prompt forces a fresh user turn instead of
