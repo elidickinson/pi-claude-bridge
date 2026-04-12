@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- **Repair orphan tool_use/tool_result pairs before import** — `convertAndImportMessages` now runs a pairing-repair pass that strips leading orphan `tool_result` blocks, injects synthetic `tool_result`s for assistant `tool_use`s missing a response, and drops mid-conversation orphans. Prevents API 400s when history starts mid-turn (provider switches, Case-4 session sync).
+- **Fix: session resume on symlinked paths / CLAUDE_CONFIG_DIR** — cc-session-io now resolves symlinks (realpathSync + NFC) and honors `CLAUDE_CONFIG_DIR`, matching how Claude Code resolves session paths. Fixes "No conversation found" on macOS symlinked dirs. Bump cc-session-io → 0.2.0.
+- **Session rebuild preserves sessionId** — provider switches no longer churn UUIDs. Warns in the TUI with diagnostic context if the written session file looks wrong.
+- **CC CLI debug capture** — `CLAUDE_BRIDGE_DEBUG=1` now also writes Claude Code's own debug stream to `~/.pi/agent/cc-cli-logs/`, one file per query.
+- **Fix: debug() logged Error objects as `{}`** — now formats with message and stack.
+- **Repair orphan tool_use/tool_result pairs before import** — prevents potential API 400s when history starts mid-turn after a provider switch.
 
 ## 0.1.6 — 2026-04-10
 
