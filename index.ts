@@ -96,10 +96,10 @@ const PROVIDER_ID = "claude-bridge";
 const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
 
 const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
-	read: "read", write: "write", edit: "edit", bash: "bash", grep: "grep", glob: "glob",
+	read: "read", write: "write", edit: "edit", bash: "bash", grep: "grep", glob: "find",
 };
 const PI_TO_SDK_TOOL_NAME: Record<string, string> = {
-	read: "Read", write: "Write", edit: "Edit", bash: "Bash", grep: "Grep", glob: "Glob",
+	read: "Read", write: "Write", edit: "Edit", bash: "Bash", grep: "Grep", find: "Glob", glob: "Glob",
 };
 const MCP_SERVER_NAME = "custom-tools";
 const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
