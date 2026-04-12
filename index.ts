@@ -657,8 +657,7 @@ function safeRealpath(p: string): string {
 // class of bugs where pi writes to ~/.claude/projects/<X> but CC SDK reads
 // from ~/.claude/projects/<Y> (symlinks, CLAUDE_CONFIG_DIR, hash mismatch).
 function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void {
-	let realCwd: string | null = null;
-	try { realCwd = realpathSync(cwd); } catch (e) { realCwd = `<realpath failed: ${(e as Error).message}>`; }
+	const realCwd = safeRealpath(cwd);
 	let fileSize: number | null = null;
 	let fileExists = false;
 	try {
