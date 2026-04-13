@@ -4,13 +4,13 @@ import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionUIContex
 import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { z } from "zod";
-import { pascalCase } from "change-case";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
-import { createSession, deleteSession } from "cc-session-io";
+import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -77,8 +77,6 @@ function diagDump(label: string, data: Record<string, unknown>) {
 
 // --- Constants ---
 
-const PROVIDER_ID = "claude-bridge";
-
 // Global key to prevent re-registration of the provider across module reloads.
 //
 // Extensions like pi-subagents spawn a subagent and it loads this module
@@ -98,9 +96,6 @@ const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
 const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
 };
-const PI_TO_SDK_TOOL_NAME: Record<string, string> = {
-	read: "Read", write: "Write", edit: "Edit", bash: "Bash",
-};
 const MCP_SERVER_NAME = "custom-tools";
 const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
@@ -114,8 +109,12 @@ const DISALLOWED_BUILTIN_TOOLS = [
 	"AskUserQuestion", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
 ];
 
+// Strip baseUrl/api/provider/headers — pi's registerProvider supplies its own.
 const MODELS = getModels("anthropic")
-	.filter((model) => ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"].includes(model.id));
+	.filter((model) => ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"].includes(model.id))
+	.map(({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
+		id, name, reasoning, input, cost, contextWindow, maxTokens,
+	}));
 
 function resolveModelId(input: string): string {
 	const lower = input.toLowerCase();
@@ -183,21 +182,6 @@ function errorMessage(err: unknown): string {
 // --- Text extraction ---
 
 // Text-only extraction — callers: extractUserPrompt, convertAndImportMessages (tool results).
-function messageContentToText(
-	content: string | Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
-): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	let hasText = false;
-	for (const block of content) {
-		if (block.type === "text" && block.text) { parts.push(block.text); hasText = true; }
-		else if (block.type === "image") { debug("messageContentToText: dropping image (text-only path)"); }
-		else { debug("messageContentToText: unhandled block type", block.type); parts.push(`[${block.type}]`); }
-	}
-	return hasText ? parts.join("\n") : "";
-}
-
 // --- AskClaude helpers ---
 
 interface ToolCallState {
@@ -336,68 +320,8 @@ function convertAndImportMessages(
 	const limit = configuredMaxHistoryMessages;
 	const capped = limit && messages.length > limit ? messages.slice(-limit) : messages;
 	if (limit && messages.length > limit) debug(`convertAndImportMessages: capped ${messages.length} → ${limit} messages`);
-	const anthropicMessages: Array<{ role: string; content: unknown }> = [];
-	// Anthropic requires tool IDs matching ^[a-zA-Z0-9_-]+$ — sanitize IDs from other providers
-	const sanitizedIds = new Map<string, string>();
-	const sanitizeToolId = (id: string): string => {
-		const existing = sanitizedIds.get(id);
-		if (existing) return existing;
-		const clean = id.replace(/[^a-zA-Z0-9_-]/g, "_");
-		sanitizedIds.set(id, clean);
-		return clean;
-	};
 
-	for (const msg of capped) {
-		if (msg.role === "user") {
-			if (typeof msg.content === "string") {
-				anthropicMessages.push({ role: "user", content: msg.content || "[empty]" });
-			} else if (Array.isArray(msg.content)) {
-				const parts: unknown[] = [];
-				for (const block of msg.content) {
-					if (block.type === "text" && block.text) parts.push({ type: "text", text: block.text });
-					else if (block.type === "image" && block.data && block.mimeType) {
-						parts.push({ type: "image", source: { type: "base64", media_type: block.mimeType, data: block.data } });
-					} else if (block.type !== "text" && block.type !== "image") {
-						debug("convertAndImportMessages: dropping user block type", (block as any).type);
-					}
-				}
-				anthropicMessages.push({ role: "user", content: parts.length ? parts : "[image]" });
-			} else {
-				anthropicMessages.push({ role: "user", content: "[empty]" });
-			}
-		} else if (msg.role === "assistant") {
-			const content = Array.isArray(msg.content) ? msg.content : [];
-			const blocks: unknown[] = [];
-			for (const block of content) {
-				if (block.type === "text" && block.text) {
-					blocks.push({ type: "text", text: block.text });
-				} else if (block.type === "thinking") {
-					const sig = (block as any).thinkingSignature;
-					const isAnthropicProvider = (msg as any).provider === PROVIDER_ID
-						|| (msg as any).api === "anthropic";
-					if (isAnthropicProvider && sig) {
-						blocks.push({ type: "thinking", thinking: block.thinking ?? "", signature: sig });
-					} else {
-						debug("convertAndImportMessages: dropping thinking block — provider:", (msg as any).provider, "api:", (msg as any).api, "hasSig:", Boolean(sig));
-					}
-				} else if (block.type === "toolCall") {
-					const toolName = mapPiToolNameToSdk(block.name, customToolNameToSdk);
-					blocks.push({ type: "tool_use", id: sanitizeToolId(block.id), name: toolName, input: block.arguments ?? {} });
-				} else {
-					debug("convertAndImportMessages: dropping assistant block type", (block as any).type);
-				}
-			}
-			// Never drop an assistant message entirely — that would break turn-taking
-			if (!blocks.length) blocks.push({ type: "text", text: "[non-Anthropic content omitted]" });
-			anthropicMessages.push({ role: "assistant", content: blocks });
-		} else if (msg.role === "toolResult") {
-			const text = typeof msg.content === "string" ? msg.content : messageContentToText(msg.content);
-			anthropicMessages.push({
-				role: "user",
-				content: [{ type: "tool_result", tool_use_id: sanitizeToolId(msg.toolCallId), content: text || "", is_error: msg.isError }],
-			});
-		}
-	}
+	const { anthropicMessages, sanitizedIds } = convertPiMessages(capped as any, customToolNameToSdk);
 
 	debug(`convertAndImportMessages: ${capped.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
 	debug(`convertAndImportMessages: imported roles:`, anthropicMessages.map((m, i) => {
@@ -410,89 +334,12 @@ function convertAndImportMessages(
 		debug(`convertAndImportMessages: sanitized ${sanitizedIds.size} tool IDs:`,
 			[...sanitizedIds.entries()].map(([orig, clean]) => orig === clean ? orig : `${orig}→${clean}`).join(", "));
 	}
-	const repaired = repairToolPairing(anthropicMessages);
+	// Pre-repair for debug logging; importMessages also repairs internally (idempotent).
+	const repaired = repairToolPairing(anthropicMessages as any);
 	if (repaired.length !== anthropicMessages.length) {
 		debug(`convertAndImportMessages: repairToolPairing ${anthropicMessages.length} → ${repaired.length} msgs`);
 	}
 	if (repaired.length) session.importMessages(repaired as any);
-}
-
-// Repairs orphaned tool_use/tool_result pairs before handing history to
-// cc-session-io. Handles (1) leading tool_result with no preceding assistant
-// (history starts mid-turn, e.g. after a provider switch or Case-4 sync), and
-// (2) assistant tool_use with no matching tool_result in the following user message.
-function repairToolPairing(
-	messages: Array<{ role: string; content: unknown }>,
-): Array<{ role: string; content: unknown }> {
-	const result: Array<{ role: string; content: unknown }> = [];
-	let pending: Set<string> | null = null; // tool_use ids from preceding assistant
-
-	const synthetic = (id: string) => ({
-		type: "tool_result",
-		tool_use_id: id,
-		content: "[no tool result recorded]",
-		is_error: true,
-	});
-	const flushPending = () => {
-		if (pending && pending.size > 0) {
-			result.push({ role: "user", content: [...pending].map(synthetic) });
-		}
-		pending = null;
-	};
-
-	for (const msg of messages) {
-		if (msg.role === "assistant") {
-			flushPending();
-			const ids = new Set<string>();
-			if (Array.isArray(msg.content)) {
-				for (const b of msg.content as any[]) {
-					if (b?.type === "tool_use" && typeof b.id === "string") ids.add(b.id);
-				}
-			}
-			result.push(msg);
-			pending = ids.size > 0 ? ids : null;
-			continue;
-		}
-
-		// user message
-		const blocks = Array.isArray(msg.content) ? (msg.content as any[]) : null;
-		const hasToolResults = blocks?.some((b) => b?.type === "tool_result") ?? false;
-
-		// Fast path: nothing to repair — preserve original shape
-		if (!pending && !hasToolResults) {
-			result.push(msg);
-			continue;
-		}
-
-		const input = blocks
-			?? (typeof msg.content === "string" && msg.content ? [{ type: "text", text: msg.content }] : []);
-		const provided = new Set<string>();
-		const kept = input.filter((b) => {
-			if (b?.type !== "tool_result") return true;
-			if (pending?.has(b.tool_use_id)) {
-				provided.add(b.tool_use_id);
-				return true;
-			}
-			return false; // orphan: drop
-		});
-		if (pending) {
-			const missing = [...pending].filter((id) => !provided.has(id)).map(synthetic);
-			kept.unshift(...missing);
-			pending = null;
-		}
-		if (kept.length === 0) {
-			// Only insert a placeholder if this would otherwise leave the payload
-			// with no leading user message (API rejects payloads not starting with user).
-			if (result.length === 0) {
-				result.push({ role: "user", content: [{ type: "text", text: "[orphaned tool result removed]" }] });
-			}
-			continue;
-		}
-		result.push({ ...msg, content: kept });
-	}
-
-	flushPending();
-	return result;
 }
 
 type McpContent = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
@@ -776,17 +623,6 @@ function extractSkillsBlock(systemPrompt?: string): string | undefined {
 }
 
 // --- Provider helpers: tool name mapping ---
-
-function mapPiToolNameToSdk(name?: string, customToolNameToSdk?: Map<string, string>): string {
-	if (!name) return "";
-	const normalized = name.toLowerCase();
-	if (customToolNameToSdk) {
-		const mapped = customToolNameToSdk.get(name) ?? customToolNameToSdk.get(normalized);
-		if (mapped) return mapped;
-	}
-	if (PI_TO_SDK_TOOL_NAME[normalized]) return PI_TO_SDK_TOOL_NAME[normalized];
-	return pascalCase(name);
-}
 
 function mapToolName(name: string, customToolNameToPi?: Map<string, string>): string {
 	const normalized = name.toLowerCase();
