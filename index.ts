@@ -704,6 +704,22 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 //
 // Log strings still say "Case 1/2/3/4" so existing diagnostics (int-cache.sh,
 // int-session-resume.mjs) keep grepping the same anchors.
+
+// Replicates Claude Code's internal OP() path-to-directory-name algorithm so
+// that session files are written to the same directory CC looks in.
+// cc-session-io's projectPathToHash() only replaces '/' characters, which
+// diverges for paths containing dots, underscores, or other non-alphanumeric
+// characters (e.g. ~/.pi → cc-session-io writes "-Users-alice-.pi" but CC
+// looks in "-Users-alice--pi").
+function cwdToProjectPath(cwd: string): string {
+	const MAX_LEN = 200;
+	const hashed = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+	if (hashed.length <= MAX_LEN) return hashed;
+	let h = 0;
+	for (let i = 0; i < cwd.length; i++) h = ((h << 5) - h + cwd.charCodeAt(i)) | 0;
+	return `${hashed.slice(0, MAX_LEN)}-${Math.abs(h).toString(36)}`;
+}
+
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
@@ -748,7 +764,7 @@ function syncSharedSession(
 		deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
 	}
 	const session = createSession({
-		projectPath: cwd,
+		projectPath: cwdToProjectPath(cwd),
 		claudeDir: process.env.CLAUDE_CONFIG_DIR,
 		...(preserveId ? { sessionId: previousSessionId } : {}),
 		...(modelId ? { model: modelId } : {}),
