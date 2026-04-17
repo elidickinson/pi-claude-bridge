@@ -119,9 +119,26 @@ const DISALLOWED_BUILTIN_TOOLS = [
 	"AskUserQuestion", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
 ];
 
+// Canonical selection + display order for the model picker.
+// `resolveModelId` returns the first partial match, so `opus` resolves to the first-listed opus entry.
+const MODEL_IDS_IN_ORDER = ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
+
+// Fallback definitions for models not yet registered in pi-ai.
+// Once pi-ai ships an update with the model, its definition takes precedence automatically.
+const FALLBACK_MODEL_DEFS = [
+	{
+		id: "claude-opus-4-7", name: "Claude Opus 4.7",
+		reasoning: true, input: ["text", "image"] as ("text" | "image")[],
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000, maxTokens: 128000,
+	},
+];
+
 // Strip baseUrl/api/provider/headers — pi's registerProvider supplies its own.
-const MODELS = getModels("anthropic")
-	.filter((model) => ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"].includes(model.id))
+const _piAiModels = getModels("anthropic");
+const MODELS = MODEL_IDS_IN_ORDER
+	.map((id) => _piAiModels.find((m) => m.id === id) ?? FALLBACK_MODEL_DEFS.find((m) => m.id === id))
+	.filter((m): m is NonNullable<typeof m> => m != null)
 	.map(({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
 		id, name, reasoning, input, cost, contextWindow, maxTokens,
 	}));
