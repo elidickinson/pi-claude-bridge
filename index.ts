@@ -1241,10 +1241,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		: providerSettings.settingSources ?? ["user", "project"];
 	const strictMcpConfigEnabled = !appendSystemPrompt && providerSettings.strictMcpConfig !== false;
 
+	const effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;
+
 	const extraArgs: Record<string, string | null> = { model: model.id };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
-
-	const effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;
+	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
+	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
+	if (effort) extraArgs["thinking-display"] = "summarized";
 
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
@@ -1456,6 +1459,7 @@ async function promptAndWait(
 		"strict-mcp-config": null,
 		model: modelId,
 	};
+	if (effort) extraArgs["thinking-display"] = "summarized";
 
 	debug("askClaude:",
 		`mode=${mode} model=${modelId} effort=${effort ?? "default"}`,
