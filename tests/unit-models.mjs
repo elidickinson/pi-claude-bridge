@@ -28,6 +28,13 @@ describe("MODELS projection", () => {
 		}
 	});
 
+	it("zeroes per-token cost (bridge uses Claude Code subscription)", () => {
+		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+		for (const m of models) {
+			assert.deepEqual(m.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		}
+	});
+
 	it("preserves MODEL_IDS_IN_ORDER ordering", () => {
 		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
 		assert.deepEqual(models.map((m) => m.id), MODEL_IDS_IN_ORDER);

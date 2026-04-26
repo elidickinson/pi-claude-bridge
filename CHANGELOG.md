@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fix: per-token cost shown for bridge models (issue #9)** — `buildModels` was passing through pi-ai's anthropic cost values, so the footer reported per-token cost even though the bridge runs on the Claude Code subscription. Now zeroes `cost` for all bridge-registered models.
 - **Internal: move sources into `src/`** — `index.ts` and the 6 extracted modules now live under `src/`; screenshots under `assets/`. `pi.extensions` and published `files` updated accordingly.
 - **Internal: extract 5 more pure modules from `index.ts`** — `config`, `provider-settings`, `agents-md`, `typebox-to-zod`, `askclaude-ui`. `index.ts` down from 1758 to 1507 lines.
 
