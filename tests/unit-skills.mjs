@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractSkillsBlock } from "../skills.js";
+import { extractSkillsBlock } from "../src/skills.js";
 
 // Realistic pi system prompt with skills block
 const SYSTEM_PROMPT = `You are a coding assistant.

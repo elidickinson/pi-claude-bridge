@@ -3,7 +3,6 @@ import * as piAi from "@mariozechner/pi-ai";
 import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionUIContext } from "@mariozechner/pi-coding-agent";
 import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
-import { z } from "zod";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
@@ -16,6 +15,11 @@ import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.j
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx, stackDepth, pushContext, popContext } from "./query-state.js";
+import { loadConfig } from "./config.js";
+import { loadProviderSettings } from "./provider-settings.js";
+import { extractAgentsAppend } from "./agents-md.js";
+import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
+import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -129,50 +133,6 @@ function resolveModelId(input: string): string {
 	return _resolveModelId(MODELS, input);
 }
 
-// --- Skills/settings paths ---
-
-const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
-const PROJECT_SETTINGS_PATH = join(process.cwd(), ".pi", "settings.json");
-const GLOBAL_AGENTS_PATH = join(homedir(), ".pi", "agent", "AGENTS.md");
-
-// --- Config ---
-
-interface Config {
-	/** @deprecated Unsafe: can slice mid-tool-sequence causing orphaned tool_result without matching tool_use */
-	maxHistoryMessages?: number;
-	askClaude?: {
-		enabled?: boolean;
-		name?: string;
-		label?: string;
-		description?: string;
-		defaultMode?: "full" | "read" | "none";
-		defaultIsolated?: boolean;
-		allowFullMode?: boolean;
-		appendSkills?: boolean;
-	};
-}
-
-function tryParseJson(path: string): Partial<Config> {
-	if (!existsSync(path)) return {};
-	try {
-		return JSON.parse(readFileSync(path, "utf-8"));
-	} catch (e) {
-		console.error(`claude-bridge: failed to parse ${path}: ${e}`);
-		return {};
-	}
-}
-
-function loadConfig(cwd: string): Config {
-	const global = tryParseJson(join(homedir(), ".pi", "agent", "claude-bridge.json"));
-	const project = tryParseJson(join(cwd, ".pi", "claude-bridge.json"));
-	const merged: Config = {
-		maxHistoryMessages: project.maxHistoryMessages ?? global.maxHistoryMessages,
-		askClaude: { ...global.askClaude, ...project.askClaude },
-	};
-	debug("loadConfig:", JSON.stringify(merged));
-	return merged;
-}
-
 // --- Error handling ---
 
 function errorMessage(err: unknown): string {
@@ -184,92 +144,6 @@ function errorMessage(err: unknown): string {
 		try { return JSON.stringify(err); } catch {}
 	}
 	return String(err);
-}
-
-// --- Text extraction ---
-
-// Text-only extraction — callers: extractUserPrompt, convertAndImportMessages (tool results).
-// --- AskClaude helpers ---
-
-interface ToolCallState {
-	name: string;
-	status: string;
-	rawInput?: unknown;
-}
-
-function extractPath(rawInput: unknown): string | undefined {
-	if (!rawInput || typeof rawInput !== "object") return undefined;
-	const input = rawInput as Record<string, unknown>;
-	if (typeof input.file_path === "string") return input.file_path;
-	if (typeof input.path === "string") return input.path;
-	if (typeof input.command === "string") return input.command.substring(0, 80);
-	return undefined;
-}
-
-function shortPath(p: string): string {
-	const cwd = process.cwd();
-	if (p.startsWith(cwd + "/")) return p.slice(cwd.length + 1);
-	if (p.startsWith("/")) {
-		const parts = p.split("/");
-		if (parts.length > 3) return parts.slice(-2).join("/");
-	}
-	return p;
-}
-
-function formatToolAction(tc: ToolCallState): string | undefined {
-	const path = extractPath(tc.rawInput);
-	const verb = tc.name.toLowerCase().split(/\s/)[0];
-	if (verb === "read" || verb === "readfile") {
-		return path ? `Read(${shortPath(path)})` : "Read";
-	} else if (verb === "glob") {
-		const input = tc.rawInput as Record<string, unknown> | undefined;
-		const pat = typeof input?.pattern === "string" ? input.pattern.slice(0, 40) : "";
-		return pat ? `Glob(${pat})` : "Glob";
-	} else if (verb === "edit" || verb === "write" || verb === "writefile" || verb === "multiedit") {
-		return path ? `Edit(${shortPath(path)})` : "Edit";
-	} else if (verb === "bashoutput") {
-		return undefined; // redundant with preceding Bash call
-	} else if (verb === "bash" || verb === "terminal") {
-		return path ? `Bash(${path})` : "Bash";
-	} else if (verb === "agent") {
-		const input = tc.rawInput as Record<string, unknown> | undefined;
-		return `Agent(${String(input?.description ?? "").slice(0, 40)})`;
-	} else if (verb === "grep") {
-		const input = tc.rawInput as Record<string, unknown> | undefined;
-		const pat = typeof input?.pattern === "string" ? input.pattern.slice(0, 40) : "";
-		return pat ? `Grep(${pat})` : "Grep";
-	} else if (verb === "skill") {
-		const input = tc.rawInput as Record<string, unknown> | undefined;
-		const name = typeof input?.skill === "string" ? input.skill.slice(0, 40) : "";
-		return name ? `Skill(${name})` : "Skill";
-	} else if (verb === "todowrite" || verb === "taskcreate" || verb === "taskupdate") {
-		const todos = Array.isArray((tc.rawInput as any)?.todos) ? (tc.rawInput as any).todos : [];
-		const current = todos.find((t: any) => t.status === "in_progress") ?? todos.find((t: any) => t.status === "pending");
-		const label = current ? String(current.content ?? "").slice(0, 40) : "";
-		return label || undefined;
-	} else if (verb === "askclaude") {
-		// Recursive — don't show AskClaude in its own action summary
-		return undefined;
-	}
-	return tc.name;
-}
-
-function buildActionSummary(calls: Map<string, ToolCallState>): string {
-	const parts: string[] = [];
-	let prevVerb = "";
-	for (const [, tc] of calls) {
-		const action = formatToolAction(tc);
-		if (!action) continue;
-		const verb = tc.name.toLowerCase().split(/\s/)[0];
-		// Collapse consecutive calls to the same tool — keep only the latest
-		if (verb === prevVerb) {
-			parts[parts.length - 1] = action;
-		} else {
-			parts.push(action);
-		}
-		prevVerb = verb;
-	}
-	return parts.join("; ");
 }
 
 // AskClaude mode presets — controls which CC tools are blocked per mode.
@@ -607,90 +481,6 @@ function mapToolArgs(
 	return result;
 }
 
-// --- Provider helpers: system prompt ---
-
-function resolveAgentsMdPath(): string | undefined {
-	const fromCwd = findAgentsMdInParents(process.cwd());
-	if (fromCwd) return fromCwd;
-	if (existsSync(GLOBAL_AGENTS_PATH)) return GLOBAL_AGENTS_PATH;
-	return undefined;
-}
-
-function findAgentsMdInParents(startDir: string): string | undefined {
-	let current = resolve(startDir);
-	while (true) {
-		const candidate = join(current, "AGENTS.md");
-		if (existsSync(candidate)) return candidate;
-		const parent = dirname(current);
-		if (parent === current) break;
-		current = parent;
-	}
-	return undefined;
-}
-
-function extractAgentsAppend(): string | undefined {
-	const agentsPath = resolveAgentsMdPath();
-	if (!agentsPath) return undefined;
-	try {
-		const content = readFileSync(agentsPath, "utf-8").trim();
-		if (!content) return undefined;
-		const sanitized = sanitizeAgentsContent(content);
-		return sanitized.length > 0 ? `# CLAUDE.md\n\n${sanitized}` : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function sanitizeAgentsContent(content: string): string {
-	let sanitized = content;
-	sanitized = sanitized.replace(/~\/\.pi\b/gi, "~/.claude");
-	sanitized = sanitized.replace(/(^|[\s'"`])\.pi\//g, "$1.claude/");
-	sanitized = sanitized.replace(/\b\.pi\b/gi, ".claude");
-	sanitized = sanitized.replace(/\bpi\b/gi, "environment");
-	return sanitized;
-}
-
-// --- Provider helpers: settings ---
-
-type ProviderSettings = {
-	appendSystemPrompt?: boolean;
-	settingSources?: SettingSource[];
-	strictMcpConfig?: boolean;
-};
-
-function loadProviderSettings(): ProviderSettings {
-	const globalSettings = readSettingsFile(GLOBAL_SETTINGS_PATH);
-	const projectSettings = readSettingsFile(PROJECT_SETTINGS_PATH);
-	return { ...globalSettings, ...projectSettings };
-}
-
-function readSettingsFile(filePath: string): ProviderSettings {
-	if (!existsSync(filePath)) return {};
-	try {
-		const raw = readFileSync(filePath, "utf-8");
-		const parsed = JSON.parse(raw) as Record<string, unknown>;
-		const settingsBlock =
-			(parsed["claudeAgentSdkProvider"] as Record<string, unknown> | undefined) ??
-			(parsed["claude-agent-sdk-provider"] as Record<string, unknown> | undefined) ??
-			(parsed["claudeAgentSdk"] as Record<string, unknown> | undefined);
-		if (!settingsBlock || typeof settingsBlock !== "object") return {};
-		const appendSystemPrompt =
-			typeof settingsBlock["appendSystemPrompt"] === "boolean" ? settingsBlock["appendSystemPrompt"] : undefined;
-		const settingSourcesRaw = settingsBlock["settingSources"];
-		const settingSources =
-			Array.isArray(settingSourcesRaw) &&
-			settingSourcesRaw.every((value) => typeof value === "string" && (value === "user" || value === "project" || value === "local"))
-				? (settingSourcesRaw as SettingSource[])
-				: undefined;
-		const strictMcpConfig =
-			typeof settingsBlock["strictMcpConfig"] === "boolean" ? settingsBlock["strictMcpConfig"] : undefined;
-		return { appendSystemPrompt, settingSources, strictMcpConfig };
-	} catch (e) {
-		console.error(`claude-bridge: failed to parse ${filePath}: ${e}`);
-		return {};
-	}
-}
-
 // --- Provider helpers: tool resolution ---
 
 // --- Provider helpers: tool bridge ---
@@ -725,48 +515,6 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 	}
 
 	return { mcpTools, customToolNameToSdk, customToolNameToPi };
-}
-
-// --- TypeBox → Zod schema conversion ---
-//
-// Pi tools use TypeBox (JSON Schema objects). The SDK's MCP server needs Zod.
-//
-// Why: createSdkMcpServer's tools/list handler calls zodToJsonSchema() on each
-// tool's inputSchema. It detects Zod via the `~standard` marker or `_def`/`_zod`
-// properties (see `Z0()` in sdk.mjs). Plain JSON Schema objects silently fall
-// back to `{type: "object", properties: {}}` — the model sees no params.
-//
-// If this breaks after an SDK update, check whether `Z0()` detection changed
-// or whether createSdkMcpServer now accepts raw JSON Schema.
-
-function jsonSchemaPropertyToZod(prop: Record<string, unknown>): z.ZodTypeAny {
-	let base: z.ZodTypeAny;
-	if (Array.isArray(prop.enum)) base = z.enum(prop.enum as [string, ...string[]]);
-	else switch (prop.type) {
-		case "string": base = z.string(); break;
-		case "number": case "integer": base = z.number(); break;
-		case "boolean": base = z.boolean(); break;
-		case "array": base = prop.items
-			? z.array(jsonSchemaPropertyToZod(prop.items as Record<string, unknown>))
-			: z.array(z.unknown()); break;
-		case "object": base = z.record(z.string(), z.unknown()); break;
-		default: base = z.unknown();
-	}
-	if (typeof prop.description === "string") base = base.describe(prop.description);
-	return base;
-}
-
-function jsonSchemaToZodShape(schema: unknown): Record<string, z.ZodTypeAny> {
-	const s = schema as Record<string, unknown>;
-	if (!s || s.type !== "object" || !s.properties) return {};
-	const props = s.properties as Record<string, Record<string, unknown>>;
-	const required = new Set(Array.isArray(s.required) ? s.required as string[] : []);
-	const shape: Record<string, z.ZodTypeAny> = {};
-	for (const [key, prop] of Object.entries(props)) {
-		const zodProp = jsonSchemaPropertyToZod(prop);
-		shape[key] = required.has(key) ? zodProp : zodProp.optional();
-	}
-	return shape;
 }
 
 // Creates an MCP server that bridges pi tools to the SDK. Each tool handler
@@ -1576,6 +1324,7 @@ export default function (pi: ExtensionAPI) {
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
 	const config = loadConfig(process.cwd());
+	debug("loadConfig:", JSON.stringify(config));
 	configuredMaxHistoryMessages = config.maxHistoryMessages;
 
 	// Reset shared session on pi session lifecycle events

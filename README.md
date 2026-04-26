@@ -11,8 +11,8 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
 
 Uses your Claude Max/Pro subscription. I believe this is compliant with Anthropic's terms because only the real Claude Code is touching the API and it's to enable [local development](https://x.com/trq212/status/2024212380142752025) not to steal API calls for some other commerical purpose. That said, obviously this extension is not endorsed or supported by Anthropic.
 <p>
-<a href="claude-bridge1.png"><img src="claude-bridge1.png" width="49%"></a>&nbsp;
-<a href="claude-bridge2.png"><img src="claude-bridge2.png" width="49%"></a>
+<a href="assets/claude-bridge1.png"><img src="assets/claude-bridge1.png" width="49%"></a>&nbsp;
+<a href="assets/claude-bridge2.png"><img src="assets/claude-bridge2.png" width="49%"></a>
 </p>
 
 ## Install
@@ -79,4 +79,4 @@ When filing a bug about a session-resume failure (e.g. "No conversation found"),
 
 ## Maintenance
 
-After updating Claude Code or the Agent SDK, check for new built-in tools that may need adding to `DISALLOWED_BUILTIN_TOOLS` in `index.ts`. Unrecognized CC tools leak through to pi as tool calls it can't handle. Symptoms: "Tool X not found" errors in pi.
+After updating Claude Code or the Agent SDK, check for new built-in tools that may need adding to `DISALLOWED_BUILTIN_TOOLS` in `src/index.ts`. Unrecognized CC tools leak through to pi as tool calls it can't handle. Symptoms: "Tool X not found" errors in pi.

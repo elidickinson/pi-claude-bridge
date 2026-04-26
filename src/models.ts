@@ -10,8 +10,10 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 	return MODEL_IDS_IN_ORDER
 		.map((id) => piAiModels.find((m) => m.id === id))
 		.filter((m) => m != null)
-		.map(({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
-			id, name, reasoning, input, cost, contextWindow, maxTokens,
+		.map(({ id, name, reasoning, input, contextWindow, maxTokens }) => ({
+			id, name, reasoning, input, contextWindow, maxTokens,
+			// Bridge runs through the Claude Code subscription, so per-token cost is zero.
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}));
 }
 

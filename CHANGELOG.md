@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: per-token cost shown for bridge models (issue #9)** — `buildModels` was passing through pi-ai's anthropic cost values, so the footer reported per-token cost even though the bridge runs on the Claude Code subscription. Now zeroes `cost` for all bridge-registered models.
+- **Internal: move sources into `src/`** — `index.ts` and the 6 extracted modules now live under `src/`; screenshots under `assets/`. `pi.extensions` and published `files` updated accordingly.
+- **Internal: extract 5 more pure modules from `index.ts`** — `config`, `provider-settings`, `agents-md`, `typebox-to-zod`, `askclaude-ui`. `index.ts` down from 1758 to 1507 lines.
+
 ## 0.3.1 — 2026-04-18
 
 - **Fix: empty thinking blocks on Opus 4.7** — Opus 4.7 silently changed default `thinking.display` from `"summarized"` to `"omitted"`, so streams emitted `thinking_start` + `signature_delta` with zero `thinking_delta` events, leaving `ThinkingBlock.thinking == ""`. Now pass `--thinking-display=summarized` via `extraArgs` whenever `effort` is set (both provider and AskClaude paths). Bump `@anthropic-ai/claude-agent-sdk` to ^0.2.111 (required for Opus 4.7 + `--thinking-display` CLI flag). See [anthropics/claude-agent-sdk-python#830](https://github.com/anthropics/claude-agent-sdk-python/pull/830).

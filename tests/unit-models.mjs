@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MODEL_IDS_IN_ORDER, buildModels, resolveModelId } from "../models.js";
+import { MODEL_IDS_IN_ORDER, buildModels, resolveModelId } from "../src/models.js";
 
 // Simulated pi-ai registry entry — extra fields mimic the ones pi-ai exposes
 // that must not leak into the provider-registered MODELS array.
@@ -25,6 +25,13 @@ describe("MODELS projection", () => {
 			assert.equal(m.api, undefined);
 			assert.equal(m.provider, undefined);
 			assert.equal(m.headers, undefined);
+		}
+	});
+
+	it("zeroes per-token cost (bridge uses Claude Code subscription)", () => {
+		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+		for (const m of models) {
+			assert.deepEqual(m.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 		}
 	});
 

@@ -5,7 +5,7 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { ctx, pushContext, popContext, resetStack, stackDepth } from "../query-state.js";
+import { ctx, pushContext, popContext, resetStack, stackDepth } from "../src/query-state.js";
 
 const fakeModel = { api: "anthropic", provider: "anthropic", id: "test-model" };
 

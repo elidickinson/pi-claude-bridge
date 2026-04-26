@@ -20,17 +20,10 @@
     "node": ">=20"
   },
   "files": [
-    "index.ts",
-    "convert.ts",
-    "models.ts",
-    "skills.ts",
-    "session-verify.ts",
-    "extract-tool-results.ts",
-    "query-state.ts",
+    "src",
     "README.md",
     "LICENSE",
-    "claude-bridge1.png",
-    "claude-bridge2.png"
+    "assets"
   ],
   "scripts": {
     "test:unit": "node --import tsx --test tests/unit-*.mjs",
@@ -58,7 +51,7 @@
   },
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./src/index.ts"
     ]
   }
 }

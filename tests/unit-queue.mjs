@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractAllToolResults as _extractAllToolResults } from "../extract-tool-results.js";
+import { extractAllToolResults as _extractAllToolResults } from "../src/extract-tool-results.js";
 
 // Test wrapper: real extract returns { results, stopIdx }; tests only want results.
 // Also unwraps converted content so assertions can check the original string.

@@ -3,7 +3,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeToolId, convertPiMessages } from "../convert.js";
+import { sanitizeToolId, convertPiMessages } from "../src/convert.js";
 
 /** Shorthand: convert pi messages and return just the anthropic messages. */
 function convert(messages, customToolNameToSdk) {

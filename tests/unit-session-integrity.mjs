@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { repairToolPairing } from "cc-session-io";
-import { verifyWrittenSession } from "../session-verify.js";
+import { verifyWrittenSession } from "../src/session-verify.js";
 
 // --- repairToolPairing ---
 
