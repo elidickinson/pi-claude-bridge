@@ -58,7 +58,8 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
     "allowFullMode": true,
     "defaultIsolated": false,
     "description": "Custom tool description override"
-  }
+  },
+  "pathToClaudeCodeExecutable": "<optional path to the claude executable, needed on NixOS>"
 }
 ```
 
