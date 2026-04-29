@@ -112,6 +112,8 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
 };
 
+let pathToClaudeCodeExecutable: string | undefined = undefined;
+
 const DISALLOWED_BUILTIN_TOOLS = [
 	"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent",
 	"NotebookEdit", "EnterWorktree", "ExitWorktree",
@@ -150,6 +152,7 @@ interface Config {
 		allowFullMode?: boolean;
 		appendSkills?: boolean;
 	};
+	pathToClaudeCodeExecutable?: string;
 }
 
 function tryParseJson(path: string): Partial<Config> {
@@ -168,6 +171,7 @@ function loadConfig(cwd: string): Config {
 	const merged: Config = {
 		maxHistoryMessages: project.maxHistoryMessages ?? global.maxHistoryMessages,
 		askClaude: { ...global.askClaude, ...project.askClaude },
+		pathToClaudeCodeExecutable: project.pathToClaudeCodeExecutable ?? global.pathToClaudeCodeExecutable,
 	};
 	debug("loadConfig:", JSON.stringify(merged));
 	return merged;
@@ -181,7 +185,7 @@ function errorMessage(err: unknown): string {
 		const obj = err as Record<string, unknown>;
 		if (typeof obj.message === "string") return obj.message;
 		if (typeof obj.error === "string") return obj.error;
-		try { return JSON.stringify(err); } catch {}
+		try { return JSON.stringify(err); } catch { }
 	}
 	return String(err);
 }
@@ -359,7 +363,7 @@ function msgPreview(msg: { role: string; content?: unknown }): string {
 // the provider again. Thin wrapper over extract-tool-results.js that adds per-turn
 // debug logging at the extraction boundary.
 function extractAllToolResults(context: Context): McpResult[] {
-	const { results, stopIdx } = _extractAllToolResults(context.messages as unknown as Array<{ role: string; [key: string]: unknown }>);
+	const { results, stopIdx } = _extractAllToolResults(context.messages as unknown as Array<{ role: string;[key: string]: unknown }>);
 	debug(`extractAllToolResults: ${results.length} results from ${context.messages.length} msgs, stopped at index ${stopIdx}`);
 	debug(`extractAllToolResults: all msg roles:`, context.messages.map((m, i) => `[${i}]${m.role}`).join(" "));
 	for (let r = 0; r < results.length; r++) {
@@ -583,9 +587,9 @@ function mapToolName(name: string, customToolNameToPi?: Map<string, string>): st
 // Renames for Claude Code SDK param names that differ from pi's native names.
 // Keys not listed here pass through unchanged, so new pi params work automatically.
 const SDK_KEY_RENAMES: Record<string, Record<string, string>> = {
-	read:  { file_path: "path" },
+	read: { file_path: "path" },
 	write: { file_path: "path" },
-	edit:  { file_path: "path", old_string: "oldText", new_string: "newText", old_text: "oldText", new_text: "newText" },
+	edit: { file_path: "path", old_string: "oldText", new_string: "newText", old_text: "oldText", new_text: "newText" },
 };
 
 // Maps SDK tool args to pi tool args via key renaming + pass-through.
@@ -679,7 +683,7 @@ function readSettingsFile(filePath: string): ProviderSettings {
 		const settingSourcesRaw = settingsBlock["settingSources"];
 		const settingSources =
 			Array.isArray(settingSourcesRaw) &&
-			settingSourcesRaw.every((value) => typeof value === "string" && (value === "user" || value === "project" || value === "local"))
+				settingSourcesRaw.every((value) => typeof value === "string" && (value === "user" || value === "project" || value === "local"))
 				? (settingSourcesRaw as SettingSource[])
 				: undefined;
 		const strictMcpConfig =
@@ -861,7 +865,7 @@ function ensureTurnStarted(): void {
 
 function finalizeCurrentStream(stopReason?: string): void {
 	if (!ctx().currentPiStream || !ctx().turnOutput) return;
-	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: ctx().turnOutput!.stopReason, error: ctx().turnOutput!.errorMessage})}`);
+	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({ stopReason: ctx().turnOutput!.stopReason, error: ctx().turnOutput!.errorMessage })}`);
 	if (!ctx().turnStarted) ensureTurnStarted();
 	const reason = stopReason === "length" ? "length" : "stop";
 	ctx().currentPiStream!.push({ type: "done", reason, message: ctx().turnOutput });
@@ -1264,6 +1268,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		...(settingSources ? { settingSources } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
+		...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
 		...makeCliDebugOptions("provider"),
 	};
 
@@ -1284,8 +1289,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const requestAbort = () => {
 		// interrupt() asks the CLI to stop gracefully; close() kills it immediately.
 		// Both are needed — interrupt alone lets the current API call finish.
-		void sdkQuery.interrupt().catch(() => {});
-		try { sdkQuery.close(); } catch {}
+		void sdkQuery.interrupt().catch(() => { });
+		try { sdkQuery.close(); } catch { }
 	};
 	const onAbort = () => {
 		wasAborted = true;
@@ -1480,6 +1485,7 @@ async function promptAndWait(
 			extraArgs,
 			...(resumeSessionId ? { resume: resumeSessionId } : {}),
 			...(options?.isolated ? { persistSession: false } : {}),
+			...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
 			...makeCliDebugOptions("askclaude"),
 		},
 	});
@@ -1488,7 +1494,7 @@ async function promptAndWait(
 	let wasAborted = false;
 	const onAbort = () => {
 		wasAborted = true;
-		sdkQuery.interrupt().catch(() => { try { sdkQuery.close(); } catch {} });
+		sdkQuery.interrupt().catch(() => { try { sdkQuery.close(); } catch { } });
 	};
 	if (signal?.aborted) { onAbort(); throw new Error("Aborted"); }
 	signal?.addEventListener("abort", onAbort, { once: true });
@@ -1571,12 +1577,13 @@ const PREVIEW_MAX_LINES = 6;
 
 let askClaudeToolName = "AskClaude";
 
-export default function (pi: ExtensionAPI) {
+export default function(pi: ExtensionAPI) {
 	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
 	const config = loadConfig(process.cwd());
 	configuredMaxHistoryMessages = config.maxHistoryMessages;
+	pathToClaudeCodeExecutable = config.pathToClaudeCodeExecutable;
 
 	// Reset shared session on pi session lifecycle events
 	const clearSession = (event: string) => {
