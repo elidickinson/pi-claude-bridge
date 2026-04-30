@@ -997,8 +997,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
 	if (effort) extraArgs["thinking-display"] = "summarized";
 
+	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
+	// when the user is logged into Anthropic). These are a separate code path from
+	// filesystem MCP and are NOT blocked by --strict-mcp-config or settingSources=undefined.
+	// The native CC binary gates them on env var ENABLE_CLAUDEAI_MCP_SERVERS: setting it
+	// to "0"/"false"/"no"/"off" makes the loader return early before any cloud fetch.
+	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0" };
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
+		env: childEnv,
 		disallowedTools: DISALLOWED_BUILTIN_TOOLS,
 		allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
 		permissionMode: "bypassPermissions",
@@ -1218,6 +1225,7 @@ async function promptAndWait(
 		prompt,
 		options: {
 			cwd,
+			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0" },
 			permissionMode: "bypassPermissions",
 			...(disallowedTools.length ? { disallowedTools } : {}),
 			...(effort ? { effort } : {}),
