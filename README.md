@@ -49,7 +49,7 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 
 ## Configuration
 
-Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (project).
+Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (project; merged over global).
 
 ```json
 {
@@ -58,9 +58,25 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
     "allowFullMode": true,
     "defaultIsolated": false,
     "description": "Custom tool description override"
+  },
+  "provider": {
+    "strictMcpConfig": true
   }
 }
 ```
+
+`askClaude`:
+- `enabled` — register the AskClaude tool (default `true`)
+- `name`, `label`, `description` — overrides for the tool's pi-side name, TUI label, and description
+- `defaultMode` — `"read"` (default), `"none"`, or `"full"`
+- `defaultIsolated` — start each call in a fresh session (default `false`)
+- `allowFullMode` — allow `mode: "full"`; set `false` to lock it out
+- `appendSkills` — forward pi's skills block into the system prompt (default `true`)
+
+`provider` (low-level SDK plumbing, most users can ignore):
+- `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
+- `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
+- `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 
 ## Tests
 

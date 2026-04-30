@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Block user-installed MCP servers from leaking into bridge sessions** — pass `--strict-mcp-config` unconditionally and set `ENABLE_CLAUDEAI_MCP_SERVERS=0` in the spawned CC env, suppressing both filesystem (`~/.claude.json`, `.mcp.json`) and claude.ai cloud MCP servers. Override with `provider.strictMcpConfig: false`.
+- **Consolidate config** — SDK plumbing (`appendSystemPrompt`, `settingSources`, `strictMcpConfig`) moved from `~/.pi/agent/settings.json` (`claudeAgentSdkProvider` block) to a `provider` block in `~/.pi/agent/claude-bridge.json`. Old location no longer read. Drop deprecated, unsafe `maxHistoryMessages`.
 - **Internal: move sources into `src/`** — `index.ts` and the 6 extracted modules now live under `src/`; screenshots under `assets/`. `pi.extensions` and published `files` updated accordingly.
 - **Internal: extract 5 more pure modules from `index.ts`** — `config`, `provider-settings`, `agents-md`, `typebox-to-zod`, `askclaude-ui`. `index.ts` down from 1758 to 1507 lines.
 

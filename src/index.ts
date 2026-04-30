@@ -16,7 +16,6 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx, stackDepth, pushContext, popContext } from "./query-state.js";
 import { loadConfig } from "./config.js";
-import { loadProviderSettings } from "./provider-settings.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
@@ -186,8 +185,6 @@ interface SessionState {
 
 let sharedSession: SessionState | null = null;
 
-let configuredMaxHistoryMessages: number | undefined;
-
 // Convert pi messages to Anthropic API format for session import.
 // Lossy: non-Anthropic thinking blocks are dropped (no valid signature), and only
 // text/image/toolCall block types are handled. If all blocks in an assistant message
@@ -198,13 +195,9 @@ function convertAndImportMessages(
 	messages: Context["messages"],
 	customToolNameToSdk?: Map<string, string>,
 ): void {
-	const limit = configuredMaxHistoryMessages;
-	const capped = limit && messages.length > limit ? messages.slice(-limit) : messages;
-	if (limit && messages.length > limit) debug(`convertAndImportMessages: capped ${messages.length} → ${limit} messages`);
+	const { anthropicMessages, sanitizedIds } = convertPiMessages(messages, customToolNameToSdk);
 
-	const { anthropicMessages, sanitizedIds } = convertPiMessages(capped, customToolNameToSdk);
-
-	debug(`convertAndImportMessages: ${capped.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
+	debug(`convertAndImportMessages: ${messages.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
 	debug(`convertAndImportMessages: imported roles:`, anthropicMessages.map((m, i) => {
 		const c = m.content;
 		if (typeof c === "string") return `[${i}]${m.role}:text`;
@@ -970,24 +963,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		? wrapPromptStream(promptBlocks)
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, ctx());
-	const providerSettings = loadProviderSettings();
+	const providerSettings = loadConfig(cwd).provider ?? {};
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
 	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
 	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
 	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 
-	// MCP auto-loading suppression: CC auto-loads MCP servers from ~/.claude.json and
-	// .mcp.json when filesystem settings are loaded. Since pi executes tools (not CC),
-	// auto-loaded MCP tools are pure token overhead. Two mechanisms prevent this:
-	//   appendSystemPrompt=true  (default): settingSources=undefined → SDK isolation mode,
-	//     no filesystem settings loaded, so no MCP auto-discovery occurs.
-	//   appendSystemPrompt=false: settingSources loads user/project settings, but
-	//     --strict-mcp-config tells CC to ignore auto-discovered MCP configs.
+	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
+	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
+	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
+	// programmatically and ignore filesystem MCP entries — applied unconditionally because
+	// settingSources=undefined does NOT give isolation (the CC default loads all sources).
 	const settingSources: SettingSource[] | undefined = appendSystemPrompt
 		? undefined
 		: providerSettings.settingSources ?? ["user", "project"];
-	const strictMcpConfigEnabled = !appendSystemPrompt && providerSettings.strictMcpConfig !== false;
+	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 
 	const effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;
 
@@ -1333,7 +1324,6 @@ export default function (pi: ExtensionAPI) {
 
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
-	configuredMaxHistoryMessages = config.maxHistoryMessages;
 
 	// Reset shared session on pi session lifecycle events
 	const clearSession = (event: string) => {
