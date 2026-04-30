@@ -67,7 +67,12 @@ async function promptAndWait(message) {
 
 function finish(code, msg) {
 	console.log(msg);
-	if (code !== 0) console.log(`  Log: ${RPC_LOG}`);
+	if (code !== 0) {
+		console.log(`  RPC log:    ${RPC_LOG}`);
+		console.log(`  Debug log:  ${DEBUG_LOG}`);
+		console.log(`  CC CLI:     .test-output/cc-cli-logs/  (look for *-askclaude-*.log near the failing turn)`);
+		console.log(`  Note: logs are overwritten on next test run — copy them now if you need to investigate.`);
+	}
 	stop().then(() => process.exit(code));
 }
 

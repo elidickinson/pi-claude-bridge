@@ -34,6 +34,17 @@
 
 ## Testing Gaps
 
+- **`int-session-resume` Turn 8 flake (low priority)**: The isolated-AskClaude
+  assertion fails intermittently (~1-in-5). The alt provider invokes AskClaude
+  with a verbatim prompt in some runs (test passes — isolated CC correctly
+  returns "UNKNOWN") but may embed the secret word into the prompt in others
+  (test fails — but the leak is in the calling model, not in our isolation).
+  We confirmed the verbatim case from logs; the failing case wasn't captured
+  before the next run overwrote the log. Either pin the alt model to one with
+  strict prompt fidelity, or instrument the test to assert on the AskClaude
+  prompt args (not just the response) so we can distinguish "calling model
+  embedded the answer" from a real bridge-side context leak.
+
 - **Structured diagnostics for tests**: Tests grep debug-log strings to verify
   internal state. The `syncResult:` marker added on `simplify-session-sync`
   narrows this for session sync (tests parse a single targeted line per
