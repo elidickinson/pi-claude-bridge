@@ -6,9 +6,9 @@ import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthro
 import { Type } from "typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
+import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
-import { dirname, join, resolve } from "path";
+import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
@@ -215,12 +215,6 @@ function convertAndImportMessages(
 		debug(`convertAndImportMessages: repairToolPairing ${anthropicMessages.length} → ${repaired.length} msgs`);
 	}
 	if (repaired.length) session.importMessages(repaired);
-}
-
-function msgPreview(msg: { role: string; content?: unknown }): string {
-	const c = msg.content;
-	const text = typeof c === "string" ? c : Array.isArray(c) ? (c[0] as any)?.text ?? (c[0] as any)?.type ?? "?" : "?";
-	return `${msg.role}:${JSON.stringify(typeof text === "string" ? text.slice(0, 60) : text)}`;
 }
 
 // Pi doesn't pass tool results directly — it appends them to the context and calls
