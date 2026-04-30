@@ -121,7 +121,7 @@ const DISALLOWED_BUILTIN_TOOLS = [
 	"CronCreate", "CronDelete", "CronList", "TeamCreate", "TeamDelete",
 	"WebFetch", "WebSearch", "TodoRead", "TodoWrite",
 	"EnterPlanMode", "ExitPlanMode", "RemoteTrigger", "SendMessage",
-	"Skill", "TaskOutput", "TaskStop", "ToolSearch",
+	"Skill", "TaskOutput", "TaskStop", "ToolSearch", "ScheduleWakeup",
 	"AskUserQuestion", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
 ];
 
@@ -151,6 +151,7 @@ function errorMessage(err: unknown): string {
 const ASKCLAUDE_ALWAYS_BLOCKED = [
 	"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 	"ToolSearch", // probes for blocked tools, wastes tokens
+	"ScheduleWakeup", // no harness to fire wakeup from inside a delegated subagent
 ];
 const MODE_DISALLOWED_TOOLS: Record<string, string[]> = {
 	full: [
