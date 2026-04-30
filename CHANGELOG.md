@@ -3,7 +3,9 @@
 ## Unreleased
 
 - **Block user-installed MCP servers from leaking into bridge sessions** — pass `--strict-mcp-config` unconditionally and set `ENABLE_CLAUDEAI_MCP_SERVERS=0` in the spawned CC env, suppressing both filesystem (`~/.claude.json`, `.mcp.json`) and claude.ai cloud MCP servers. Override with `provider.strictMcpConfig: false`.
+- **Block CC's `ScheduleWakeup` tool** — no-op in bridge sessions (no harness to fire the wakeup); blocking it stops the model from wasting turns on lies about deferred work.
 - **Consolidate config** — SDK plumbing (`appendSystemPrompt`, `settingSources`, `strictMcpConfig`) moved from `~/.pi/agent/settings.json` (`claudeAgentSdkProvider` block) to a `provider` block in `~/.pi/agent/claude-bridge.json`. Old location no longer read. Drop deprecated, unsafe `maxHistoryMessages`.
+- **Bump deps** — `@anthropic-ai/claude-agent-sdk` → ^0.2.123; migrate to TypeBox 1.x (new import paths per pi-mono 0.69); pi devDeps → ^0.70.6. Extract `registerTool` schemas to const with explicit `<typeof params>` generic to avoid TS2589 deep-instantiation under TypeBox 1.x.
 - **Internal: move sources into `src/`** — `index.ts` and the 6 extracted modules now live under `src/`; screenshots under `assets/`. `pi.extensions` and published `files` updated accordingly.
 - **Internal: extract 5 more pure modules from `index.ts`** — `config`, `provider-settings`, `agents-md`, `typebox-to-zod`, `askclaude-ui`. `index.ts` down from 1758 to 1507 lines.
 
