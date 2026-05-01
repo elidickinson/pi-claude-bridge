@@ -24,6 +24,7 @@ export interface Config {
 		appendSystemPrompt?: boolean;
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
+		pathToClaudeCodeExecutable?: string;
 	};
 }
 
