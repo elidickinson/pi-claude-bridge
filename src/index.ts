@@ -974,6 +974,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		? undefined
 		: providerSettings.settingSources ?? ["user", "project"];
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
+	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
 	const effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;
 
@@ -1005,6 +1006,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		...(settingSources ? { settingSources } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
+		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 		...makeCliDebugOptions("provider"),
 	};
 
@@ -1196,6 +1198,8 @@ async function promptAndWait(
 	const effort = options?.thinking && options.thinking !== "off"
 		? REASONING_TO_EFFORT[options.thinking] : undefined;
 
+	const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
+
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
 		model: modelId,
@@ -1222,6 +1226,7 @@ async function promptAndWait(
 			extraArgs,
 			...(resumeSessionId ? { resume: resumeSessionId } : {}),
 			...(options?.isolated ? { persistSession: false } : {}),
+			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 			...makeCliDebugOptions("askclaude"),
 		},
 	});
