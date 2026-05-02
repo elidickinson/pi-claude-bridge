@@ -4,7 +4,9 @@
 
 Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript).
 
-> Built on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal — the provider skeleton, tool name mapping, and settings loading originate from that project. This fork adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and the AskClaude tool.
+> 🔱 **You're reading the [`tycronk20/pi-claude-bridge`](https://github.com/tycronk20/pi-claude-bridge) fork**, branch [`thinking-variants`](https://github.com/tycronk20/pi-claude-bridge/tree/thinking-variants). It adds: split `-thinking`/`-instant` model variants for adaptive Claude models, per-model effort mapping that exposes Anthropic's `max` tier (previously inaccessible from pi's selector), and `--thinking disabled` enforcement so `~/.claude/settings.json` can't silently re-enable reasoning. See [CHANGELOG](CHANGELOG.md) and the "Provider" section below for details. **Install:** clone the branch, then `pi install <local-path>`.
+
+> Built on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal — the provider skeleton, tool name mapping, and settings loading originate from that project. The upstream [`elidickinson/pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge) (which this fork tracks) adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and the AskClaude tool.
 
 1. **Provider** — Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI
 2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
