@@ -23,7 +23,24 @@ pi install npm:pi-claude-bridge
 
 ## Provider
 
-Use `/model` to select `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
+Each adaptive-thinking Claude model is exposed as **two `/model` variants**:
+
+- `claude-bridge/claude-{opus-4-7,opus-4-6,sonnet-4-6}-thinking` — emits visible reasoning blocks
+- `claude-bridge/claude-{opus-4-7,opus-4-6,sonnet-4-6}-instant` — runs without reasoning blocks (effort still applied to compute)
+
+Plus `claude-bridge/claude-haiku-4-5` (single variant — haiku uses budget-based thinking, no effort knob).
+
+Pi's `reasoning` slider sets the API effort tier. Mapping per model:
+
+| Pi label | Opus 4.6 / 4.7 | Sonnet 4.6 |
+|---|---|---|
+| `minimal` | `low` | *(hidden)* |
+| `low` | `medium` | `low` |
+| `medium` | `high` | `medium` |
+| `high` | `xhigh` | `high` |
+| `xhigh` | **`max`** | **`max`** |
+
+> ⚠️ **Opus labels are shifted down by one tier.** Anthropic's adaptive-thinking enum on Opus has 5 tiers (`low/medium/high/xhigh/max`), but pi's selector only has 4 useful slots, so we surface `minimal` and shift everything down to expose `max`. Sonnet has 4 tiers and uses the natural label-aligned mapping. This will go away once pi-coding-agent's `thinking-selector` supports custom slot labels.
 
 Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
 

@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
+import { buildModels, resolveModelId as _resolveModelId, baseModelId, thinkingModeFor, effortFor } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -551,10 +551,14 @@ function updateUsage(output: AssistantMessage, usage: Record<string, number | un
 }
 
 // --- Effort level mapping ---
-// Pi reasoning levels → CC SDK effort levels
+// Per-model: see `effortFor()` in models.ts. Bridges pi's reasoning slider
+// position → the literal effort string Anthropic expects, respecting per-model
+// quirks (Opus 4.6's top tier is "max"; Opus 4.7's is "xhigh"; Sonnet 4.6 caps
+// at "high"). Legacy fallback for non-adaptive models (haiku) keeps the old
+// global mapping.
 
-const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
-	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max",
+const LEGACY_REASONING_TO_EFFORT: Record<string, EffortLevel> = {
+	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh",
 };
 
 // --- Provider helpers: misc ---
@@ -976,13 +980,34 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	const effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;
+	const thinkingMode = thinkingModeFor(model.id);
+	const realModelId = baseModelId(model.id);
+	const reasoningEffort = options?.reasoning
+		? (thinkingMode !== undefined
+			? (effortFor(model.id, options.reasoning) as EffortLevel | undefined)
+			: LEGACY_REASONING_TO_EFFORT[options.reasoning])
+		: undefined;
 
-	const extraArgs: Record<string, string | null> = { model: model.id };
+	// Per-variant thinking semantics:
+	//   "on"  — `-thinking` variant: emit thinking blocks. Picker hides `off` and
+	//           `minimal` so reasoning is always low/medium/high/xhigh.
+	//   "off" — `-instant` variant: pass `--thinking disabled` so the CC binary
+	//           doesn't re-enable reasoning from ~/.claude/settings.json
+	//           (alwaysThinkingEnabled / effortLevel). Effort still controls compute.
+	//           Picker hides `off` here too — Anthropic appears to default to high-ish
+	//           effort when no level is sent, so an "off" pick was misleading.
+	//   undefined — non-adaptive (haiku 4.5): legacy behavior — `effort` gates thinking.
+	const effort: EffortLevel | undefined = reasoningEffort;
+
+	const extraArgs: Record<string, string | null> = { model: realModelId };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
-	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
-	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	if (thinkingMode === "off") {
+		extraArgs["thinking"] = "disabled";
+	} else if (thinkingMode === "on" || effort) {
+		// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
+		// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
+		extraArgs["thinking-display"] = "summarized";
+	}
 
 	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
 	// when the user is logged into Anthropic). These are a separate code path from
@@ -1011,8 +1036,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	};
 
 	debug("provider: fresh query",
-		`model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length}`,
-		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
+		`model=${model.id}→${realModelId} msgs=${context.messages.length} tools=${mcpTools.length}`,
+		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} thinking=${thinkingMode ?? "auto"} effort=${effort ?? "default"}`,
 		`appendSys=${appendSystemPrompt} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
@@ -1194,20 +1219,33 @@ async function promptAndWait(
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
 
-	// Effort
-	const effort = options?.thinking && options.thinking !== "off"
-		? REASONING_TO_EFFORT[options.thinking] : undefined;
+	// Effort + thinking variant. AskClaude's `thinking` option sets effort directly;
+	// model variant (`-thinking` suffix) controls whether thinking blocks render.
+	// If both are passed in conflict (variant says on/off, thinking option contradicts),
+	// the model variant wins — it's the more explicit choice.
+	const thinkingMode = thinkingModeFor(modelId);
+	const realModelId = baseModelId(modelId);
+	const reasoningEffort = options?.thinking && options.thinking !== "off"
+		? (thinkingMode !== undefined
+			? (effortFor(modelId, options.thinking) as EffortLevel | undefined)
+			: LEGACY_REASONING_TO_EFFORT[options.thinking])
+		: undefined;
+	const effort: EffortLevel | undefined = reasoningEffort;
 
 	const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
 
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
-		model: modelId,
+		model: realModelId,
 	};
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	if (thinkingMode === "off") {
+		extraArgs["thinking"] = "disabled";
+	} else if (thinkingMode === "on" || effort) {
+		extraArgs["thinking-display"] = "summarized";
+	}
 
 	debug("askClaude:",
-		`mode=${mode} model=${modelId} effort=${effort ?? "default"}`,
+		`mode=${mode} model=${modelId}→${realModelId} thinking=${thinkingMode ?? "auto"} effort=${effort ?? "default"}`,
 		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
 		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
 
