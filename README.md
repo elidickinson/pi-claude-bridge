@@ -40,7 +40,7 @@ Pi's `reasoning` slider sets the API effort tier. Mapping per model:
 | `high` | `xhigh` | `high` |
 | `xhigh` | **`max`** | **`max`** |
 
-> ⚠️ **Opus labels are shifted down by one tier.** Anthropic's adaptive-thinking enum on Opus has 5 tiers (`low/medium/high/xhigh/max`), but pi's selector only has 4 useful slots, so we surface `minimal` and shift everything down to expose `max`. Sonnet has 4 tiers and uses the natural label-aligned mapping. This will go away once pi-coding-agent's `thinking-selector` supports custom slot labels.
+> ⚠️ **Opus labels are shifted down by one tier.** Anthropic's adaptive-thinking enum on Opus has 5 tiers (`low/medium/high/xhigh/max`), but pi's selector only has 4 useful slots, so we surface `minimal` and shift everything down one position to expose `max`. Sonnet has 4 tiers and uses the natural label-aligned mapping. Pi's selector intentionally hardcodes its own level names (per upstream maintainer), so the shift is here to stay — refer to the table above when picking a level on Opus.
 
 Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
 
