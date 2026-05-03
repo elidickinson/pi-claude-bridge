@@ -3,12 +3,17 @@
  * Provides spawn, send, event waiting, and text collection utilities.
  */
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 
 const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+// Auto-load .env.test so int tests work when invoked directly
+// (`node --import tsx --test tests/int-foo.mjs`) and not just via `npm test`.
+const ENV_FILE = resolve(DIR, ".env.test");
+if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
 
 /**
  * Create an RPC harness for pi integration tests.
