@@ -180,7 +180,7 @@ interface SessionState {
 	// so the orphan writes land on a dead inode. Compact/tree do NOT set
 	// this — there's no concurrent CC writer during those events, so
 	// in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
-	pendingOrphanRace?: boolean;
+	forceRotate?: boolean;
 }
 
 let sharedSession: SessionState | null = null;
@@ -395,8 +395,8 @@ function syncSharedSession(
 	// preserveId: rebuild in place (deleteSession + createSession with the
 	// existing UUID), so prompt-cache UUIDs stay stable for log correlation
 	// and for any tools that key off them. Skipped only when there's a
-	// concurrent writer we shouldn't race — see pendingOrphanRace docs above.
-	const preserveId = previousSessionId !== undefined && !sharedSession?.pendingOrphanRace;
+	// concurrent writer we shouldn't race — see forceRotate docs above.
+	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
 		deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
@@ -1051,9 +1051,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
-				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, pendingOrphanRace: true };
+				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
 				ctx().deferredUserMessages = [];
-				debug(`provider: abort detected, marked sharedSession needsRebuild + pendingOrphanRace`);
+				debug(`provider: abort detected, marked sharedSession needsRebuild + forceRotate`);
 				if (ctx().turnOutput) {
 					ctx().turnOutput.stopReason = "aborted";
 					ctx().turnOutput.errorMessage = "Operation aborted";
@@ -1116,7 +1116,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		.catch((error) => {
 			debug(`provider: query error, model=${model.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
 			if ((wasAborted || options?.signal?.aborted) && sharedSession) {
-				sharedSession = { ...sharedSession, needsRebuild: true, pendingOrphanRace: true };
+				sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
 			} else {
 				sharedSession = null;
 			}
