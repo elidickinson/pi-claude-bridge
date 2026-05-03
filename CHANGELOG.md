@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Test: rpc-harness auto-loads `.env.test`** — int tests now work via direct `node --import tsx --test` invocation, not just `npm test`.
 - **Block user-installed MCP servers from leaking into bridge sessions** — pass `--strict-mcp-config` unconditionally and set `ENABLE_CLAUDEAI_MCP_SERVERS=0` in the spawned CC env, suppressing both filesystem (`~/.claude.json`, `.mcp.json`) and claude.ai cloud MCP servers. Override with `provider.strictMcpConfig: false`.
 - **Block CC's `ScheduleWakeup` tool** — no-op in bridge sessions (no harness to fire the wakeup); blocking it stops the model from wasting turns on lies about deferred work.
 - **Consolidate config** — SDK plumbing (`appendSystemPrompt`, `settingSources`, `strictMcpConfig`) moved from `~/.pi/agent/settings.json` (`claudeAgentSdkProvider` block) to a `provider` block in `~/.pi/agent/claude-bridge.json`. Old location no longer read. Drop deprecated, unsafe `maxHistoryMessages`.
