@@ -985,7 +985,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// filesystem MCP and are NOT blocked by --strict-mcp-config or settingSources=undefined.
 	// The native CC binary gates them on env var ENABLE_CLAUDEAI_MCP_SERVERS: setting it
 	// to "0"/"false"/"no"/"off" makes the loader return early before any cloud fetch.
-	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0" };
+	// DISABLE_AUTO_COMPACT=1: pi owns context-management and propagates its own
+	// /compact via session_compact (see handler in default export). Letting CC
+	// also autocompact would double-flush the prompt cache and races pi's
+	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
+	// Manual /compact in CC still works (we never invoke it).
+	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
@@ -1210,7 +1215,7 @@ async function promptAndWait(
 		prompt,
 		options: {
 			cwd,
-			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0" },
+			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
 			permissionMode: "bypassPermissions",
 			...(disallowedTools.length ? { disallowedTools } : {}),
 			...(effort ? { effort } : {}),
