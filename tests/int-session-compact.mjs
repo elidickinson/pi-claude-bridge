@@ -69,20 +69,36 @@ try {
 	}
 	const postEventLog = fullLog.slice(compactIdx);
 
-	const syncResults = [...postEventLog.matchAll(/syncResult: path=(reuse|rebuild|clean-start)/g)].map((m) => m[1]);
+	// Capture both the path and the rebuild flavor (preserved | rotated-post-abort | first).
+	const syncResults = [...postEventLog.matchAll(/syncResult: path=(reuse|rebuild|clean-start)(?: sessionId=\S+ priors=\d+ (\S+))?/g)]
+		.map((m) => ({ path: m[1], flavor: m[2] }));
 	console.log(`  Post-event syncResults: ${JSON.stringify(syncResults)}`);
 
 	if (syncResults.length === 0) {
 		throw new Error("no syncResult markers after session_compact event (Turn 4 didn't reach the provider?)");
 	}
 
+	const first = syncResults[0];
+
 	// First syncResult after the event must NOT reuse — pi's history has
 	// shrunk and CC's session JSONL is now stale.
-	if (syncResults[0] === "reuse") {
+	if (first.path === "reuse") {
 		throw new Error(
 			"bridge took REUSE path after session_compact — CC will resume the pre-compact session. " +
 			"Expected REBUILD (or clean-start) so CC sees the post-compact history. " +
 			"Symptom: triggers Claude Code's autocompact-thrashing (issue #8) on long sessions.");
+	}
+
+	// Compact has no concurrent CC writer, so the rebuild should preserve
+	// the sessionId and wipe the JSONL in place (preserveId branch). If we
+	// see "rotated-post-abort" here, the needsRebuild → preserveId logic
+	// got re-conflated and we're leaking orphan JSONLs into ~/.claude/projects/
+	// on every compact.
+	if (first.path === "rebuild" && first.flavor !== "preserved") {
+		throw new Error(
+			`post-compact rebuild used flavor=${first.flavor}, expected "preserved". ` +
+			`Compact has no concurrent CC writer — it should rebuild in place (deleteSession + ` +
+			`createSession with the same UUID), not rotate. Rotating leaks orphan JSONL files.`);
 	}
 
 	finish(0, "PASS");
