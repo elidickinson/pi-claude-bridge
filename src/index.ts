@@ -115,16 +115,6 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
 };
 
-const DISALLOWED_BUILTIN_TOOLS = [
-	"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent",
-	"NotebookEdit", "EnterWorktree", "ExitWorktree",
-	"CronCreate", "CronDelete", "CronList", "TeamCreate", "TeamDelete",
-	"WebFetch", "WebSearch", "TodoRead", "TodoWrite",
-	"EnterPlanMode", "ExitPlanMode", "RemoteTrigger", "SendMessage",
-	"Skill", "TaskOutput", "TaskStop", "ToolSearch", "ScheduleWakeup",
-	"AskUserQuestion", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
-];
-
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
 const MODELS = buildModels(getModels("anthropic"));
 
@@ -993,8 +983,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
-		disallowedTools: DISALLOWED_BUILTIN_TOOLS,
-		allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
+		tools: [],
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
 		systemPrompt: {
