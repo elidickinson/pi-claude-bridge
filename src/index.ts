@@ -167,11 +167,20 @@ interface SessionState {
 	sessionId: string;
 	cursor: number;
 	cwd: string;
-	// Set after an abort: the session file on disk may be in an indeterminate
-	// state (CC partially wrote assistant output before the interrupt), so
-	// REUSE must not fire. REBUILD still preserves the sessionId via
-	// deleteSession+createSession, which wipes the partial state cleanly.
+	// Force the next syncSharedSession call down the REBUILD path. Set when
+	// pi has mutated its messages array out from under us (compact, tree
+	// navigation) or after an abort left the JSONL in an indeterminate state.
+	// REBUILD wipes and rewrites the file to match pi's current history.
 	needsRebuild?: boolean;
+	// Set ONLY after an abort. The killed CC subprocess may still be flushing
+	// a late "[Request interrupted by user]" record to the session JSONL.
+	// Reusing the same sessionId/path would race that orphan write into our
+	// fresh file and break CC's parent-uuid chain on the next resume. When
+	// this flag is set, REBUILD takes a fresh UUID and skips deleteSession
+	// so the orphan writes land on a dead inode. Compact/tree do NOT set
+	// this — there's no concurrent CC writer during those events, so
+	// in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
+	pendingOrphanRace?: boolean;
 }
 
 let sharedSession: SessionState | null = null;
@@ -383,14 +392,11 @@ function syncSharedSession(
 	}
 	const previousSessionId = sharedSession?.sessionId;
 	const previousCursor = sharedSession?.cursor ?? 0;
-	// After an abort, the killed CC subprocess may still be flushing its
-	// interrupt cleanup (including a stray "[Request interrupted by user]"
-	// record with a parentUuid from its in-memory state). If we reuse the
-	// same sessionId → same file path, those late writes race with our
-	// rebuild and append an orphan record that breaks CC's parent-uuid
-	// chain on the next resume. Take a fresh UUID in this one case to
-	// sidestep the race; normal rebuilds still preserve the sessionId.
-	const preserveId = previousSessionId !== undefined && !sharedSession?.needsRebuild;
+	// preserveId: rebuild in place (deleteSession + createSession with the
+	// existing UUID), so prompt-cache UUIDs stay stable for log correlation
+	// and for any tools that key off them. Skipped only when there's a
+	// concurrent writer we shouldn't race — see pendingOrphanRace docs above.
+	const preserveId = previousSessionId !== undefined && !sharedSession?.pendingOrphanRace;
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
 		deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
@@ -1040,9 +1046,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
-				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true };
+				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, pendingOrphanRace: true };
 				ctx().deferredUserMessages = [];
-				debug(`provider: abort detected, marked sharedSession needsRebuild`);
+				debug(`provider: abort detected, marked sharedSession needsRebuild + pendingOrphanRace`);
 				if (ctx().turnOutput) {
 					ctx().turnOutput.stopReason = "aborted";
 					ctx().turnOutput.errorMessage = "Operation aborted";
@@ -1105,7 +1111,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		.catch((error) => {
 			debug(`provider: query error, model=${model.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
 			if ((wasAborted || options?.signal?.aborted) && sharedSession) {
-				sharedSession = { ...sharedSession, needsRebuild: true };
+				sharedSession = { ...sharedSession, needsRebuild: true, pendingOrphanRace: true };
 			} else {
 				sharedSession = null;
 			}
@@ -1335,6 +1341,22 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 	pi.on("session_shutdown", () => clearSession("session_shutdown"));
+
+	// pi /compact and session-tree navigation (rewind / fork-at-point /
+	// branch switch) both mutate pi's messages array out from under the
+	// bridge. syncSharedSession's REUSE check would otherwise see
+	// slice(cursor) === [] (or skip entries) and keep --resume'ing a CC
+	// session that no longer matches pi's history. /compact in particular
+	// triggers CC's autocompact-thrashing guard (issue #8). Force the next
+	// call down the REBUILD path so CC sees the current history.
+	const markRebuild = (event: string) => {
+		if (sharedSession) {
+			debug(`${event}: marking needsRebuild on session ${sharedSession.sessionId.slice(0, 8)}`);
+			sharedSession = { ...sharedSession, needsRebuild: true };
+		}
+	};
+	pi.on("session_compact", () => markRebuild("session_compact"));
+	pi.on("session_tree", () => markRebuild("session_tree"));
 
 	// --- Provider ---
 	//

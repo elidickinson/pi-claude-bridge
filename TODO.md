@@ -18,6 +18,18 @@
 
 ## Possible Enhancements
 
+- **Lie about `contextWindow` to encourage pi-side autocompact before CC's**:
+  pi triggers its own compaction at a percentage of the model's reported
+  `contextWindow`. CC's autocompact runs against the real window. If both
+  numbers are identical, CC may autocompact first on long sessions and (when
+  context refills fast) trip its anti-thrashing guard — issue #8. Reporting a
+  smaller `contextWindow` in `buildModels` (e.g., 70–80% of actual) makes pi
+  compact first, which the bridge already propagates to CC via the
+  `session_compact` handler. Tradeoffs: pi UI shows misleading "X% of
+  context" numbers; large file reads may get refused earlier than necessary.
+  Not yet decided whether worth the cosmetic cost.
+
+
 - **AskUserQuestion pi shim** (main provider only): CC never sees
   AskUserQuestion (it's in `DISALLOWED_BUILTIN_TOOLS`), so it can't ask the
   user questions interactively. Port a pi-native version using `ctx.ui.custom()`

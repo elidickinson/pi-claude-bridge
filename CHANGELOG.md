@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fix: pi `/compact` no longer triggers CC autocompact-thrashing (issue #8)** — pi's compaction shrinks its messages array, but `syncSharedSession`'s REUSE check (`slice(cursor)`) silently returned `[]`, so the bridge kept `--resume`ing the pre-compact CC session JSONL. Over long sessions CC's own autocompact then refilled within 3 turns and tripped its anti-thrashing guard. Now subscribes to pi's `session_compact` event and forces the next sync down the REBUILD path so CC sees the post-compact history. Also subscribes to `session_tree` (branch nav has the same shape).
+- **Refactor: split `needsRebuild` into `needsRebuild` + `pendingOrphanRace`** — only the abort case needs UUID rotation (to dodge late writes from the dying CC subprocess). Compact/tree now rebuild in place, preserving the sessionId and not leaking orphan JSONL files into `~/.claude/projects/`.
+- **Test: int-session-compact + int-session-new** — end-to-end RPC-harness coverage for `/compact` and `/new` propagation.
 - **Test: rpc-harness auto-loads `.env.test`** — int tests now work via direct `node --import tsx --test` invocation, not just `npm test`.
 - **Block user-installed MCP servers from leaking into bridge sessions** — pass `--strict-mcp-config` unconditionally and set `ENABLE_CLAUDEAI_MCP_SERVERS=0` in the spawned CC env, suppressing both filesystem (`~/.claude.json`, `.mcp.json`) and claude.ai cloud MCP servers. Override with `provider.strictMcpConfig: false`.
 - **Block CC's `ScheduleWakeup` tool** — no-op in bridge sessions (no harness to fire the wakeup); blocking it stops the model from wasting turns on lies about deferred work.
