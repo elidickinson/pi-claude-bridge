@@ -4,9 +4,7 @@
 
 Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript).
 
-> 🔱 **You're reading the [`tycronk20/pi-claude-bridge`](https://github.com/tycronk20/pi-claude-bridge) fork**, branch [`thinking-variants`](https://github.com/tycronk20/pi-claude-bridge/tree/thinking-variants). It adds: optional `-instant` model variants for adaptive Claude models, per-model effort mapping that exposes Anthropic's `max` tier (previously inaccessible from pi's selector), and `--thinking disabled` enforcement so `~/.claude/settings.json` can't silently re-enable reasoning. See [CHANGELOG](CHANGELOG.md) and the "Provider" section below for details. **Install:** clone the branch, then `pi install <local-path>`.
-
-> Built on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal — the provider skeleton, tool name mapping, and settings loading originate from that project. The upstream [`elidickinson/pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge) (which this fork tracks) adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and the AskClaude tool.
+> Built on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal — the provider skeleton, tool name mapping, and settings loading originate from that project. This fork adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and the AskClaude tool.
 
 1. **Provider** — Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI
 2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
@@ -42,7 +40,7 @@ Pi's `reasoning` slider sets the API effort tier. Built-in defaults prefer label
 | `high` | `high` | `high` |
 | `xhigh` | `xhigh` | **`max`** |
 
-Because pi has no `max` label, Anthropic `max` on Opus 4.7 is only reachable via `provider.thinkingLevelMaps`. The config example below shows a shifted Opus 4.7 map that trades label accuracy for access to every Anthropic effort tier.
+Because pi has no `max` label, Anthropic `max` on Opus 4.7 is only reachable with a custom `thinkingLevelMap` in `~/.pi/agent/models.json`. A shifted Opus 4.7 map can trade label accuracy for access to every Anthropic effort tier.
 
 Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
 
