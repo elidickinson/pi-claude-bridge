@@ -10,12 +10,12 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildModels, resolveModelId as _resolveModelId, baseModelId, thinkingModeFor, effortFor } from "./models.js";
+import { buildModels, projectConfiguredModels, resolveModelId as _resolveModelId, baseModelId, thinkingModeFor, effortFor } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx, stackDepth, pushContext, popContext } from "./query-state.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, loadModelsJsonProviderModels } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
@@ -116,7 +116,9 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 };
 
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
-const MODELS = buildModels(getModels("anthropic"));
+// Initialized with defaults at module load, then rebuilt during registration once
+// provider config is available.
+let MODELS = buildModels(getModels("anthropic"));
 
 function resolveModelId(input: string): string {
 	return _resolveModelId(MODELS, input);
@@ -980,13 +982,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const realModelId = baseModelId(model.id);
 	const reasoningEffort = options?.reasoning
 		? (thinkingMode !== undefined
-			? (effortFor(model.id, options.reasoning) as EffortLevel | undefined)
+			? (effortFor(model.id, options.reasoning, (model as any).thinkingLevelMap) as EffortLevel | undefined)
 			: LEGACY_REASONING_TO_EFFORT[options.reasoning])
 		: undefined;
 
-	// Per-variant thinking semantics:
-	//   "on"  — `-thinking` variant: emit thinking blocks. Picker hides `off` and
-	//           `minimal` so reasoning is always low/medium/high/xhigh.
+	// Per-model thinking semantics:
+	//   "on"  — adaptive base model: emit thinking blocks. Picker hides `off` and
+	//           (for Opus) uses `minimal` as the low effort slot so `max` is reachable.
 	//   "off" — `-instant` variant: pass `--thinking disabled` so the CC binary
 	//           doesn't re-enable reasoning from ~/.claude/settings.json
 	//           (alwaysThinkingEnabled / effortLevel). Effort still controls compute.
@@ -1225,9 +1227,10 @@ async function promptAndWait(
 	// the model variant wins — it's the more explicit choice.
 	const thinkingMode = thinkingModeFor(modelId);
 	const realModelId = baseModelId(modelId);
+	const modelConfig = MODELS.find((m) => m.id === modelId);
 	const reasoningEffort = options?.thinking && options.thinking !== "off"
 		? (thinkingMode !== undefined
-			? (effortFor(modelId, options.thinking) as EffortLevel | undefined)
+			? (effortFor(modelId, options.thinking, (modelConfig as any)?.thinkingLevelMap) as EffortLevel | undefined)
 			: LEGACY_REASONING_TO_EFFORT[options.thinking])
 		: undefined;
 	const effort: EffortLevel | undefined = reasoningEffort;
@@ -1361,6 +1364,10 @@ export default function (pi: ExtensionAPI) {
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
 	const config = loadConfig(process.cwd());
+	const configuredModels = loadModelsJsonProviderModels(PROVIDER_ID);
+	MODELS = configuredModels
+		? projectConfiguredModels(configuredModels)
+		: buildModels(getModels("anthropic"), { instantVariants: config.provider?.instantVariants });
 	debug("loadConfig:", JSON.stringify(config));
 
 	// Reset shared session on pi session lifecycle events

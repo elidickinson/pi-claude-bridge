@@ -8,6 +8,17 @@ import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
+export interface ModelsJsonModel {
+	id: string;
+	name?: string;
+	reasoning?: boolean;
+	thinkingLevelMap?: Record<string, string | null>;
+	input?: string[];
+	cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
 export interface Config {
 	askClaude?: {
 		enabled?: boolean;
@@ -25,6 +36,8 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
+		/** Expose `-instant` virtual model variants for adaptive-thinking models. Defaults true. */
+		instantVariants?: boolean;
 	};
 }
 
@@ -45,4 +58,10 @@ export function loadConfig(cwd: string): Config {
 		askClaude: { ...global.askClaude, ...project.askClaude },
 		provider: { ...global.provider, ...project.provider },
 	};
+}
+
+export function loadModelsJsonProviderModels(providerId: string): ModelsJsonModel[] | undefined {
+	const modelsJson = tryParseJson(join(homedir(), ".pi", "agent", "models.json")) as any;
+	const models = modelsJson?.providers?.[providerId]?.models;
+	return Array.isArray(models) ? models : undefined;
 }

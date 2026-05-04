@@ -4,7 +4,7 @@
 
 Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript).
 
-> 🔱 **You're reading the [`tycronk20/pi-claude-bridge`](https://github.com/tycronk20/pi-claude-bridge) fork**, branch [`thinking-variants`](https://github.com/tycronk20/pi-claude-bridge/tree/thinking-variants). It adds: split `-thinking`/`-instant` model variants for adaptive Claude models, per-model effort mapping that exposes Anthropic's `max` tier (previously inaccessible from pi's selector), and `--thinking disabled` enforcement so `~/.claude/settings.json` can't silently re-enable reasoning. See [CHANGELOG](CHANGELOG.md) and the "Provider" section below for details. **Install:** clone the branch, then `pi install <local-path>`.
+> 🔱 **You're reading the [`tycronk20/pi-claude-bridge`](https://github.com/tycronk20/pi-claude-bridge) fork**, branch [`thinking-variants`](https://github.com/tycronk20/pi-claude-bridge/tree/thinking-variants). It adds: optional `-instant` model variants for adaptive Claude models, per-model effort mapping that exposes Anthropic's `max` tier (previously inaccessible from pi's selector), and `--thinking disabled` enforcement so `~/.claude/settings.json` can't silently re-enable reasoning. See [CHANGELOG](CHANGELOG.md) and the "Provider" section below for details. **Install:** clone the branch, then `pi install <local-path>`.
 
 > Built on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal — the provider skeleton, tool name mapping, and settings loading originate from that project. The upstream [`elidickinson/pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge) (which this fork tracks) adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and the AskClaude tool.
 
@@ -25,24 +25,24 @@ pi install npm:pi-claude-bridge
 
 ## Provider
 
-Each adaptive-thinking Claude model is exposed as **two `/model` variants**:
+Adaptive-thinking Claude models use the real pi model IDs for visible reasoning:
 
-- `claude-bridge/claude-{opus-4-7,opus-4-6,sonnet-4-6}-thinking` — emits visible reasoning blocks
+- `claude-bridge/claude-{opus-4-7,opus-4-6,sonnet-4-6}` — emits visible reasoning blocks
 - `claude-bridge/claude-{opus-4-7,opus-4-6,sonnet-4-6}-instant` — runs without reasoning blocks (effort still applied to compute)
 
-Plus `claude-bridge/claude-haiku-4-5` (single variant — haiku uses budget-based thinking, no effort knob).
+Plus `claude-bridge/claude-haiku-4-5` (single variant — haiku uses budget-based thinking, no effort knob). Set `provider.instantVariants: false` to hide the `-instant` virtual variants.
 
-Pi's `reasoning` slider sets the API effort tier. Mapping per model:
+Pi's `reasoning` slider sets the API effort tier. Built-in defaults prefer label accuracy:
 
-| Pi label | Opus 4.6 / 4.7 | Sonnet 4.6 |
+| Pi label | Opus 4.7 | Opus 4.6 / Sonnet 4.6 |
 |---|---|---|
-| `minimal` | `low` | *(hidden)* |
-| `low` | `medium` | `low` |
-| `medium` | `high` | `medium` |
-| `high` | `xhigh` | `high` |
-| `xhigh` | **`max`** | **`max`** |
+| `minimal` | *(hidden)* | *(hidden)* |
+| `low` | `low` | `low` |
+| `medium` | `medium` | `medium` |
+| `high` | `high` | `high` |
+| `xhigh` | `xhigh` | **`max`** |
 
-> ⚠️ **Opus labels are shifted down by one tier.** Anthropic's adaptive-thinking enum on Opus has 5 tiers (`low/medium/high/xhigh/max`), but pi's selector only has 4 useful slots, so we surface `minimal` and shift everything down one position to expose `max`. Sonnet has 4 tiers and uses the natural label-aligned mapping. Pi's selector intentionally hardcodes its own level names (per upstream maintainer), so the shift is here to stay — refer to the table above when picking a level on Opus.
+Because pi has no `max` label, Anthropic `max` on Opus 4.7 is only reachable via `provider.thinkingLevelMaps`. The config example below shows a shifted Opus 4.7 map that trades label accuracy for access to every Anthropic effort tier.
 
 Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
 
@@ -68,7 +68,7 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 
 ## Configuration
 
-Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (project; merged over global).
+Bridge behavior config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (project; merged over global).
 
 ```json
 {
@@ -80,10 +80,13 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
   },
   "provider": {
     "strictMcpConfig": true,
+    "instantVariants": true,
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
   }
 }
 ```
+
+Model metadata, including custom `thinkingLevelMap`, belongs in `~/.pi/agent/models.json`. If `providers.claude-bridge.models` is present there, the bridge uses that explicit list (including any duplicated `-instant` entries) instead of generating defaults.
 
 `askClaude`:
 - `enabled` — register the AskClaude tool (default `true`)
@@ -97,6 +100,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
 - `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
+- `instantVariants` — expose generated `-instant` virtual variants for adaptive-thinking models when no explicit `claude-bridge` models are configured in `models.json` (default `true`). Set `false` to show only the real pi model IDs.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Required on **NixOS** (and other non-FHS systems) where the SDK's bundled musl/glibc binaries can't run. Set to your Nix-installed binary, e.g. `"/home/you/.nix-profile/bin/claude"`.
 
 ## Tests
