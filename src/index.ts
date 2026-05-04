@@ -972,7 +972,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	const effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;
+	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
+	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
+	// Fall back to our generic table for older pi-ai or unmapped levels.
+	const effort = options?.reasoning
+		? ((model as any).thinkingLevelMap?.[options.reasoning] as EffortLevel | undefined)
+			?? REASONING_TO_EFFORT[options.reasoning]
+		: undefined;
 
 	const extraArgs: Record<string, string | null> = { model: model.id };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
