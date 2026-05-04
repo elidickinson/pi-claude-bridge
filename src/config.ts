@@ -3,7 +3,7 @@
 // global. Missing or unparseable files are ignored (error to console.error,
 // empty object returned) so the extension always starts.
 
-import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type { EffortLevel, SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -38,6 +38,8 @@ export interface Config {
 		pathToClaudeCodeExecutable?: string;
 		/** Expose `-instant` virtual model variants for adaptive-thinking models. Defaults true. */
 		instantVariants?: boolean;
+		/** Effort to send when pi's reasoning level is `off` on a thinking-visible adaptive model. */
+		effortWhenReasoningOff?: EffortLevel;
 	};
 }
 

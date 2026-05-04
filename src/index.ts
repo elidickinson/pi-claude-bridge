@@ -980,6 +980,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	const thinkingMode = thinkingModeFor(model.id);
 	const realModelId = baseModelId(model.id);
+	const reasoningOffEffort = thinkingMode === "on" && (options?.reasoning as string | undefined) === "off"
+		? providerSettings.effortWhenReasoningOff as EffortLevel | undefined
+		: undefined;
 	const reasoningEffort = options?.reasoning
 		? (thinkingMode !== undefined
 			? (effortFor(model.id, options.reasoning, (model as any).thinkingLevelMap) as EffortLevel | undefined)
@@ -995,7 +998,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	//           Picker hides `off` here too — Anthropic appears to default to high-ish
 	//           effort when no level is sent, so an "off" pick was misleading.
 	//   undefined — non-adaptive (haiku 4.5): legacy behavior — `effort` gates thinking.
-	const effort: EffortLevel | undefined = reasoningEffort;
+	const effort: EffortLevel | undefined = reasoningEffort ?? reasoningOffEffort;
 
 	const extraArgs: Record<string, string | null> = { model: realModelId };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
@@ -1228,14 +1231,18 @@ async function promptAndWait(
 	const thinkingMode = thinkingModeFor(modelId);
 	const realModelId = baseModelId(modelId);
 	const modelConfig = MODELS.find((m) => m.id === modelId);
+	const providerConfig = loadConfig(cwd).provider ?? {};
+	const reasoningOffEffort = thinkingMode === "on" && options?.thinking === "off"
+		? providerConfig.effortWhenReasoningOff as EffortLevel | undefined
+		: undefined;
 	const reasoningEffort = options?.thinking && options.thinking !== "off"
 		? (thinkingMode !== undefined
 			? (effortFor(modelId, options.thinking, (modelConfig as any)?.thinkingLevelMap) as EffortLevel | undefined)
 			: LEGACY_REASONING_TO_EFFORT[options.thinking])
 		: undefined;
-	const effort: EffortLevel | undefined = reasoningEffort;
+	const effort: EffortLevel | undefined = reasoningEffort ?? reasoningOffEffort;
 
-	const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
+	const claudeExecutable = providerConfig.pathToClaudeCodeExecutable;
 
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
