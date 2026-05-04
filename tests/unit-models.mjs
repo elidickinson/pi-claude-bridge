@@ -55,7 +55,7 @@ describe("MODELS projection", () => {
 		const models = buildModels(PI_AI_BASE_IDS.map(mockPiAiModel));
 		for (const id of ["claude-opus-4-7", "claude-opus-4-7-instant"]) {
 			const m = models.find((mm) => mm.id === id);
-			assert.equal(m.thinkingLevelMap.off, null);
+			assert.equal("off" in m.thinkingLevelMap, false);
 			assert.equal(m.thinkingLevelMap.minimal, null);
 			assert.equal(m.thinkingLevelMap.low, "low");
 			assert.equal(m.thinkingLevelMap.medium, "medium");
@@ -68,7 +68,7 @@ describe("MODELS projection", () => {
 		const models = buildModels(PI_AI_BASE_IDS.map(mockPiAiModel));
 		for (const id of ["claude-opus-4-6", "claude-opus-4-6-instant", "claude-sonnet-4-6", "claude-sonnet-4-6-instant"]) {
 			const m = models.find((mm) => mm.id === id);
-			assert.equal(m.thinkingLevelMap.off, null);
+			assert.equal("off" in m.thinkingLevelMap, false);
 			assert.equal(m.thinkingLevelMap.minimal, null);
 			assert.equal(m.thinkingLevelMap.low, "low");
 			assert.equal(m.thinkingLevelMap.medium, "medium");

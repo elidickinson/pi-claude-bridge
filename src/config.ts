@@ -38,7 +38,7 @@ export interface Config {
 		pathToClaudeCodeExecutable?: string;
 		/** Expose `-instant` virtual model variants for adaptive-thinking models. Defaults true. */
 		instantVariants?: boolean;
-		/** Effort to send when pi's reasoning level is `off` on a thinking-visible adaptive model. */
+		/** Effort to send when pi's reasoning level is `off` on a thinking-visible adaptive model. Defaults high. */
 		effortWhenReasoningOff?: EffortLevel;
 	};
 }

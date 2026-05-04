@@ -981,7 +981,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const thinkingMode = thinkingModeFor(model.id);
 	const realModelId = baseModelId(model.id);
 	const reasoningOffEffort = thinkingMode === "on" && (options?.reasoning as string | undefined) === "off"
-		? providerSettings.effortWhenReasoningOff as EffortLevel | undefined
+		? (providerSettings.effortWhenReasoningOff ?? "high") as EffortLevel
 		: undefined;
 	const reasoningEffort = options?.reasoning
 		? (thinkingMode !== undefined
@@ -1233,7 +1233,7 @@ async function promptAndWait(
 	const modelConfig = MODELS.find((m) => m.id === modelId);
 	const providerConfig = loadConfig(cwd).provider ?? {};
 	const reasoningOffEffort = thinkingMode === "on" && options?.thinking === "off"
-		? providerConfig.effortWhenReasoningOff as EffortLevel | undefined
+		? (providerConfig.effortWhenReasoningOff ?? "high") as EffortLevel
 		: undefined;
 	const reasoningEffort = options?.thinking && options.thinking !== "off"
 		? (thinkingMode !== undefined

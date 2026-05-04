@@ -57,19 +57,20 @@ export function thinkingModeFor(variantId: string): "on" | "off" | undefined {
 //     (read by `effortFor()` below).
 //
 // Common rules across all adaptive Claude models:
-//   - `off` hidden — effort-less adaptive requests can silently default high-ish.
+//   - `off` visible on thinking-visible models; the bridge sends
+//     provider.effortWhenReasoningOff (default high) instead of omitting effort.
 //   - `minimal` hidden by default — Anthropic's effort enum has no minimal tier.
 //   - Built-in defaults prefer label accuracy. Users who want to expose Opus 4.7
 //     `max` through pi's missing max slot can define explicit claude-bridge
 //     models in ~/.pi/agent/models.json with shifted thinkingLevelMap entries.
 function defaultThinkingLevelMapFor(baseId: string): ThinkingLevelMap {
 	if (baseId === "claude-opus-4-7") {
-		return { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh" };
+		return { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh" };
 	}
 	if (baseId === "claude-opus-4-6" || baseId === "claude-sonnet-4-6") {
-		return { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "max" };
+		return { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "max" };
 	}
-	return { off: null, minimal: null, low: "low", medium: "medium", high: "high" };
+	return { minimal: null, low: "low", medium: "medium", high: "high" };
 }
 
 /**

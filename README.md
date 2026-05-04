@@ -34,6 +34,7 @@ Pi's `reasoning` slider sets the API effort tier. Built-in defaults prefer label
 
 | Pi label | Opus 4.7 | Opus 4.6 / Sonnet 4.6 |
 |---|---|---|
+| `off` | `provider.effortWhenReasoningOff` | `provider.effortWhenReasoningOff` |
 | `minimal` | *(hidden)* | *(hidden)* |
 | `low` | `low` | `low` |
 | `medium` | `medium` | `medium` |
@@ -100,7 +101,7 @@ Model metadata, including custom `thinkingLevelMap`, belongs in `~/.pi/agent/mod
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `instantVariants` — expose generated `-instant` virtual variants for adaptive-thinking models when no explicit `claude-bridge` models are configured in `models.json` (default `true`). Set `false` to show only the real pi model IDs.
-- `effortWhenReasoningOff` — optional effort (`low`, `medium`, `high`, `xhigh`, or `max`) to send when pi's reasoning level is `off` on a thinking-visible adaptive model. This keeps visible thinking enabled while avoiding Claude Code's default effort.
+- `effortWhenReasoningOff` — effort (`low`, `medium`, `high`, `xhigh`, or `max`) to send when pi's reasoning level is `off` on a thinking-visible adaptive model (default `high`). This keeps visible thinking enabled while avoiding Claude Code's default effort.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Required on **NixOS** (and other non-FHS systems) where the SDK's bundled musl/glibc binaries can't run. Set to your Nix-installed binary, e.g. `"/home/you/.nix-profile/bin/claude"`.
 
 ## Tests
