@@ -104,6 +104,13 @@ describe("MODELS projection", () => {
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(models.map((m) => m.id), ["claude-haiku-4-5"]);
 	});
+
+	it("zeros out cost regardless of pi-ai pricing", () => {
+		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+		for (const m of models) {
+			assert.deepEqual(m.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		}
+	});
 });
 
 describe("resolveModelId", () => {

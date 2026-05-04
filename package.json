@@ -33,7 +33,7 @@
   },
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.123",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
     "@anthropic-ai/sdk": "^0.73.0",
     "cc-session-io": "^0.3.1",
     "change-case": "^5.4.4",
@@ -44,8 +44,8 @@
     "@mariozechner/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "^0.70.6",
-    "@mariozechner/pi-coding-agent": "^0.70.6",
+    "@mariozechner/pi-ai": "^0.72.1",
+    "@mariozechner/pi-coding-agent": "^0.72.1",
     "@types/node": "^24.3.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"

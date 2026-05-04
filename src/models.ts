@@ -112,7 +112,7 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 			const base = byId.get(baseModelId(variantId));
 			if (!base) return null;
 			const mode = thinkingModeFor(variantId);
-			const { name, reasoning, input, cost, contextWindow, maxTokens } = base;
+			const { name, reasoning, input, contextWindow, maxTokens } = base;
 			const baseName = name ?? base.id;
 			let displayName: string;
 			if (mode === "on") displayName = `${baseName} (thinking)`;
@@ -121,7 +121,8 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 			return {
 				id: variantId,
 				name: displayName,
-				reasoning, input, cost, contextWindow, maxTokens,
+				reasoning, input, contextWindow, maxTokens,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				...(mode !== undefined ? { thinkingLevelMap: thinkingLevelMapFor(baseModelId(variantId)) } : {}),
 			};
 		})
