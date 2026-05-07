@@ -6,9 +6,9 @@ import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthro
 import { Type } from "typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
-import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join, resolve } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
@@ -835,6 +835,25 @@ async function consumeQuery(
 	return { capturedSessionId };
 }
 
+/** Read a custom system prompt file declared via `provider.systemPromptFile`.
+ *  Resolves relative paths against `cwd`; returns undefined and logs a warning
+ *  if the file is missing or unreadable so the bridge keeps running on the
+ *  Claude Code preset rather than crashing the provider. */
+function readSystemPromptFile(path: string, cwd: string): string | undefined {
+	const resolved = isAbsolute(path) ? path : resolve(cwd, path);
+	if (!existsSync(resolved)) {
+		console.error(`claude-bridge: systemPromptFile not found: ${resolved}`);
+		return undefined;
+	}
+	try {
+		const contents = readFileSync(resolved, "utf-8").trim();
+		return contents.length > 0 ? contents : undefined;
+	} catch (e) {
+		console.error(`claude-bridge: failed to read systemPromptFile ${resolved}: ${e}`);
+		return undefined;
+	}
+}
+
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -955,6 +974,18 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, ctx());
 	const providerSettings = loadConfig(cwd).provider ?? {};
+
+	// systemPromptFile: optional path to a Markdown file used as the *base*
+	// system prompt instead of Claude Code's preset. Resolved relative to cwd
+	// if not absolute. AGENTS.md / skills still append on top when
+	// `appendSystemPrompt` is true (default) — orthogonal to which base is
+	// used. Use to ship a slim system prompt when CC's preset overhead isn't
+	// needed.
+	const customSystemPrompt = providerSettings.systemPromptFile
+		? readSystemPromptFile(providerSettings.systemPromptFile, cwd)
+		: undefined;
+	const useCustomSystemPrompt = customSystemPrompt !== undefined;
+
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
 	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
@@ -997,16 +1028,21 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
 	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
+
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
 		tools: [],
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
+		systemPrompt: useCustomSystemPrompt
+			? (systemPromptAppend
+					? `${customSystemPrompt}\n\n${systemPromptAppend}`
+					: customSystemPrompt)
+			: {
+					type: "preset", preset: "claude_code",
+					append: systemPromptAppend ? systemPromptAppend : undefined,
+				},
 		extraArgs,
 		...(effort ? { effort } : {}),
 		...(settingSources ? { settingSources } : {}),
@@ -1019,7 +1055,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	debug("provider: fresh query",
 		`model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
-		`appendSys=${appendSystemPrompt} strictMcp=${strictMcpConfigEnabled}`,
+		`appendSys=${appendSystemPrompt} strictMcp=${strictMcpConfigEnabled} customSysPrompt=${useCustomSystemPrompt}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
 	// 3. Start SDK query and claim it for this context
