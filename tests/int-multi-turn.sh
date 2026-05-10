@@ -27,19 +27,19 @@ run_json() {
   if timeout "$TIMEOUT" "$@" > "$logfile" 2>"$logfile.err"; then
     if [ ! -s "$logfile" ]; then
       echo "FAIL (empty output)"
-      ((FAIL++))
+      ((++FAIL))
     elif jq -s -e "$assertion" < "$logfile" > /dev/null 2>&1; then
       echo "PASS"
-      ((PASS++))
+      ((++PASS))
     else
       echo "FAIL (assertion)"
       echo "  Events: $(jq -r '.type // empty' < "$logfile" 2>/dev/null | sort | uniq -c | sort -rn | head -5)"
-      ((FAIL++))
+      ((++FAIL))
     fi
   else
     echo "FAIL (exit $?)"
     [ -s "$logfile" ] && echo "  Events: $(jq -r '.type // empty' < "$logfile" 2>/dev/null | sort | uniq -c | sort -rn | head -5)"
-    ((FAIL++))
+    ((++FAIL))
   fi
   echo "  Log: $logfile"
   kill_descendants
