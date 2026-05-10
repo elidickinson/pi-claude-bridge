@@ -1,7 +1,7 @@
 // Pure pi→Anthropic message conversion helpers.
 // Extracted so they can be tested without pulling in the full extension runtime.
 
-import type { Message as PiMessage } from "@mariozechner/pi-ai";
+import type { Message as PiMessage } from "@earendil-works/pi-ai";
 import type { Message as SessionMessage } from "cc-session-io";
 import { pascalCase } from "change-case";
 

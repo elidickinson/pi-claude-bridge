@@ -2,7 +2,7 @@
 // giving the test harness time to inject messages via RPC while the tool
 // handler is waiting for a result.
 import { Type } from "typebox";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
 	const params = Type.Object({

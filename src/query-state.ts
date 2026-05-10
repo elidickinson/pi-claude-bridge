@@ -6,7 +6,7 @@
 //
 // Extracted from index.ts so tests can import without activating the extension.
 
-import type { AssistantMessage, AssistantMessageEventStream, Model } from "@mariozechner/pi-ai";
+import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 
 export interface PendingToolCall {

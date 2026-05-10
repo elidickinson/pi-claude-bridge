@@ -3,7 +3,7 @@
 ## Features
 
 - **Markdown rendering** in expanded tool result view. Currently plain text.
-  Use `Markdown` from `@mariozechner/pi-tui` with a `MarkdownTheme`.
+  Use `Markdown` from `@earendil-works/pi-tui` with a `MarkdownTheme`.
 
 - **`/claude config` slash command** for runtime configuration. Currently
   requires editing JSON and `/reload`.

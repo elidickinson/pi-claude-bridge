@@ -1,10 +1,10 @@
-import { calculateCost, getModels, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@mariozechner/pi-ai";
-import * as piAi from "@mariozechner/pi-ai";
-import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionUIContext } from "@mariozechner/pi-coding-agent";
+import { calculateCost, getModels, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@earendil-works/pi-ai";
+import * as piAi from "@earendil-works/pi-ai";
+import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
