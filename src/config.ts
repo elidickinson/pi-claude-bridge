@@ -25,6 +25,13 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
+		/** Path to a Markdown file used as the *base* system prompt instead of
+		 *  Claude Code's preset. Relative paths resolve against the current
+		 *  working directory. AGENTS.md / skills still append on top when
+		 *  `appendSystemPrompt` is true (default) — orthogonal to which base
+		 *  is used. Use to ship a slim system prompt when CC's preset overhead
+		 *  isn't needed. */
+		systemPromptFile?: string;
 	};
 }
 
