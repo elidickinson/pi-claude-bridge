@@ -438,6 +438,18 @@ function mapToolName(name: string, customToolNameToPi?: Map<string, string>): st
 	return name;
 }
 
+// True for tools pi can actually dispatch: pi's own MCP tools, or the small
+// set of CC built-ins we route through pi (read/write/edit/bash). Returns
+// false for SDK built-ins like WebSearch/WebFetch/ToolSearch/Skills/LSP that
+// the inner claude binary executes itself — those must NOT be forwarded to
+// pi as toolCall blocks (pi would fail with "Tool X not found").
+function isPiTool(name: string, customToolNameToPi: Map<string, string>): boolean {
+	const normalized = name.toLowerCase();
+	if (SDK_TO_PI_TOOL_NAME[normalized]) return true;
+	if (customToolNameToPi.has(name) || customToolNameToPi.has(normalized)) return true;
+	return false;
+}
+
 // Renames for Claude Code SDK param names that differ from pi's native names.
 // Keys not listed here pass through unchanged, so new pi params work automatically.
 const SDK_KEY_RENAMES: Record<string, Record<string, string>> = {
@@ -629,6 +641,15 @@ function processStreamEvent(
 			c.turnBlocks.push({ type: "thinking", thinking: "", thinkingSignature: "", index: event.index });
 			c.currentPiStream!.push({ type: "thinking_start", contentIndex: c.turnBlocks.length - 1, partial: c.turnOutput });
 		} else if (event.content_block?.type === "tool_use") {
+			// SDK built-ins (WebSearch/WebFetch/ToolSearch/Skill/LSP/…) are executed
+			// by the inner claude binary itself. Don't surface them to pi: pi has
+			// no such tool registered and would error "Tool X not found". The block
+			// is intentionally omitted from turnBlocks so subsequent delta/stop
+			// events for this index no-op (findIndex returns -1).
+			if (!isPiTool(event.content_block.name, customToolNameToPi)) {
+				debug(`provider: suppressing SDK builtin tool_use from pi: ${event.content_block.name}`);
+				return;
+			}
 			c.turnSawToolCall = true;
 			c.turnToolCallIds.push(event.content_block.id);
 			c.turnBlocks.push({
@@ -742,6 +763,11 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 			if (block.thinking) c.currentPiStream?.push({ type: "thinking_delta", contentIndex: idx, delta: block.thinking, partial: c.turnOutput });
 			c.currentPiStream?.push({ type: "thinking_end", contentIndex: idx, content: block.thinking ?? "", partial: c.turnOutput });
 		} else if (block.type === "tool_use") {
+			// See note in processStreamEvent: SDK built-ins must not be forwarded to pi.
+			if (!isPiTool(block.name, customToolNameToPi)) {
+				debug(`provider: suppressing SDK builtin tool_use from pi (assistant fallback): ${block.name}`);
+				continue;
+			}
 			ensureTurnStarted();
 			c.turnSawToolCall = true;
 			c.turnToolCallIds.push(block.id);
@@ -1029,11 +1055,35 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Manual /compact in CC still works (we never invoke it).
 	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
 
+	// Tool surface: omit the SDK's `tools` field so the claude_code preset
+	// loads its full default tool set (which the SDK then auto-defers via
+	// ToolSearch — only ToolSearch's schema lives in the prompt upfront,
+	// every other built-in pulls its schema on demand). Then explicitly
+	// disallow the built-ins that overlap with pi's MCP versions so
+	// file/bash/notebook ops still route through pi. WebFetch, WebSearch,
+	// LSP, Skills fall through and become available to the model.
+	// Previously this passed `tools: []` which suppressed every built-in,
+	// including the web tools that have no pi equivalent.
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
-		tools: [],
 		permissionMode: "bypassPermissions",
+		disallowedTools: [
+			// File / bash ops — route through pi's MCP versions instead
+			"Read", "Write", "Edit", "MultiEdit", "Bash",
+			"Grep", "Glob",
+			// Notebook bypass paths
+			"NotebookRead", "NotebookEdit",
+			// Existing bash session manipulation
+			"BashOutput", "KillShell", "KillBash",
+			// Shell-out vector via slash commands
+			"SlashCommand",
+			// Worktree fs mutations
+			"EnterWorktree", "ExitWorktree",
+			// Pi has its own subagent + interactive prompts
+			"Agent", "Task",
+			"AskUserQuestion", "ExitPlanMode",
+		],
 		includePartialMessages: true,
 		systemPrompt: useCustomSystemPrompt
 			? (systemPromptAppend
