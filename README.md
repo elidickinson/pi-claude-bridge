@@ -23,7 +23,25 @@ pi install npm:pi-claude-bridge
 
 ## Provider
 
-Use `/model` to select `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
+Adaptive-thinking Claude models use the real pi model IDs for visible reasoning:
+
+- `claude-bridge/claude-{opus-4-7,opus-4-6,sonnet-4-6}` — emits visible reasoning blocks
+- `claude-bridge/claude-{opus-4-7,opus-4-6,sonnet-4-6}-instant` — runs without reasoning blocks (effort still applied to compute)
+
+Plus `claude-bridge/claude-haiku-4-5` (single variant — haiku uses budget-based thinking, no effort knob). Set `provider.instantVariants: false` to hide the `-instant` virtual variants.
+
+Pi's `reasoning` slider sets the API effort tier. Built-in defaults prefer label accuracy:
+
+| Pi label | Opus 4.7 | Opus 4.6 / Sonnet 4.6 |
+|---|---|---|
+| `off` | `provider.effortWhenReasoningOff` | `provider.effortWhenReasoningOff` |
+| `minimal` | *(hidden)* | *(hidden)* |
+| `low` | `low` | `low` |
+| `medium` | `medium` | `medium` |
+| `high` | `high` | `high` |
+| `xhigh` | `xhigh` | **`max`** |
+
+Because pi has no `max` label, Anthropic `max` on Opus 4.7 is only reachable with a custom `thinkingLevelMap` in `~/.pi/agent/models.json`. A shifted Opus 4.7 map can trade label accuracy for access to every Anthropic effort tier.
 
 Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
 
@@ -49,7 +67,7 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 
 ## Configuration
 
-Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (project; merged over global).
+Bridge behavior config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (project; merged over global).
 
 ```json
 {
@@ -61,10 +79,14 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
   },
   "provider": {
     "strictMcpConfig": true,
+    "instantVariants": true,
+    "effortWhenReasoningOff": "high",
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
   }
 }
 ```
+
+Model metadata, including custom `thinkingLevelMap`, belongs in `~/.pi/agent/models.json`. If `providers.claude-bridge.models` is present there, the bridge uses that explicit list (including any duplicated `-instant` entries) instead of generating defaults.
 
 `askClaude`:
 - `enabled` — register the AskClaude tool (default `true`)
@@ -78,6 +100,8 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
 - `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
+- `instantVariants` — expose generated `-instant` virtual variants for adaptive-thinking models when no explicit `claude-bridge` models are configured in `models.json` (default `true`). Set `false` to show only the real pi model IDs.
+- `effortWhenReasoningOff` — effort (`low`, `medium`, `high`, `xhigh`, or `max`) to send when pi's reasoning level is `off` on a thinking-visible adaptive model (default `high`). This keeps visible thinking enabled while avoiding Claude Code's default effort.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Required on **NixOS** (and other non-FHS systems) where the SDK's bundled musl/glibc binaries can't run. Set to your Nix-installed binary, e.g. `"/home/you/.nix-profile/bin/claude"`.
 
 ## Tests

@@ -3,10 +3,21 @@
 // global. Missing or unparseable files are ignored (error to console.error,
 // empty object returned) so the extension always starts.
 
-import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type { EffortLevel, SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+
+export interface ModelsJsonModel {
+	id: string;
+	name?: string;
+	reasoning?: boolean;
+	thinkingLevelMap?: Record<string, string | null>;
+	input?: string[];
+	cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+	contextWindow?: number;
+	maxTokens?: number;
+}
 
 export interface Config {
 	askClaude?: {
@@ -25,6 +36,10 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
+		/** Expose `-instant` virtual model variants for adaptive-thinking models. Defaults true. */
+		instantVariants?: boolean;
+		/** Effort to send when pi's reasoning level is `off` on a thinking-visible adaptive model. Defaults high. */
+		effortWhenReasoningOff?: EffortLevel;
 	};
 }
 
@@ -45,4 +60,10 @@ export function loadConfig(cwd: string): Config {
 		askClaude: { ...global.askClaude, ...project.askClaude },
 		provider: { ...global.provider, ...project.provider },
 	};
+}
+
+export function loadModelsJsonProviderModels(providerId: string): ModelsJsonModel[] | undefined {
+	const modelsJson = tryParseJson(join(homedir(), ".pi", "agent", "models.json")) as any;
+	const models = modelsJson?.providers?.[providerId]?.models;
+	return Array.isArray(models) ? models : undefined;
 }

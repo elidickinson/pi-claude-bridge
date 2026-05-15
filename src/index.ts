@@ -10,12 +10,12 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
+import { buildModels, projectConfiguredModels, resolveModelId as _resolveModelId, baseModelId, thinkingModeFor, effortFor } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx, stackDepth, pushContext, popContext } from "./query-state.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, loadModelsJsonProviderModels } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
@@ -116,7 +116,9 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 };
 
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
-const MODELS = buildModels(getModels("anthropic"));
+// Initialized with defaults at module load, then rebuilt during registration once
+// provider config is available.
+let MODELS = buildModels(getModels("anthropic"));
 
 function resolveModelId(input: string): string {
 	return _resolveModelId(MODELS, input);
@@ -547,10 +549,14 @@ function updateUsage(output: AssistantMessage, usage: Record<string, number | un
 }
 
 // --- Effort level mapping ---
-// Pi reasoning levels → CC SDK effort levels
+// Per-model: see `effortFor()` in models.ts. Bridges pi's reasoning slider
+// position → the literal effort string Anthropic expects, respecting per-model
+// quirks (Opus 4.6's top tier is "max"; Opus 4.7's is "xhigh"; Sonnet 4.6 caps
+// at "high"). Legacy fallback for non-adaptive models (haiku) keeps the old
+// global mapping.
 
-const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
-	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max",
+const LEGACY_REASONING_TO_EFFORT: Record<string, EffortLevel> = {
+	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh",
 };
 
 // --- Provider helpers: misc ---
@@ -972,19 +978,37 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
-	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
-	// Fall back to our generic table for older pi-ai or unmapped levels.
-	const effort = options?.reasoning
-		? ((model as any).thinkingLevelMap?.[options.reasoning] as EffortLevel | undefined)
-			?? REASONING_TO_EFFORT[options.reasoning]
+	const thinkingMode = thinkingModeFor(model.id);
+	const realModelId = baseModelId(model.id);
+	const reasoningOffEffort = thinkingMode === "on" && (options?.reasoning as string | undefined) === "off"
+		? (providerSettings.effortWhenReasoningOff ?? "high") as EffortLevel
+		: undefined;
+	const reasoningEffort = options?.reasoning
+		? (thinkingMode !== undefined
+			? (effortFor(model.id, options.reasoning, (model as any).thinkingLevelMap) as EffortLevel | undefined)
+			: LEGACY_REASONING_TO_EFFORT[options.reasoning])
 		: undefined;
 
-	const extraArgs: Record<string, string | null> = { model: model.id };
+	// Per-model thinking semantics:
+	//   "on"  — adaptive base model: emit thinking blocks. Picker hides `off` and
+	//           (for Opus) uses `minimal` as the low effort slot so `max` is reachable.
+	//   "off" — `-instant` variant: pass `--thinking disabled` so the CC binary
+	//           doesn't re-enable reasoning from ~/.claude/settings.json
+	//           (alwaysThinkingEnabled / effortLevel). Effort still controls compute.
+	//           Picker hides `off` here too — Anthropic appears to default to high-ish
+	//           effort when no level is sent, so an "off" pick was misleading.
+	//   undefined — non-adaptive (haiku 4.5): legacy behavior — `effort` gates thinking.
+	const effort: EffortLevel | undefined = reasoningEffort ?? reasoningOffEffort;
+
+	const extraArgs: Record<string, string | null> = { model: realModelId };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
-	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
-	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	if (thinkingMode === "off") {
+		extraArgs["thinking"] = "disabled";
+	} else if (thinkingMode === "on" || effort) {
+		// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
+		// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
+		extraArgs["thinking-display"] = "summarized";
+	}
 
 	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
 	// when the user is logged into Anthropic). These are a separate code path from
@@ -1017,8 +1041,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	};
 
 	debug("provider: fresh query",
-		`model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length}`,
-		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
+		`model=${model.id}→${realModelId} msgs=${context.messages.length} tools=${mcpTools.length}`,
+		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} thinking=${thinkingMode ?? "auto"} effort=${effort ?? "default"}`,
 		`appendSys=${appendSystemPrompt} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
@@ -1200,20 +1224,38 @@ async function promptAndWait(
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
 
-	// Effort
-	const effort = options?.thinking && options.thinking !== "off"
-		? REASONING_TO_EFFORT[options.thinking] : undefined;
+	// Effort + thinking variant. AskClaude's `thinking` option sets effort directly;
+	// model variant (`-thinking` suffix) controls whether thinking blocks render.
+	// If both are passed in conflict (variant says on/off, thinking option contradicts),
+	// the model variant wins — it's the more explicit choice.
+	const thinkingMode = thinkingModeFor(modelId);
+	const realModelId = baseModelId(modelId);
+	const modelConfig = MODELS.find((m) => m.id === modelId);
+	const providerConfig = loadConfig(cwd).provider ?? {};
+	const reasoningOffEffort = thinkingMode === "on" && options?.thinking === "off"
+		? (providerConfig.effortWhenReasoningOff ?? "high") as EffortLevel
+		: undefined;
+	const reasoningEffort = options?.thinking && options.thinking !== "off"
+		? (thinkingMode !== undefined
+			? (effortFor(modelId, options.thinking, (modelConfig as any)?.thinkingLevelMap) as EffortLevel | undefined)
+			: LEGACY_REASONING_TO_EFFORT[options.thinking])
+		: undefined;
+	const effort: EffortLevel | undefined = reasoningEffort ?? reasoningOffEffort;
 
-	const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
+	const claudeExecutable = providerConfig.pathToClaudeCodeExecutable;
 
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
-		model: modelId,
+		model: realModelId,
 	};
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	if (thinkingMode === "off") {
+		extraArgs["thinking"] = "disabled";
+	} else if (thinkingMode === "on" || effort) {
+		extraArgs["thinking-display"] = "summarized";
+	}
 
 	debug("askClaude:",
-		`mode=${mode} model=${modelId} effort=${effort ?? "default"}`,
+		`mode=${mode} model=${modelId}→${realModelId} thinking=${thinkingMode ?? "auto"} effort=${effort ?? "default"}`,
 		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
 		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
 
@@ -1329,6 +1371,10 @@ export default function (pi: ExtensionAPI) {
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
 	const config = loadConfig(process.cwd());
+	const configuredModels = loadModelsJsonProviderModels(PROVIDER_ID);
+	MODELS = configuredModels
+		? projectConfiguredModels(configuredModels)
+		: buildModels(getModels("anthropic"), { instantVariants: config.provider?.instantVariants });
 	debug("loadConfig:", JSON.stringify(config));
 
 	// Reset shared session on pi session lifecycle events
