@@ -121,4 +121,4 @@ When filing a bug about a session-resume failure (e.g. "No conversation found"),
 
 ## Maintenance
 
-After updating Claude Code or the Agent SDK, check for new built-in tools that may need adding to `DISALLOWED_BUILTIN_TOOLS` in `src/index.ts`. Unrecognized CC tools leak through to pi as tool calls it can't handle. Symptoms: "Tool X not found" errors in pi.
+After a Claude Code release, review `MODE_DISALLOWED_TOOLS` in `src/index.ts` — it gates which CC tools the AskClaude subagent may invoke per mode (`read` / `full` / `none`). Add new agentic tools (PlanMode, Task spawning, etc.) to the appropriate mode lists if they shouldn't be available to subagents.

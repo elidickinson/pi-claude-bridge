@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-05-04
 
 - **Add optional `-instant` variants for adaptive-thinking models** — Opus 4.6/4.7 and Sonnet 4.6 use their real pi model IDs for visible reasoning, plus optional `-instant` virtual variants (no reasoning blocks; effort still applies to compute). The `-instant` variant emits `--thinking disabled` so the CC binary doesn't silently re-enable reasoning from `~/.claude/settings.json` (`alwaysThinkingEnabled` / `effortLevel`). Disable virtual variants with `provider.instantVariants: false`. Haiku 4.5 is unchanged (not adaptive-thinking; uses budget-based thinking gated by `reasoning`).
 - **Configurable per-model effort mapping** — replaced the single global `REASONING_TO_EFFORT` table with per-model `thinkingLevelMap` entries. Built-in defaults prefer label accuracy (`low→low`, `medium→medium`, etc.); users who want Opus 4.7 `max` reachable despite pi lacking a `max` selector can define explicit `claude-bridge` models in `~/.pi/agent/models.json` with shifted maps (`minimal→low, low→medium, …, xhigh→max`). See README "Provider" section for details.
