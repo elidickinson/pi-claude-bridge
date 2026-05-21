@@ -21,7 +21,10 @@ export interface Config {
 	};
 	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
+		/** @deprecated Use systemPromptMode instead. true=append, false=disabled. */
 		appendSystemPrompt?: boolean;
+		/** Controls how pi's system prompt (AGENTS.md + skills) is fed to Claude Code. */
+		systemPromptMode?: "append" | "replace" | false;
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
@@ -58,4 +61,20 @@ export function loadConfig(cwd: string): Config {
 		askClaude: { ...global.askClaude, ...project.askClaude },
 		provider: { ...global.provider, ...project.provider },
 	};
+}
+
+/**
+ * Resolves the effective systemPromptMode, handling the deprecated appendSystemPrompt
+ * boolean alias for backward compatibility.
+ * - "append": CC default + pi's AGENTS.md/skills appended (original behavior)
+ * - "replace": only pi's AGENTS.md/skills, CC default is not loaded
+ * - false: no system prompt at all
+ */
+export type SystemPromptMode = "append" | "replace" | false;
+
+export function resolveSystemPromptMode(provider: Config["provider"]): SystemPromptMode {
+	if (provider?.appendSystemPrompt !== undefined) {
+		return provider.appendSystemPrompt ? "append" : false;
+	}
+	return provider?.systemPromptMode ?? "append";
 }
