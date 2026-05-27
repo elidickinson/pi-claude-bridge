@@ -1153,17 +1153,25 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const mcpServers = buildMcpServers(mcpTools, ctx());
 	const providerSettings = loadConfig(cwd).provider ?? {};
 	const systemPromptMode = resolveSystemPromptMode(providerSettings);
-	const agentsAppend = systemPromptMode ? extractAgentsAppend() : undefined;
-	const skillsAppend = systemPromptMode ? extractSkillsBlock(context.systemPrompt) : undefined;
+	// Always extract content; mode determines how it's passed to the SDK.
+	const agentsAppend = extractAgentsAppend();
+	const skillsAppend = extractSkillsBlock(context.systemPrompt);
 	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
 	const systemPromptContent = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+
+	debug(`systemPrompt debug: mode=${systemPromptMode} agentsAppend.length=${agentsAppend?.length ?? 0} skillsAppend.length=${skillsAppend?.length ?? 0} content.length=${systemPromptContent?.length ?? 0} processCwd=${process.cwd()} providerCwd=${cwd}`);
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
 	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
 	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
 	// programmatically and ignore filesystem MCP entries — applied unconditionally because
 	// settingSources=undefined does NOT give isolation (the CC default loads all sources).
-	const settingSources: SettingSource[] | undefined = providerSettings.settingSources ?? ["user", "project"];
+	// When systemPromptMode is "replace", we don't want CC to load its default
+	// prompt OR any CLAUDE.md from settings. Setting settingSources to []
+	// tells the CLI to not load any settings-based system prompts.
+	const effectiveSettingSources = systemPromptMode === "replace"
+		? []
+		: (providerSettings.settingSources ?? ["user", "project"]);
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1205,15 +1213,17 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		includePartialMessages: true,
 		systemPrompt: systemPromptMode === "append"
 			? { type: "preset", preset: "claude_code", append: systemPromptContent }
-			: systemPromptContent,
+			: systemPromptContent ?? "",
 		extraArgs,
 		...(effort ? { effort } : {}),
-		...(settingSources ? { settingSources } : {}),
+		...(effectiveSettingSources ? { settingSources: effectiveSettingSources } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 		...makeCliDebugOptions("provider"),
 	};
+
+	debug(`queryOptions.systemPrompt: ${typeof systemPromptContent === "string" ? `string(${systemPromptContent.length}chars)` : JSON.stringify(systemPromptContent)} mode=${systemPromptMode}`);
 
 	debug("provider: fresh query",
 		`model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -1427,7 +1437,8 @@ async function promptAndWait(
 
 	// System prompt mode from config (AskClaude doesn't use AGENTS.md, only skills)
 	const systemPromptMode = resolveSystemPromptMode(loadConfig(cwd).provider);
-	const skillsBlock = systemPromptMode && options?.appendSkills !== false && options?.systemPrompt
+	// Always extract skills; mode determines how it's passed to the SDK.
+	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
 
 	// Effort
