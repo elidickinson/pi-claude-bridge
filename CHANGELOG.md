@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Add: claude-opus-4-8 model** — Anthropic shipped Opus 4.8, but the installed `@mariozechner/pi-ai` (0.73.x) doesn't define `claude-opus-4-8` yet, so adding the id to `MODEL_IDS_IN_ORDER` alone gets it dropped by `buildModels`' `piAiModels.find` filter. Reintroduced a small `SYNTHETIC_MODELS` fallback that clones the `claude-opus-4-7` entry (identical params: 1M context, 128k max tokens, `xhigh→xhigh` thinking map) under the new id/name. The `opus` shortcut now resolves to 4.8; 4.7/4.6 remain available for explicit pinning. Once pi-ai ships the official definition, drop the synthetic entry and the `find` picks it up directly (per the 0.3.0 pi-ai-bump pattern).
+
 ## 0.4.0 — 2026-05-04
 
 - **Fix: Opus 4.7 + xhigh sent wrong effort to SDK** — pi-ai 0.72 ships per-model `thinkingLevelMap` overrides (e.g. `claude-opus-4-7` declares `xhigh→xhigh`, not `xhigh→max`), but our hardcoded `REASONING_TO_EFFORT` table ignored them. Effort lookup now consults `model.thinkingLevelMap` first, falls back to the table for older pi-ai or unmapped levels. Forwarded `thinkingLevelMap` through `buildModels` projection.

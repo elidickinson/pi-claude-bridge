@@ -33,10 +33,23 @@ describe("MODELS projection", () => {
 		assert.deepEqual(models.map((m) => m.id), MODEL_IDS_IN_ORDER);
 	});
 
-	it("silently drops IDs missing from pi-ai (no fallback)", () => {
-		// Only haiku present — opus/sonnet vanish from picker.
+	it("drops IDs with no pi-ai entry and no synthetic base", () => {
+		// Only haiku present — opus/sonnet vanish; opus-4-8's synthetic base
+		// (opus-4-7) is also absent, so it can't be cloned either.
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(models.map((m) => m.id), ["claude-haiku-4-5"]);
+	});
+
+	it("synthesizes claude-opus-4-8 from claude-opus-4-7 when pi-ai lacks it", () => {
+		// pi-ai has 4-7 but not 4-8 (current state): 4-8 is cloned from 4-7.
+		const models = buildModels([mockPiAiModel("claude-opus-4-7")]);
+		const ids = models.map((m) => m.id);
+		assert.ok(ids.includes("claude-opus-4-8"));
+		const v48 = models.find((m) => m.id === "claude-opus-4-8");
+		const v47 = models.find((m) => m.id === "claude-opus-4-7");
+		assert.equal(v48.name, "Claude Opus 4.8");
+		assert.equal(v48.contextWindow, v47.contextWindow);
+		assert.equal(v48.maxTokens, v47.maxTokens);
 	});
 
 	it("zeros out cost regardless of pi-ai pricing", () => {
@@ -50,8 +63,8 @@ describe("MODELS projection", () => {
 describe("resolveModelId", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
 
-	it("opus shortcut resolves to claude-opus-4-7 (first opus in order)", () => {
-		assert.equal(resolveModelId(models, "opus"), "claude-opus-4-7");
+	it("opus shortcut resolves to claude-opus-4-8 (first opus in order)", () => {
+		assert.equal(resolveModelId(models, "opus"), "claude-opus-4-8");
 	});
 
 	it("haiku shortcut resolves to claude-haiku-4-5", () => {
