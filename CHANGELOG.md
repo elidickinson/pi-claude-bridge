@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: 1M-context models now actually use the 1M window (issue #24, #17)** — models whose advertised context window exceeds 200K (Opus 4.6/4.7/4.8, Sonnet 4.6) show a `[1m]` suffix in their display name while keeping registered pi model ids stable/bare. The bridge adds `[1m]` only at the Claude Code CLI `--model` boundary, which is what enables its 1M window; without it the CLI stays on the 200K default and long sessions hit a spurious `Prompt is too long` once context crosses ~200K, even though pi's status bar shows headroom. The `context-1m-2025-08-07` beta proposed in #24 does **not** work for this bridge's audience: under Pro/Max subscription (OAuth) auth the CLI discards custom betas (`Custom betas are only available for API key users. Ignoring provided betas.`). The `[1m]` model-id path works under subscription auth. Haiku 4.5 (200K) is unaffected.
+
 ## 0.5.0 — 2026-06-05
 
 - **Add: claude-opus-4-8 model** — migrated pi imports/dev peers from deprecated `@mariozechner/*` packages to `@earendil-works/*` 0.78.x so the official pi-ai registry supplies Opus 4.8. The `opus` shortcut now resolves to 4.8; 4.7/4.6 remain available for explicit pinning.

@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
+import { buildModels, claudeCodeModelId, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -118,8 +118,8 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
 const MODELS = buildModels(getModels("anthropic"));
 
-function resolveModelId(input: string): string {
-	return _resolveModelId(MODELS, input);
+function resolveModel(input: string) {
+	return _resolveModel(MODELS, input);
 }
 
 // --- Error handling ---
@@ -980,7 +980,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			?? REASONING_TO_EFFORT[options.reasoning]
 		: undefined;
 
-	const extraArgs: Record<string, string | null> = { model: model.id };
+	const extraArgs: Record<string, string | null> = { model: claudeCodeModelId(model) };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
@@ -1173,7 +1173,10 @@ async function promptAndWait(
 	},
 ): Promise<{ responseText: string; stopReason: string }> {
 	const cwd = process.cwd();
-	const modelId = resolveModelId(options?.model ?? "opus");
+	const requestedModel = options?.model ?? "opus";
+	const model = resolveModel(requestedModel);
+	const modelId = model?.id ?? requestedModel;
+	const cliModel = model ? claudeCodeModelId(model) : modelId;
 
 	// Session resume for shared mode — reuse provider's session if it exists,
 	// otherwise create one from pi's context.
@@ -1208,12 +1211,12 @@ async function promptAndWait(
 
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
-		model: modelId,
+		model: cliModel,
 	};
 	if (effort) extraArgs["thinking-display"] = "summarized";
 
 	debug("askClaude:",
-		`mode=${mode} model=${modelId} effort=${effort ?? "default"}`,
+		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
 		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
 		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
 
