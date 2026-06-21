@@ -49,25 +49,22 @@ export function resolveModel<T extends { id: string }>(models: T[], input: strin
 // Produce the model metadata registered with pi. The registered contextWindow must
 // match the window the bridge actually requests from Claude Code, or pi's status
 // bar and auto-compaction threshold will misreport: registering 1M while the CLI
-// runs at 200K (the bare-id default for unlisted long-context models) recreates
-// the "pi shows headroom but CC errors with Prompt is too long / credit gate"
-// bug (issue #24, #17). So a long-context-capable model is registered at 1M only
-// when opted into longContextModelIds (the same set that drives the [1m] suffix);
-// otherwise its window is capped at 200K. Haiku (200K native) is unaffected.
-//
-// Caveat: on Max/Team/Enterprise a bare Opus id is auto-upgraded to 1M by Claude
-// Code (default since v2.1.75), so an unlisted Opus registers 200K but runs at
-// 1M — pi will compact earlier than the true headroom allows. This is the safe
-// direction (wasteful, not a hard failure); the bridge can't detect plan tier to
-// do better. Max users wanting accurate 1M budgeting for Opus can list it in
-// enableLongContextModels (sends [1m]; included per Anthropic docs, though see
-// claude-code#39841 for a reported Max 5x regression).
+// runs at 200K recreates the "pi shows headroom but CC errors with Prompt is too
+// long / credit gate" bug (issue #24, #17). Three cases:
+//   1. Opted into longContextModelIds → sends [1m], runtime 1M → register 1M.
+//   2. plan "max" + bare Opus → CC auto-upgrades to 1M (default since v2.1.75) →
+//      register 1M WITHOUT [1m], avoiding the usage-credits gate an explicit
+//      opus[1m] can trip on Max 5x (#39841). Only Opus auto-upgrades; Sonnet's 1M
+//      always requires explicit [1m] + credits.
+//   3. Everything else (Sonnet bare, Opus on Pro, Haiku) → runtime 200K → register 200K.
 export function applyLongContext<T extends { id: string; contextWindow?: number | null }>(
 	models: T[],
 	longContextModelIds: Set<string>,
+	plan: "pro" | "max",
 ): T[] {
 	return models.map((m) => {
 		if (longContextModelIds.has(m.id) && hasOneMContext(m)) return m;
+		if (plan === "max" && m.id.includes("opus") && hasOneMContext(m)) return m;
 		const capped = Math.min(m.contextWindow ?? 200_000, 200_000);
 		return capped === m.contextWindow ? m : { ...m, contextWindow: capped };
 	});

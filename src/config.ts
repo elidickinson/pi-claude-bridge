@@ -25,6 +25,13 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
+		// Subscription plan tier, controls the registered contextWindow for a bare
+		// (unlisted) Opus id: "pro" (default) → Opus runs at 200K so registers 200K;
+		// "max" → Claude Code auto-upgrades bare Opus to 1M so registers 1M (without
+		// appending [1m], avoiding #39841). Use "max" for Max, Team Premium,
+		// Enterprise pay-as-you-go, or Anthropic API. Only Opus auto-upgrades; Sonnet
+		// and Haiku are unaffected. See README.
+		plan?: "pro" | "max";
 		// Bare model ids (e.g. "claude-opus-4-8") to opt into 1M (long) context for.
 		// Only long-context-capable models (>200K advertised window: Opus 4.6+,
 		// Sonnet 4.6) are affected; Haiku 4.5 (200K) and any id not listed stay on

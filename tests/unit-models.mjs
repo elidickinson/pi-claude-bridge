@@ -81,8 +81,8 @@ describe("applyLongContext (registered contextWindow)", () => {
 	const oneM = (id) => ({ ...mockPiAiModel(id), contextWindow: 1000000 });
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(oneM));
 
-	it("caps unlisted long-context models to 200K so pi's budget matches the bare-id runtime", () => {
-		const registered = applyLongContext(models, new Set());
+	it("plan pro (default): caps unlisted long-context models to 200K", () => {
+		const registered = applyLongContext(models, new Set(), "pro");
 		for (const m of registered) {
 			assert.equal(m.contextWindow, 200000, `${m.id} should register at 200K`);
 		}
@@ -91,17 +91,36 @@ describe("applyLongContext (registered contextWindow)", () => {
 	});
 
 	it("keeps 1M for opted-in long-context models (matches the [1m] CLI id)", () => {
-		const registered = applyLongContext(models, new Set(["claude-opus-4-8", "claude-sonnet-4-6"]));
+		const registered = applyLongContext(models, new Set(["claude-opus-4-8", "claude-sonnet-4-6"]), "pro");
 		assert.equal(registered.find((m) => m.id === "claude-opus-4-8").contextWindow, 1000000);
 		assert.equal(registered.find((m) => m.id === "claude-sonnet-4-6").contextWindow, 1000000);
 		// Unlisted long-context siblings stay capped.
 		assert.equal(registered.find((m) => m.id === "claude-opus-4-7").contextWindow, 200000);
 	});
 
+	it("plan max: registers unlisted Opus at 1M (CC auto-upgrades bare id, no [1m])", () => {
+		const registered = applyLongContext(models, new Set(), "max");
+		for (const id of ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"]) {
+			assert.equal(registered.find((m) => m.id === id).contextWindow, 1000000, `${id} should register at 1M on max`);
+		}
+	});
+
+	it("plan max: Sonnet still caps at 200K (no auto-upgrade, needs explicit [1m])", () => {
+		const registered = applyLongContext(models, new Set(), "max");
+		assert.equal(registered.find((m) => m.id === "claude-sonnet-4-6").contextWindow, 200000);
+	});
+
+	it("plan max does not append [1m] (decoupled from enableLongContextModels, avoids #39841)", () => {
+		// Unlisted Opus on max registers 1M but the CLI id stays bare — only
+		// enableLongContextModels membership drives the [1m] suffix, never plan.
+		const opus = applyLongContext(models, new Set(), "max").find((m) => m.id === "claude-opus-4-8");
+		assert.equal(claudeCodeModelId(opus, false), "claude-opus-4-8");
+	});
+
 	it("leaves Haiku (200K native) at 200K whether listed or not", () => {
 		const bare200K = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel)); // haiku=200K
-		assert.equal(applyLongContext(bare200K, new Set(["claude-haiku-4-5"])).find((m) => m.id === "claude-haiku-4-5").contextWindow, 200000);
-		assert.equal(applyLongContext(bare200K, new Set()).find((m) => m.id === "claude-haiku-4-5").contextWindow, 200000);
+		assert.equal(applyLongContext(bare200K, new Set(["claude-haiku-4-5"]), "max").find((m) => m.id === "claude-haiku-4-5").contextWindow, 200000);
+		assert.equal(applyLongContext(bare200K, new Set(), "pro").find((m) => m.id === "claude-haiku-4-5").contextWindow, 200000);
 	});
 });
 

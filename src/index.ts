@@ -1554,11 +1554,13 @@ export default function (pi: ExtensionAPI) {
 
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
-	// Registered contextWindow must match what we send the CLI: long-context models
-	// are registered at 1M only when opted into enableLongContextModels (which is
-	// also what appends [1m]); otherwise capped at 200K so pi's status/compaction
-	// reflects the bare-id 200K runtime. See applyLongContext in models.js.
-	const registeredModels = applyLongContext(MODELS, new Set(config.provider?.enableLongContextModels ?? []));
+	// Registered contextWindow must match what we send the CLI. plan (default "pro")
+	// tells the bridge whether a bare Opus id auto-upgrades to 1M at runtime
+	// (Max-tier plans), so an unlisted Opus registers 1M WITHOUT sending [1m].
+	// enableLongContextModels is the separate explicit-[1m] lever. See README and
+	// applyLongContext in models.js.
+	const plan = config.provider?.plan ?? "pro";
+	const registeredModels = applyLongContext(MODELS, new Set(config.provider?.enableLongContextModels ?? []), plan);
 
 	// Reset shared session on pi session lifecycle events
 	const clearSession = (event: string) => {
