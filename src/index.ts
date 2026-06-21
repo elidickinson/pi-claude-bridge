@@ -1,6 +1,6 @@
 import { calculateCost, getModels, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
-import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
+import { applyLongContext, applyOneMDisplayNames, buildModels, claudeCodeModelId, hasOneMContext, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -118,8 +118,8 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
 const MODELS = buildModels(getModels("anthropic"));
 
-function resolveModelId(input: string): string {
-	return _resolveModelId(MODELS, input);
+function resolveModel(input: string) {
+	return _resolveModel(MODELS, input);
 }
 
 // --- Error handling ---
@@ -280,6 +280,155 @@ async function* wrapPromptStream(blocks: ContentBlockParam[]): AsyncIterable<SDK
 	};
 }
 
+function newAssistantOutput(model: Model<any>, text: string, stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: text ? [{ type: "text", text }] : [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason,
+		...(errorMessage ? { errorMessage } : {}),
+		timestamp: Date.now(),
+	};
+}
+
+function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
+	if (messages.length !== 1 || messages[0].role !== "user") {
+		throw new Error(
+			`isolatedStreamFn: expected exactly 1 user message, got ${messages.length} ` +
+			`(${messages.map((m) => m.role).join(",")})`,
+		);
+	}
+	const promptText = extractUserPrompt(messages);
+	if (!promptText) throw new Error("isolatedStreamFn: summarization prompt is empty");
+	return promptText;
+}
+
+function resultErrorText(message: SDKMessage): string {
+	const result = message as SDKMessage & { subtype?: string; errors?: unknown; error?: unknown };
+	if (Array.isArray(result.errors)) return result.errors.map(String).join("\n");
+	if (typeof result.error === "string") return result.error;
+	return `Claude Code summary failed: ${result.subtype ?? "unknown result"}`;
+}
+
+function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	const stream = newAssistantMessageEventStream();
+	void runIsolatedSummary(model, context, options, stream);
+	return stream;
+}
+
+async function runIsolatedSummary(
+	model: Model<any>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	stream: AssistantMessageEventStream,
+): Promise<void> {
+	let sdkQuery: ReturnType<typeof query> | undefined;
+	let wasAborted = false;
+	const onAbort = () => {
+		wasAborted = true;
+		void sdkQuery?.interrupt().catch(() => {});
+		try { sdkQuery?.close(); } catch {}
+	};
+
+	try {
+		const promptText = extractIsolatedSummaryPrompt(context.messages);
+		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+		const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
+		debug(`compact summary: spawn model=${model.id} promptLen=${promptText.length}`);
+
+		sdkQuery = query({
+			prompt: promptText,
+			options: {
+				cwd,
+				env: { ...process.env, DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+				tools: [],
+				strictMcpConfig: true,
+				settingSources: [] as SettingSource[],
+				skills: [],
+				persistSession: false,
+				systemPrompt: context.systemPrompt,
+				model: model.id,
+				maxTurns: 1,
+				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+				...makeCliDebugOptions("compact-summary"),
+			},
+		});
+
+		if (options?.signal) {
+			if (options.signal.aborted) onAbort();
+			else options.signal.addEventListener("abort", onAbort, { once: true });
+		}
+
+		let assistantText = "";
+		let finalText = "";
+		let errorText: string | undefined;
+		let firstEventLogged = false;
+
+		for await (const message of sdkQuery) {
+			if (!firstEventLogged) {
+				debug(`compact summary: first event type=${message.type}`);
+				firstEventLogged = true;
+			}
+			if (wasAborted) break;
+
+			if (message.type === "assistant") {
+				for (const block of (message as any).message?.content ?? []) {
+					if (block.type === "text" && typeof block.text === "string") assistantText += block.text;
+				}
+			} else if (message.type === "result") {
+				if (message.subtype === "success") {
+					finalText = message.result || assistantText;
+				} else {
+					errorText = resultErrorText(message);
+				}
+			}
+		}
+
+		if (wasAborted) {
+			const output = newAssistantOutput(model, "", "aborted", "Operation aborted");
+			debug("compact summary: aborted");
+			stream.push({ type: "error", reason: "aborted", error: output });
+			stream.end();
+			return;
+		}
+
+		const text = finalText || assistantText;
+		if (errorText || !text.trim()) {
+			const msg = errorText ?? "Claude Code summary returned empty text";
+			debug(`compact summary: error ${msg}`);
+			stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
+			stream.end();
+			return;
+		}
+
+		debug(`compact summary: done textLen=${text.length}`);
+		stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
+		stream.end();
+	} catch (err) {
+		const msg = errorMessage(err);
+		debug("runIsolatedSummary threw; pushing terminal error", err);
+		stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
+		stream.end();
+	} finally {
+		options?.signal?.removeEventListener("abort", onAbort);
+		try { sdkQuery?.close(); } catch {}
+	}
+}
+
+function reinjectPriorCompactionFileOps(branchEntries: Array<{ type: string; details?: unknown }>, preparation: { fileOps: { read: Set<string>; edited: Set<string> } }): void {
+	const prior = [...branchEntries]
+		.reverse()
+		.find((entry): entry is CompactionEntry => entry.type === "compaction");
+	const details = prior?.details as { readFiles?: unknown; modifiedFiles?: unknown } | undefined;
+	if (!Array.isArray(details?.readFiles) || !Array.isArray(details?.modifiedFiles)) return;
+	for (const file of details.readFiles) preparation.fileOps.read.add(String(file));
+	for (const file of details.modifiedFiles) preparation.fileOps.edited.add(String(file));
+	debug(`compact takeover: re-injected prior file ops read=${details.readFiles.length} modified=${details.modifiedFiles.length}`);
+}
 
 interface SyncResult {
 	sessionId: string | null;
@@ -610,6 +759,20 @@ function parsePartialJson(input: string, fallback: Record<string, unknown>): Rec
 // currentPiStream, so any leftover messages hit the `!ctx().currentPiStream` guard
 // in consumeQuery and are skipped before resetTurnState runs.
 
+const completedStreams = new WeakSet<object>();
+
+function markStreamComplete(stream: AssistantMessageEventStream | null): void {
+	if (stream) completedStreams.add(stream as object);
+}
+
+function claimCurrentPiStream(stream: AssistantMessageEventStream, label: string): void {
+	const c = ctx();
+	if (c.currentPiStream && !completedStreams.has(c.currentPiStream as object)) {
+		debug(`WARNING: currentPiStream overwritten before terminal event (${label}); activeQuery=${Boolean(c.activeQuery)} pendingHandlers=${c.pendingToolCalls.size}`);
+	}
+	c.currentPiStream = stream;
+}
+
 function ensureTurnStarted(): void {
 	if (!ctx().turnStarted && ctx().currentPiStream && ctx().turnOutput) {
 		ctx().currentPiStream!.push({ type: "start", partial: ctx().turnOutput });
@@ -622,8 +785,10 @@ function finalizeCurrentStream(stopReason?: string): void {
 	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: ctx().turnOutput!.stopReason, error: ctx().turnOutput!.errorMessage})}`);
 	if (!ctx().turnStarted) ensureTurnStarted();
 	const reason = stopReason === "length" ? "length" : "stop";
-	ctx().currentPiStream!.push({ type: "done", reason, message: ctx().turnOutput });
-	ctx().currentPiStream!.end();
+	const stream = ctx().currentPiStream;
+	stream!.push({ type: "done", reason, message: ctx().turnOutput });
+	markStreamComplete(stream);
+	stream!.end();
 	ctx().currentPiStream = null;
 }
 
@@ -724,8 +889,10 @@ function processStreamEvent(
 		// consumeQuery to skip it. The MCP handler blocks the generator until
 		// pi delivers the tool result via the next streamSimple call.
 		c.turnOutput.stopReason = "toolUse";
-		c.currentPiStream!.push({ type: "done", reason: "toolUse", message: c.turnOutput });
-		c.currentPiStream!.end();
+		const stream = c.currentPiStream;
+		stream!.push({ type: "done", reason: "toolUse", message: c.turnOutput });
+		markStreamComplete(stream);
+		stream!.end();
 		c.currentPiStream = null;
 
 		// Cursor is updated by the next streamSimple call (tool result delivery path)
@@ -790,8 +957,10 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
 	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
 		c.turnOutput.stopReason = "toolUse";
-		c.currentPiStream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
-		c.currentPiStream.end();
+		const stream = c.currentPiStream;
+		stream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
+		markStreamComplete(stream);
+		stream.end();
 		c.currentPiStream = null;
 	}
 }
@@ -875,7 +1044,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// (everything after the last assistant message) and match against waiting MCP
 	// handlers. Results that arrive before their handler get queued in pendingResults.
 	if (ctx().activeQuery) {
-		ctx().currentPiStream = stream;
+		claimCurrentPiStream(stream, "tool-result");
 		ctx().resetTurnState(model);
 		const allResults = extractAllToolResults(context);
 		debug(`provider: tool results, ${allResults.length} results, ${ctx().pendingToolCalls.size} waiting handlers, ctx.msgs=${context.messages.length}`);
@@ -933,6 +1102,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		queueMicrotask(() => {
 			c.resetTurnState(model);
 			stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			markStreamComplete(stream);
 			stream.end();
 		});
 		return stream;
@@ -947,7 +1117,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// 2. Fresh child context — constructor already gave us clean Maps and empty
 	//    arrays. For a reused top-level context, clear explicitly.
-	ctx().currentPiStream = stream;
+	claimCurrentPiStream(stream, "fresh-query");
 	ctx().pendingToolCalls.clear();
 	ctx().pendingResults.clear();
 	ctx().deferredUserMessages = [];
@@ -1007,7 +1177,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			?? REASONING_TO_EFFORT[options.reasoning]
 		: undefined;
 
-	const extraArgs: Record<string, string | null> = { model: model.id };
+	const longContextModels = new Set(
+		providerSettings.longContextExtraUsage
+			? MODELS.filter(m => hasOneMContext(m)).map(m => m.id)
+			: [] as string[]
+	);
+	const extraArgs: Record<string, string | null> = { model: claudeCodeModelId(model, longContextModels.has(model.id)) };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
@@ -1091,8 +1266,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 					ctx().turnOutput.stopReason = "aborted";
 					ctx().turnOutput.errorMessage = "Operation aborted";
 				}
-				ctx().currentPiStream?.push({ type: "error", reason: "aborted", error: ctx().turnOutput! });
-				ctx().currentPiStream?.end();
+				const stream = ctx().currentPiStream;
+				stream?.push({ type: "error", reason: "aborted", error: ctx().turnOutput! });
+				markStreamComplete(stream);
+				stream?.end();
 				ctx().currentPiStream = null;
 				return;
 			}
@@ -1150,6 +1327,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				ctx().activeQuery = sdkQuery;
 			}
 
+			if (!isReentrant && ctx().activeQuery === sdkQuery) {
+				debug("provider: clearing activeQuery before final stream completion");
+				ctx().activeQuery = null;
+			}
 			finalizeCurrentStream(ctx().turnOutput?.stopReason);
 		})
 		.catch((error) => {
@@ -1164,8 +1345,17 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				ctx().turnOutput.stopReason = options?.signal?.aborted ? "aborted" : "error";
 				ctx().turnOutput.errorMessage = error instanceof Error ? error.message : String(error);
 			}
-			ctx().currentPiStream?.push({ type: "error", reason: (ctx().turnOutput?.stopReason ?? "error") as "aborted" | "error", error: ctx().turnOutput! });
-			ctx().currentPiStream?.end();
+			if (!isReentrant && ctx().activeQuery === sdkQuery) {
+				for (const pending of ctx().pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Query ended" }] }); }
+				ctx().pendingToolCalls.clear();
+				ctx().pendingResults.clear();
+				debug("provider: clearing activeQuery before error stream completion");
+				ctx().activeQuery = null;
+			}
+			const stream = ctx().currentPiStream;
+			stream?.push({ type: "error", reason: (ctx().turnOutput?.stopReason ?? "error") as "aborted" | "error", error: ctx().turnOutput! });
+			markStreamComplete(stream);
+			stream?.end();
 			ctx().currentPiStream = null;
 		})
 		.finally(() => {
@@ -1206,7 +1396,16 @@ async function promptAndWait(
 	},
 ): Promise<{ responseText: string; stopReason: string }> {
 	const cwd = process.cwd();
-	const modelId = resolveModelId(options?.model ?? "opus");
+	const requestedModel = options?.model ?? "opus";
+	const model = resolveModel(requestedModel);
+	const modelId = model?.id ?? requestedModel;
+	const providerSettings = loadConfig(cwd).provider ?? {};
+	const longContextModels = new Set(
+		providerSettings.longContextExtraUsage
+			? MODELS.filter(m => hasOneMContext(m)).map(m => m.id)
+			: [] as string[]
+	);
+	const cliModel = model ? claudeCodeModelId(model, longContextModels.has(model.id)) : modelId;
 
 	// Session resume for shared mode — reuse provider's session if it exists,
 	// otherwise create one from pi's context.
@@ -1237,16 +1436,16 @@ async function promptAndWait(
 	const effort = options?.thinking && options.thinking !== "off"
 		? REASONING_TO_EFFORT[options.thinking] : undefined;
 
-	const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
+	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
-		model: modelId,
+		model: cliModel,
 	};
 	if (effort) extraArgs["thinking-display"] = "summarized";
 
 	debug("askClaude:",
-		`mode=${mode} model=${modelId} effort=${effort ?? "default"}`,
+		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
 		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
 		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
 
@@ -1363,6 +1562,13 @@ export default function (pi: ExtensionAPI) {
 
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
+	// longContextExtraUsage is the explicit opt-in for credit-costing 1M. See README and
+	// applyLongContext in models.js.
+	const plan = config.provider?.plan ?? "pro";
+	const extraUsageIds = config.provider?.longContextExtraUsage
+		? new Set(MODELS.filter(m => hasOneMContext(m)).map(m => m.id))
+		: new Set<string>();
+	const registeredModels = applyOneMDisplayNames(applyLongContext(MODELS, extraUsageIds, plan));
 
 	// Reset shared session on pi session lifecycle events
 	const clearSession = (event: string) => {
@@ -1385,6 +1591,38 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 	pi.on("session_shutdown", () => clearSession("session_shutdown"));
+
+	pi.on("session_before_compact", async (event, ctx) => {
+		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
+		debug(
+			`session_before_compact: takeover isSplitTurn=${event.preparation.isSplitTurn} ` +
+			`messages=${event.preparation.messagesToSummarize.length} turnPrefix=${event.preparation.turnPrefixMessages.length}`,
+		);
+		try {
+			reinjectPriorCompactionFileOps(event.branchEntries, event.preparation);
+			const compaction = await compact(
+				event.preparation,
+				ctx.model,
+				undefined,
+				undefined,
+				event.customInstructions,
+				event.signal,
+				undefined,
+				isolatedStreamFn,
+				undefined,
+			);
+			debug(`session_before_compact: takeover complete summaryLen=${compaction.summary.length}`);
+			return { compaction };
+		} catch (err) {
+			const msg = errorMessage(err);
+			debug("session_before_compact: takeover failed; cancelling to avoid native compact fallback", err);
+			ctx.ui?.notify?.(
+				`Claude bridge compact failed (${msg}); cancelled to avoid known hang. Retry, switch model, or reduce context.`,
+				"error",
+			);
+			return { cancel: true };
+		}
+	});
 
 	// pi /compact and session-tree navigation (rewind / fork-at-point /
 	// branch switch) both mutate pi's messages array out from under the
@@ -1417,7 +1655,7 @@ export default function (pi: ExtensionAPI) {
 			baseUrl: "claude-bridge",
 			apiKey: "not-used",
 			api: "claude-bridge",
-			models: MODELS,
+			models: registeredModels,
 			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
 			streamSimple: streamClaudeAgentSdk as any,
 		});

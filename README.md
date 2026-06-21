@@ -8,7 +8,7 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
 2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
 
 
-> **Important note:** Starting June 15, 2026 [Anthropic has announced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) they will no longer allow tools based on the Agent SDK (like this one) to pull from your regular subscription quota. Instead they pull from a monthly credit equal to your subscription fee (so $100 of usage credits on a $100/month Max plan). I'm not sure how valuable this extension will be once that happens. If there are easier ways to pull from that $100 bucket connecting to the API directly without the Agent SDK overhead, that's probably a better approach. (Alternatively there are other extensions focused on spoofing the official Claude Code client to keep using subscription quota.)
+**FYI:** Antrhopic [announced and then unannounced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) a change to how you would be billed for tools that use the Agent SDK like this one. As of June 15, 2026 it uses subscription quota just like Claude Code direct does.
 
 <p>
 <a href="assets/claude-bridge1.png"><img src="assets/claude-bridge1.png" width="49%"></a>&nbsp;
@@ -26,6 +26,8 @@ pi install npm:pi-claude-bridge
 Use `/model` to select `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
 
 Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
+
+**1M Context:** all models default to 200k context. To enable 1M context, configure `provider.plan` and/or `provider.longContextExtraUsage` as described in [Configuration](#configuration).
 
 ## AskClaude Tool
 
@@ -60,6 +62,8 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
     "description": "Custom tool description override"
   },
   "provider": {
+    "plan": "max",
+    "longContextExtraUsage": false,
     "strictMcpConfig": true,
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
   }
@@ -74,11 +78,17 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
 - `allowFullMode` — allow `mode: "full"`; set `false` to lock it out
 - `appendSkills` — forward pi's skills block into the system prompt (default `true`)
 
-`provider` (low-level SDK plumbing, most users can ignore):
+`provider`:
+- `plan` (default `"pro"`) — set to `"max"` to enable Opus with 1M context (also for Team Premium, Enterprise pay-as-you-go, or the Anthropic API). Leave `"pro"` for Pro, Team Standard, or Enterprise subscription seats. Only affects Opus.
+- `longContextExtraUsage` — set to `true` to enable 1M on all capable models even if they would cost "extra usage" credits. Sonnet 1M costs credits on every plan; Opus 1M costs credits on Pro but is included on Max, so on Max set `plan` instead.
 - `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
-- `pathToClaudeCodeExecutable` — path to the `claude` binary. Required on **NixOS** (and other non-FHS systems) where the SDK's bundled musl/glibc binaries can't run. Set to your Nix-installed binary, e.g. `"/home/you/.nix-profile/bin/claude"`.
+- `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
+
+By default the bridge assumes you have a Pro plan and every model runs at 200K context. Models registered at 1M are labeled with `1M` in pi. On Max-plan Opus this is only a display label; the bridge still sends Claude Code the bare model id so Claude Code can auto-upgrade it.
+
+**Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not currently apply to extension-registered providers (like claude-bridge). Overriding `contextWindow` or other fields requires editing `src/models.ts` directly.
 
 ## Tests
 
