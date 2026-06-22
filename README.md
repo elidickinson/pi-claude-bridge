@@ -81,8 +81,9 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` to enable Opus with 1M context (also for Team Premium, Enterprise pay-as-you-go, or the Anthropic API). Leave `"pro"` for Pro, Team Standard, or Enterprise subscription seats. Only affects Opus.
 - `longContextExtraUsage` — set to `true` to enable 1M on all capable models even if they would cost "extra usage" credits. Sonnet 1M costs credits on every plan; Opus 1M costs credits on Pro but is included on Max, so on Max set `plan` instead.
-- `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
-- `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
+- `systemPromptMode` — controls how pi's system prompt is fed to Claude Code. `"append"` (default): CC's `claude_code` preset is used and pi's AGENTS.md + skills are appended. `"replace"`: only `context.systemPrompt` is sent verbatim and CC settings/CLAUDE.md loading is opted out (`settingSources: []`) — behaves like pi+Sonnet as a model. `false`: no system prompt at all. See "Backward compatibility" below.
+- `appendSystemPrompt` — **deprecated**; retained for backward compatibility. `true` → equivalent to `systemPromptMode: "append"`. `false` preserves the 0.4.0 behavior (CC preset kept, no pi additions, `settingSources` defaults to `["user","project"]`). Prefer `systemPromptMode` for new configs.
+- `settingSources` — CC filesystem settings to load. Defaults to `undefined` (SDK loads all sources including `local`). Ignored when `systemPromptMode` is `"replace"` or `false` (those use `[]` to opt out of CC config).
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 

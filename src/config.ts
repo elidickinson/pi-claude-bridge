@@ -64,17 +64,32 @@ export function loadConfig(cwd: string): Config {
 }
 
 /**
- * Resolves the effective systemPromptMode, handling the deprecated appendSystemPrompt
- * boolean alias for backward compatibility.
- * - "append": CC default + pi's AGENTS.md/skills appended (original behavior)
- * - "replace": only pi's AGENTS.md/skills, CC default is not loaded
- * - false: no system prompt at all
+ * Resolves the effective systemPromptMode.
+ *
+ * - "append": CC preset + AGENTS.md + (rewritten) skills appended. Default.
+ * - "replace": only `context.systemPrompt` is sent verbatim; CC settings/CLAUDE.md
+ *   are not loaded. Behaves like pi+Sonnet as a model.
+ * - false: no system prompt at all.
+ * - "legacy-preset-only": exact 0.4.0 path for `appendSystemPrompt: false`.
+ *   Preserves: CC preset kept, no pi additions, settingSources falls back to
+ *   `["user","project"]` when not user-configured. Kept so existing configs
+ *   that set the deprecated boolean keep their behavior.
+ *
+ * When both `systemPromptMode` and `appendSystemPrompt` are set, the new
+ * `systemPromptMode` flag wins.
  */
-export type SystemPromptMode = "append" | "replace" | false;
+export type SystemPromptMode = "append" | "replace" | false | "legacy-preset-only";
 
 export function resolveSystemPromptMode(provider: Config["provider"]): SystemPromptMode {
-	if (provider?.appendSystemPrompt !== undefined) {
-		return provider.appendSystemPrompt ? "append" : false;
+	// New canonical flag wins when both are set.
+	if (provider?.systemPromptMode !== undefined) {
+		return provider.systemPromptMode;
 	}
-	return provider?.systemPromptMode ?? "append";
+	// Legacy: appendSystemPrompt:false in 0.4.0 was its own distinct behavior
+	// (preset kept, pi additions dropped, settingSources defaulted to
+	// ["user","project"]). Preserve that exact path.
+	if (provider?.appendSystemPrompt === false) {
+		return "legacy-preset-only";
+	}
+	return "append";
 }
