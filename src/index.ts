@@ -11,12 +11,12 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { applyLongContext, applyOneMDisplayNames, buildModels, claudeCodeModelId, hasOneMContext, resolveModel as _resolveModel } from "./models.js";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx, stackDepth, pushContext, popContext } from "./query-state.js";
 import { loadConfig } from "./config.js";
-import { extractAgentsAppend } from "./agents-md.js";
+import { resolveSystemPromptConfig } from "./system-prompt.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
@@ -1152,20 +1152,20 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, ctx());
 	const providerSettings = loadConfig(cwd).provider ?? {};
-	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
-	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
-	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
-	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+	const { systemPrompt, settingSources: effectiveSettingSources, mode: systemPromptMode } =
+		resolveSystemPromptConfig(providerSettings, context.systemPrompt);
 
-	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
-	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
-	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
-	// programmatically and ignore filesystem MCP entries — applied unconditionally because
-	// settingSources=undefined does NOT give isolation (the CC default loads all sources).
-	const settingSources: SettingSource[] | undefined = appendSystemPrompt
-		? undefined
-		: providerSettings.settingSources ?? ["user", "project"];
+	debug(`systemPrompt debug: mode=${systemPromptMode} ` +
+		`systemPrompt=${typeof systemPrompt === "string" ? `string(${systemPrompt.length}chars)` : `preset{append=${systemPrompt.append?.length ?? 0}chars}`} ` +
+		`settingSources=${effectiveSettingSources ? JSON.stringify(effectiveSettingSources) : "undefined"} ` +
+		`processCwd=${process.cwd()} providerCwd=${cwd}`);
+
+	// MCP auto-loading suppression: --strict-mcp-config (applied below via
+	// extraArgs) tells the CC binary to ignore filesystem MCP entries
+	// (mcpServers passed programmatically only). systemPrompt and
+	// settingSources are computed per mode by resolveSystemPromptConfig; the
+	// helper gates AGENTS.md/skills extraction so "false" mode no longer
+	// silently sends the 6k string it used to.
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1205,23 +1205,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		tools: [],
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
+		systemPrompt,
 		extraArgs,
 		...(effort ? { effort } : {}),
-		...(settingSources ? { settingSources } : {}),
+		...(effectiveSettingSources ? { settingSources: effectiveSettingSources } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 		...makeCliDebugOptions("provider"),
 	};
 
+	debug(`queryOptions.systemPrompt: ${typeof systemPrompt === "string" ? `string(${systemPrompt.length}chars)` : JSON.stringify(systemPrompt)} mode=${systemPromptMode}`);
+
 	debug("provider: fresh query",
 		`model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
-		`appendSys=${appendSystemPrompt} strictMcp=${strictMcpConfigEnabled}`,
+		`systemPromptMode=${systemPromptMode} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
 	// 3. Start SDK query and claim it for this context
@@ -1428,9 +1427,14 @@ async function promptAndWait(
 	// Mode → disallowed tools
 	const disallowedTools = MODE_DISALLOWED_TOOLS[mode] ?? [];
 
-	// Skills append
-	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
-		? extractSkillsBlock(options.systemPrompt) : undefined;
+	// System prompt + settingSources per configured mode. AskClaude skips
+	// AGENTS.md (it's a tool, not the main agent) and respects the per-call
+	// appendSkills toggle from the caller.
+	const { systemPrompt, settingSources: effectiveSettingSources, mode: systemPromptMode } =
+		resolveSystemPromptConfig(loadConfig(cwd).provider, options?.systemPrompt, {
+			includeAgentsMd: false,
+			includeSkills: options?.appendSkills !== false,
+		});
 
 	// Effort
 	const effort = options?.thinking && options.thinking !== "off"
@@ -1447,7 +1451,7 @@ async function promptAndWait(
 	debug("askClaude:",
 		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
 		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
-		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
+		`systemPromptMode=${systemPromptMode} promptLen=${prompt.length}`);
 
 	const sdkQuery = query({
 		prompt,
@@ -1457,10 +1461,8 @@ async function promptAndWait(
 			permissionMode: "bypassPermissions",
 			...(disallowedTools.length ? { disallowedTools } : {}),
 			...(effort ? { effort } : {}),
-			systemPrompt: skillsBlock
-				? { type: "preset", preset: "claude_code", append: skillsBlock }
-				: undefined,
-			settingSources: ["user", "project"] as SettingSource[],
+			systemPrompt,
+			...(effectiveSettingSources ? { settingSources: effectiveSettingSources } : {}),
 			extraArgs,
 			...(resumeSessionId ? { resume: resumeSessionId } : {}),
 			...(options?.isolated ? { persistSession: false } : {}),
