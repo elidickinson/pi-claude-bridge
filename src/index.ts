@@ -15,7 +15,7 @@ import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.j
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx, stackDepth, pushContext, popContext } from "./query-state.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
@@ -117,6 +117,8 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
 const MODELS = buildModels(getModels("anthropic"));
+let providerSettings: NonNullable<Config["provider"]> = {};
+let longContextExtraUsageIds = new Set<string>();
 
 function resolveModel(input: string) {
 	return _resolveModel(MODELS, input);
@@ -1151,7 +1153,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		? wrapPromptStream(promptBlocks)
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, ctx());
-	const providerSettings = loadConfig(cwd).provider ?? {};
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
 	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
@@ -1177,12 +1178,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			?? REASONING_TO_EFFORT[options.reasoning]
 		: undefined;
 
-	const longContextModels = new Set(
-		providerSettings.longContextExtraUsage
-			? MODELS.filter(m => hasOneMContext(m)).map(m => m.id)
-			: [] as string[]
-	);
-	const extraArgs: Record<string, string | null> = { model: claudeCodeModelId(model, longContextModels.has(model.id)) };
+	const extraArgs: Record<string, string | null> = { model: claudeCodeModelId(model, longContextExtraUsageIds.has(model.id)) };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
@@ -1399,13 +1395,7 @@ async function promptAndWait(
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
-	const providerSettings = loadConfig(cwd).provider ?? {};
-	const longContextModels = new Set(
-		providerSettings.longContextExtraUsage
-			? MODELS.filter(m => hasOneMContext(m)).map(m => m.id)
-			: [] as string[]
-	);
-	const cliModel = model ? claudeCodeModelId(model, longContextModels.has(model.id)) : modelId;
+	const cliModel = model ? claudeCodeModelId(model, longContextExtraUsageIds.has(model.id)) : modelId;
 
 	// Session resume for shared mode — reuse provider's session if it exists,
 	// otherwise create one from pi's context.
@@ -1562,13 +1552,14 @@ export default function (pi: ExtensionAPI) {
 
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
+	providerSettings = config.provider ?? {};
 	// longContextExtraUsage is the explicit opt-in for credit-costing 1M. See README and
 	// applyLongContext in models.js.
-	const plan = config.provider?.plan ?? "pro";
-	const extraUsageIds = config.provider?.longContextExtraUsage
+	const plan = providerSettings.plan ?? "pro";
+	longContextExtraUsageIds = providerSettings.longContextExtraUsage
 		? new Set(MODELS.filter(m => hasOneMContext(m)).map(m => m.id))
 		: new Set<string>();
-	const registeredModels = applyOneMDisplayNames(applyLongContext(MODELS, extraUsageIds, plan));
+	const registeredModels = applyOneMDisplayNames(applyLongContext(MODELS, longContextExtraUsageIds, plan));
 
 	// Reset shared session on pi session lifecycle events
 	const clearSession = (event: string) => {
