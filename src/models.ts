@@ -23,15 +23,26 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 
 // A model is 1M-*capable* when its advertised window exceeds 200K. Capability is
 // not entitlement: Sonnet 4.6's 1M is metered on every plan (including Max), while
-// Opus 1M is included on Max/Team/Enterprise. Capability only gates whether opting
-// in via provider.longContextExtraUsage has any effect.
+// Opus 1M is included on Max/Team/Enterprise. Capability only gates whether a
+// 1M opt-in can have any effect.
 export function hasOneMContext(model: { contextWindow?: number | null }): boolean {
 	return (model.contextWindow ?? 0) > 200_000;
 }
 
-// Append [1m] to the CLI model id only when the model is 1M-capable AND the user
-// has opted in for that specific model. The [1m] suffix is what tells the Claude
-// Code CLI to open its 1M window; the bare id keeps the 200K default. Unlike the
+export function resolveOneMEnabledIds<T extends { id: string; contextWindow?: number | null }>(
+	models: T[],
+	plan: "pro" | "max",
+	longContextExtraUsage: boolean,
+): Set<string> {
+	return new Set(models
+		.filter((m) => hasOneMContext(m))
+		.filter((m) => longContextExtraUsage || (plan === "max" && m.id.includes("opus")))
+		.map((m) => m.id));
+}
+
+// Append [1m] to the CLI model id only when the model is 1M-capable AND enabled
+// for 1M. The [1m] suffix is what tells the Claude Code CLI to open its 1M
+// window; the bare id can be served as 200K even on Max. Unlike the
 // context-1m-2025-08-07 beta (issue #24), the model-id path works under
 // Pro/Max subscription (OAuth) auth, where the CLI ignores custom betas.
 export function claudeCodeModelId(model: { id: string; contextWindow?: number | null }, oneMEnabled: boolean): string {
@@ -47,29 +58,17 @@ export function resolveModel<T extends { id: string }>(models: T[], input: strin
 // match the window the bridge actually requests from Claude Code, or pi's status
 // bar and auto-compaction threshold will misreport: registering 1M while the CLI
 // runs at 200K recreates the "pi shows headroom but CC errors with Prompt is too
-// long / credit gate" bug (issue #24, #17). Three cases:
-//   1. Opted into longContextModelIds → sends [1m], runtime 1M → register 1M.
-//   2. plan "max" + bare Opus → CC auto-upgrades to 1M (default since v2.1.75) →
-//      register 1M WITHOUT [1m], avoiding the usage-credits gate an explicit
-//      opus[1m] can trip on Max 5x (#39841). Only Opus auto-upgrades; Sonnet's 1M
-//      always requires explicit [1m] + credits.
-//   3. Everything else (Sonnet bare, Opus on Pro, Haiku) → runtime 200K → register 200K.
-export function applyLongContext<T extends { id: string; contextWindow?: number | null }>(
+// long" bug (issue #24, #17, #18). `oneMEnabledModelIds` must match the models
+// that will be sent to Claude Code with [1m]. Everything else is capped to 200K.
+export function applyLongContext<T extends { id: string; name: string; contextWindow?: number | null }>(
 	models: T[],
-	longContextModelIds: Set<string>,
-	plan: "pro" | "max",
+	oneMEnabledModelIds: Set<string>,
 ): T[] {
 	return models.map((m) => {
-		if (longContextModelIds.has(m.id) && hasOneMContext(m)) return m;
-		if (plan === "max" && m.id.includes("opus") && hasOneMContext(m)) return m;
-		const capped = Math.min(m.contextWindow ?? 200_000, 200_000);
-		return capped === m.contextWindow ? m : { ...m, contextWindow: capped };
-	});
-}
-
-export function applyOneMDisplayNames<T extends { name: string; contextWindow?: number | null }>(models: T[]): T[] {
-	return models.map((m) => {
-		if (!hasOneMContext(m) || /\b1M\b/i.test(m.name)) return m;
-		return { ...m, name: `${m.name} 1M` };
+		const contextWindow = oneMEnabledModelIds.has(m.id) && hasOneMContext(m)
+			? m.contextWindow
+			: Math.min(m.contextWindow ?? 200_000, 200_000);
+		const name = hasOneMContext({ contextWindow }) && !/\b1M\b/i.test(m.name) ? `${m.name} 1M` : m.name;
+		return contextWindow === m.contextWindow && name === m.name ? m : { ...m, contextWindow, name };
 	});
 }

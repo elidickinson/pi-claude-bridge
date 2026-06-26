@@ -79,14 +79,14 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `appendSkills` — forward pi's skills block into the system prompt (default `true`)
 
 `provider`:
-- `plan` (default `"pro"`) — set to `"max"` to enable Opus with 1M context (also for Team Premium, Enterprise pay-as-you-go, or the Anthropic API). Leave `"pro"` for Pro, Team Standard, or Enterprise subscription seats. Only affects Opus.
+- `plan` (default `"pro"`) — set to `"max"` to enable Opus with 1M context (also for Team Premium, Enterprise pay-as-you-go, or the Anthropic API). The bridge sends Opus to Claude Code with the `[1m]` suffix when this is enabled. Leave `"pro"` for Pro, Team Standard, or Enterprise subscription seats. Only affects Opus.
 - `longContextExtraUsage` — set to `true` to enable 1M on all capable models even if they would cost "extra usage" credits. Sonnet 1M costs credits on every plan; Opus 1M costs credits on Pro but is included on Max, so on Max set `plan` instead.
 - `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
-By default the bridge assumes you have a Pro plan and every model runs at 200K context. Models registered at 1M are labeled with `1M` in pi. On Max-plan Opus this is only a display label; the bridge still sends Claude Code the bare model id so Claude Code can auto-upgrade it.
+By default the bridge assumes you have a Pro plan and every model runs at 200K context. Models registered at 1M are labeled with `1M` in pi. On Max-plan Opus, the bridge registers Opus at 1M and sends Claude Code the corresponding `[1m]` model id; Sonnet stays at 200K unless `longContextExtraUsage` is enabled.
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not currently apply to extension-registered providers (like claude-bridge). Overriding `contextWindow` or other fields requires editing `src/models.ts` directly.
 

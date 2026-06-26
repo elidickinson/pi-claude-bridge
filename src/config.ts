@@ -26,18 +26,16 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
-		// Subscription plan tier, controls the registered contextWindow for a bare
-		// (unlisted) Opus id: "pro" (default) → Opus runs at 200K so registers 200K;
-		// "max" → Claude Code auto-upgrades bare Opus to 1M so registers 1M (without
-		// appending [1m], avoiding #39841). Use "max" for Max, Team Premium,
-		// Enterprise pay-as-you-go, or Anthropic API. Only Opus auto-upgrades; Sonnet
-		// and Haiku are unaffected. See README.
+		// Subscription plan tier. "pro" (default) keeps Opus at 200K;
+		// "max" sends Opus with [1m] and registers 1M. Use "max" for Max,
+		// Team Premium, Enterprise pay-as-you-go, or Anthropic API. Only Opus
+		// is affected; Sonnet and Haiku are unaffected. See README.
 		plan?: "pro" | "max";
 		// Set to true to opt into 1M context usage that costs credits ("extra usage"
 		// in Anthropic billing). Applies to all 1M-capable models (Opus 4.6/4.7/4.8,
 		// Sonnet 4.6). Sonnet 1M is metered on every plan (including Max); Opus 1M
 		// is metered on Pro but included on Max (use plan setting instead).
-		// Defaults to false (200K for every model).
+		// Defaults to false (only plan-controlled Opus 1M is enabled).
 		longContextExtraUsage?: boolean;
 	};
 }

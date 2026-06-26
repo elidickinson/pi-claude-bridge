@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MODEL_IDS_IN_ORDER, applyLongContext, applyOneMDisplayNames, buildModels, claudeCodeModelId, resolveModel } from "../src/models.js";
+import { MODEL_IDS_IN_ORDER, applyLongContext, buildModels, claudeCodeModelId, resolveOneMEnabledIds, resolveModel } from "../src/models.js";
 
 // Simulated pi-ai registry entry — extra fields mimic the ones pi-ai exposes
 // that must not leak into the provider-registered MODELS array.
@@ -80,7 +80,7 @@ describe("applyLongContext (registered contextWindow)", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(oneM));
 
 	it("plan pro (default): caps unlisted long-context models to 200K", () => {
-		const registered = applyLongContext(models, new Set(), "pro");
+		const registered = applyLongContext(models, new Set());
 		for (const m of registered) {
 			assert.equal(m.contextWindow, 200000, `${m.id} should register at 200K`);
 		}
@@ -89,40 +89,43 @@ describe("applyLongContext (registered contextWindow)", () => {
 	});
 
 	it("keeps 1M for opted-in long-context models (matches the [1m] CLI id)", () => {
-		const registered = applyLongContext(models, new Set(["claude-opus-4-8", "claude-sonnet-4-6"]), "pro");
+		const registered = applyLongContext(models, new Set(["claude-opus-4-8", "claude-sonnet-4-6"]));
 		assert.equal(registered.find((m) => m.id === "claude-opus-4-8").contextWindow, 1000000);
 		assert.equal(registered.find((m) => m.id === "claude-sonnet-4-6").contextWindow, 1000000);
 		// Unlisted long-context siblings stay capped.
 		assert.equal(registered.find((m) => m.id === "claude-opus-4-7").contextWindow, 200000);
 	});
 
-	it("plan max: registers unlisted Opus at 1M (CC auto-upgrades bare id, no [1m])", () => {
-		const registered = applyLongContext(models, new Set(), "max");
+	it("plan max: registers Opus at 1M when those ids are enabled", () => {
+		const enabled = resolveOneMEnabledIds(models, "max", false);
+		const registered = applyLongContext(models, enabled);
 		for (const id of ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"]) {
 			assert.equal(registered.find((m) => m.id === id).contextWindow, 1000000, `${id} should register at 1M on max`);
 		}
 	});
 
-	it("plan max: Sonnet still caps at 200K (no auto-upgrade, needs explicit [1m])", () => {
-		const registered = applyLongContext(models, new Set(), "max");
+	it("plan max: Sonnet still caps at 200K unless explicitly enabled", () => {
+		const enabled = resolveOneMEnabledIds(models, "max", false);
+		const registered = applyLongContext(models, enabled);
 		assert.equal(registered.find((m) => m.id === "claude-sonnet-4-6").contextWindow, 200000);
 	});
 
-	it("plan max does not append [1m] (decoupled from longContextExtraUsage, avoids #39841)", () => {
-		// Unlisted Opus on max registers 1M but the CLI id stays bare — only
-		// longContextExtraUsage membership drives the [1m] suffix, never plan.
-		const opus = applyLongContext(models, new Set(), "max").find((m) => m.id === "claude-opus-4-8");
-		assert.equal(claudeCodeModelId(opus, false), "claude-opus-4-8");
+	it("plan max appends [1m] for Opus but not Sonnet", () => {
+		const enabled = resolveOneMEnabledIds(models, "max", false);
+		const opus = models.find((m) => m.id === "claude-opus-4-8");
+		const sonnet = models.find((m) => m.id === "claude-sonnet-4-6");
+		assert.equal(claudeCodeModelId(opus, enabled.has(opus.id)), "claude-opus-4-8[1m]");
+		assert.equal(claudeCodeModelId(sonnet, enabled.has(sonnet.id)), "claude-sonnet-4-6");
 	});
 
 	it("leaves Haiku (200K native) at 200K whether listed or not", () => {
 		const bare200K = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel)); // haiku=200K
-		assert.equal(applyLongContext(bare200K, new Set(["claude-haiku-4-5"]), "max").find((m) => m.id === "claude-haiku-4-5").contextWindow, 200000);
-		assert.equal(applyLongContext(bare200K, new Set(), "pro").find((m) => m.id === "claude-haiku-4-5").contextWindow, 200000);
+		assert.equal(applyLongContext(bare200K, new Set(["claude-haiku-4-5"])).find((m) => m.id === "claude-haiku-4-5").contextWindow, 200000);
+		assert.equal(applyLongContext(bare200K, new Set()).find((m) => m.id === "claude-haiku-4-5").contextWindow, 200000);
 	});
 });
 
-describe("applyOneMDisplayNames", () => {
+describe("long-context display names", () => {
 	const modelWithRealisticWindows = (id) => ({
 		...mockPiAiModel(id),
 		contextWindow: id.includes("haiku") ? 200000 : 1000000,
@@ -130,14 +133,14 @@ describe("applyOneMDisplayNames", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(modelWithRealisticWindows));
 
 	it("labels Max-plan Opus display names as 1M", () => {
-		const registered = applyOneMDisplayNames(applyLongContext(models, new Set(), "max"));
+		const registered = applyLongContext(models, resolveOneMEnabledIds(models, "max", false));
 		assert.equal(registered.find((m) => m.id === "claude-opus-4-8").name, "claude-opus-4-8 1M");
 		assert.equal(registered.find((m) => m.id === "claude-sonnet-4-6").name, "claude-sonnet-4-6");
 		assert.equal(registered.find((m) => m.id === "claude-haiku-4-5").name, "claude-haiku-4-5");
 	});
 
 	it("labels explicit long-context extra-usage display names as 1M", () => {
-		const registered = applyOneMDisplayNames(applyLongContext(models, new Set(["claude-sonnet-4-6"]), "pro"));
+		const registered = applyLongContext(models, new Set(["claude-sonnet-4-6"]));
 		assert.equal(registered.find((m) => m.id === "claude-sonnet-4-6").name, "claude-sonnet-4-6 1M");
 		assert.equal(registered.find((m) => m.id === "claude-opus-4-8").name, "claude-opus-4-8");
 	});

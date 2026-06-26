@@ -11,7 +11,7 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { applyLongContext, applyOneMDisplayNames, buildModels, claudeCodeModelId, hasOneMContext, resolveModel as _resolveModel } from "./models.js";
+import { applyLongContext, buildModels, claudeCodeModelId, resolveOneMEnabledIds, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -119,7 +119,7 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
-let longContextExtraUsageIds = new Set<string>();
+let oneMEnabledIds = new Set<string>();
 
 function resolveModel(input: string) {
 	return _resolveModel(MODELS, input);
@@ -341,7 +341,7 @@ async function runIsolatedSummary(
 		const promptText = extractIsolatedSummaryPrompt(context.messages);
 		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 		const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
-		const cliModel = claudeCodeModelId(model, longContextExtraUsageIds.has(model.id));
+		const cliModel = claudeCodeModelId(model, oneMEnabledIds.has(model.id));
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
 		sdkQuery = query({
@@ -1222,7 +1222,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
-	const cliModel = claudeCodeModelId(model, longContextExtraUsageIds.has(model.id));
+	const cliModel = claudeCodeModelId(model, oneMEnabledIds.has(model.id));
 	const extraArgs: Record<string, string | null> = { model: cliModel };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
@@ -1434,7 +1434,7 @@ async function promptAndWait(
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
-	const cliModel = model ? claudeCodeModelId(model, longContextExtraUsageIds.has(model.id)) : modelId;
+	const cliModel = model ? claudeCodeModelId(model, oneMEnabledIds.has(model.id)) : modelId;
 
 	// Session resume for shared mode — reuse provider's session if it exists,
 	// otherwise create one from pi's context.
@@ -1592,13 +1592,12 @@ export default function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
-	// longContextExtraUsage is the explicit opt-in for credit-costing 1M. See README and
-	// applyLongContext in models.js.
+	// 1M model ids are the variants we will request from Claude Code with [1m].
+	// Keep this set in sync with registered context windows so pi's compaction
+	// threshold matches the served model window.
 	const plan = providerSettings.plan ?? "pro";
-	longContextExtraUsageIds = providerSettings.longContextExtraUsage
-		? new Set(MODELS.filter(m => hasOneMContext(m)).map(m => m.id))
-		: new Set<string>();
-	const registeredModels = applyOneMDisplayNames(applyLongContext(MODELS, longContextExtraUsageIds, plan));
+	oneMEnabledIds = resolveOneMEnabledIds(MODELS, plan, providerSettings.longContextExtraUsage ?? false);
+	const registeredModels = applyLongContext(MODELS, oneMEnabledIds);
 
 	// Reset shared session on pi session lifecycle events
 	const clearSession = (event: string) => {
