@@ -79,7 +79,7 @@ await startAndWait();
 try {
   // Turn 1: Non-provider prompt — establishes context before our provider is used
   console.log("Turn 1: Non-provider prompt (establish context)...");
-  const text1 = await promptAndWait(`The secret word is '${WORD_A}'. Acknowledge and be very brief.`);
+  const text1 = await promptAndWait(`The first word is '${WORD_A}'. Acknowledge and be very brief.`);
   if (!text1) throw new Error("Turn 1 produced no text");
   console.log(`  Response: ${text1.slice(0, 80)}`);
 
@@ -92,7 +92,7 @@ try {
   // Turn 2: First provider turn — should see WORD_A from prior non-provider history
   console.log("Turn 2: First provider turn with prior history (Case 2)...");
   const text2 = await promptAndWait(
-    `The backup word is '${WORD_B}'. Also, what was the secret word? Reply with both words separated by a comma.`
+    `The second word is '${WORD_B}'. Also, what was the first word? Reply with both words separated by a comma.`
   );
   console.log(`  Response: ${text2.slice(0, 80)}`);
   const lower2 = text2.toLowerCase();
@@ -105,7 +105,7 @@ try {
 
   // Turn 3: Non-provider prompt — adds context that provider must see on switch-back
   console.log("Turn 3: Non-provider prompt (creates missed messages)...");
-  const text3 = await promptAndWait(`The third word is '${WORD_C}'. Acknowledge briefly.`);
+  const text3 = await promptAndWait(`The third word is '${WORD_C}'. Acknowledge and be very brief.`);
   if (!text3) throw new Error("Turn 3 produced no text");
   console.log(`  Response: ${text3.slice(0, 80)}`);
 
