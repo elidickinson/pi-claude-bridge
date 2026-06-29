@@ -544,6 +544,10 @@ function syncSharedSession(
 			return { sessionId: sharedSession.sessionId };
 		}
 	}
+	// Only reachable when needsRebuild is false — user-facing history rewrites
+	// (/compact, session_tree, /new, fork) always set needsRebuild or clear
+	// sharedSession before the next syncSharedSession call. In practice this
+	// fires only for isolated compact-summary subprocesses.
 	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
 		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
 		debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
@@ -1693,8 +1697,7 @@ export default function (pi: ExtensionAPI) {
 		// Subsequent instance (subagent session): skip registration entirely.
 		// The subagent already has access to claude-bridge models via the shared
 		// ModelRegistry from the parent's registration. Calls to those models
-		// will route through the parent's streamSimple via the reentrant
-		// QueryContext stack mechanism.
+		// route through the parent's streamSimple via reentrant QueryContexts.
 		debug(`provider: skipping re-registration, parent instance active (module=${moduleInstanceId})`);
 	}
 

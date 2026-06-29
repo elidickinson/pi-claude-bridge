@@ -1,24 +1,20 @@
 # Context windows served by the Claude Agent SDK
 
-Data-backed reference for the context window Anthropic actually serves through
-the Claude Agent SDK (`query()`), per model id, subscription plan, and Extra
-Usage (metered credits) setting. All values are measured, not assumed from docs.
+Measured context windows from the Claude Agent SDK (`query()`), per model id,
+subscription plan, and Extra Usage (metered credits) setting.
 
 ## Method
 
-`diag/context-size.mjs` calls the SDK directly for each model id × {bare,
-`[1m]`}, one trivial turn (`Reply with just the word "yes".`), and records the
-`result` message's `modelUsage[*].contextWindow` plus error specifics. Auth is
-subscription OAuth (claude.ai) with **no `ANTHROPIC_API_KEY`** — so this is the
-subscription path, not the public API path.
+`diag/context-size.mjs` calls the SDK for each model id × {bare, `[1m]`} with
+one trivial turn and records `result.modelUsage[*].contextWindow` plus error
+details. Auth is subscription OAuth (claude.ai), no `ANTHROPIC_API_KEY`.
 
 ```
 node diag/context-size.mjs pro        # current tier (pro | max)
 node diag/context-size.mjs --compare  # diff latest pro-* vs max-* JSON
 ```
 
-Raw JSON + MD per run save to `.test-output/context-size/` (gitignored); this
-doc is the committed summary.
+Raw JSON + MD per run save to `.test-output/context-size/` (gitignored).
 
 ## Environment
 
@@ -38,34 +34,29 @@ the footnote below the table).
 |---|---|---|---|---|
 | `claude-opus-4-8` bare | 200K | 200K | 200K | 200K |
 | `claude-opus-4-8[1m]` | 1M | 1M | 1M | 1M |
-| `claude-opus-4-7` bare | **1M** | **1M** | **1M** | **1M** |
+| `claude-opus-4-7` bare | 1M | 1M | 1M | 1M |
 | `claude-opus-4-7[1m]` | 1M | 1M | 1M | 1M |
 | `claude-opus-4-6` bare | 200K | 200K | 200K | 200K |
-| `claude-opus-4-6[1m]` | 429 | 1M | 1M | 1M |
+| `claude-opus-4-6[1m]` | error 429 | 1M | 1M | 1M |
 | `claude-sonnet-4-6` bare | 200K | 200K | 200K | 200K |
-| `claude-sonnet-4-6[1m]` | 429 | 1M | 429 | 1M |
+| `claude-sonnet-4-6[1m]` | error 429 | 1M | error 429 | 1M |
 | `claude-haiku-4-5` bare | 200K | 200K | 200K | 200K |
-| `claude-haiku-4-5[1m]` | 429† | 400 | 400 | 400 |
+| `claude-haiku-4-5[1m]` | error 429† | error 400 | error 400 | error 400 |
 
 Raw runs: `.test-output/context-size/{pro,max}-2026-06-26T21-*.json`
 
-Max-credits-on was measured separately and matched Pro-credits-on for every
-cell, so the two right-hand columns duplicate the served values (shown for
-completeness).
+Max-credits-on matched Pro-credits-on for every cell (shown for completeness).
 
-† **Inferred, not directly measured.** The Pro-credits-off run predates the
-probe's error-field capture, so its three rejected `[1m]` rows have no recorded
-HTTP status or error text. `opus-4-6[1m]` was confirmed 429 via a separate
-one-off dump of the SDK `result` message; `sonnet-4-6[1m]` and `haiku-4-5[1m]`
-are assumed to be the same credit-gated rejection by analogy. Re-running on Pro
-with the current probe would replace the inference with a measured value.
+† **Inferred, not directly measured.** The Pro-credits-off run predates
+error-field capture; its three rejected `[1m]` rows have no recorded HTTP status
+or error text. `opus-4-6[1m]` was confirmed 429 via a separate one-off dump;
+`sonnet-4-6[1m]` and `haiku-4-5[1m]` are assumed the same by analogy.
 
 ## Error shapes
 
-A rejected `[1m]` turn surfaces its specifics in the SDK message stream, but
-**not** in `result.errors[]` (which is empty). The message sequence is
-`system:init → rate_limit_event → assistant → result:success` — note
-`subtype: "success"` despite `is_error: true`. Error text rides in
+Rejected `[1m]` turns surface in the SDK message stream, not `result.errors[]`
+(always empty). Sequence: `system:init → rate_limit_event → assistant →
+result:success` — `subtype: "success"` despite `is_error: true`. Error text in
 `result.result`; HTTP status in `result.api_error_status`.
 
 ### Credit-gated rejection (429) — e.g. `opus-4-6[1m]` on Pro, credits off
@@ -74,7 +65,7 @@ A rejected `[1m]` turn surfaces its specifics in the SDK message stream, but
 // rate_limit_event
 { "rate_limit_info": { "status": "rejected", "overageDisabledReason": "org_level_disabled", "isUsingOverage": false } }
 
-// assistant (synthetic, no model turn ran)
+// assistant (synthetic)
 { "error": "rate_limit", "message": { "model": "<synthetic>", "stop_reason": "stop_sequence",
   "content": [{ "type": "text", "text": "Usage credits are required for long context requests." }] } }
 
@@ -85,8 +76,7 @@ A rejected `[1m]` turn surfaces its specifics in the SDK message stream, but
 
 ### Capability rejection (400) — e.g. `haiku-4-5[1m]` (not 1M-capable)
 
-Same message shape, but `api_error_status: 400`, no `rate_limit_event`, and the
-text varies by plan/credits:
+Same shape, `api_error_status: 400`, no `rate_limit_event`. Text varies:
 
 - Pro, credits on: `"This authentication style is incompatible with the long context beta header."`
 - Max (either): `"The long context beta is not yet available for this subscription."`
@@ -99,44 +89,26 @@ text varies by plan/credits:
     "inputTokens": 173, "outputTokens": 4, "costUSD": 0.000579 } } }
 ```
 
-When a turn is allowed, the `rate_limit_event` carries `status: "allowed"` plus
-`overageStatus` / `resetsAt` / `rateLimitType: "five_hour"`. Rejected turns fail
-fast (~130–400 ms, zero model tokens).
+Allowed turns carry `rate_limit_event.status: "allowed"` plus `overageStatus` /
+`resetsAt` / `rateLimitType: "five_hour"`. Rejected turns fail fast (~130–400 ms,
+zero model tokens).
 
 ## Findings
 
-1. **A bare model id is never auto-upgraded to 1M on the SDK path** — for Opus
-   4.8 and 4.6, bare serves 200K on every plan and credits combination. This
-   differs from the interactive Claude Code CLI, which auto-selects the `[1m]`
-   variant for Opus on Max/Team/Enterprise. The `[1m]` suffix is the only
-   reliable way to request 1M via the SDK (it injects the long-context beta
-   header).
+1. **A bare model id is never auto-upgraded to 1M on the SDK path.** Opus 4.8
+   and 4.6 bare serve 200K on every plan/credits combination. (Contrast: the
+   interactive Claude Code CLI auto-selects `[1m]` for Opus on Max/Team/Enterprise.)
+   The `[1m]` suffix is the only reliable way to request 1M via the SDK.
 2. **`opus-4-7` bare serves 1M everywhere** — Pro and Max, credits on or off.
-   Stable across all runs, not per-turn variance. Lone anomaly; unexplained.
-3. **Credit-gating for Opus `[1m]` is version-specific on Pro.**
-   `opus-4-6[1m]` requires Extra Usage credits on Pro (429 without, 1M with) and
-   is included on Max (1M without credits). But `opus-4-8[1m]` and `opus-4-7[1m]`
-   serve 1M on Pro **without** credits — the suffix is not credit-gated for those
-   versions. Why 4.7/4.8 `[1m]` bypass the gate while 4.6 `[1m]` doesn't is
-   unexplained (same vein as the opus-4-7-bare anomaly below).
-4. **Sonnet `[1m]` is metered on every plan**, Max included — `sonnet-4-6[1m]`
-   is 429 on both Pro and Max with credits off, 1M with credits on. Matches
-   Anthropic's plan table.
+   Stable across runs. Lone anomaly; unexplained.
+3. **Credit-gating for Opus `[1m]` is version-specific on Pro.** `opus-4-6[1m]`
+   requires Extra Usage credits on Pro (429 without, 1M with); Max includes it.
+   `opus-4-8[1m]` and `opus-4-7[1m]` serve 1M on Pro without credits — not
+   credit-gated for those versions. Unexplained (same vein as finding 2).
+4. **Sonnet `[1m]` is metered on every plan**, Max included — 429 with credits
+   off, 1M with credits on. Matches Anthropic's plan table.
 5. **`[1m]` on a non-1M-capable model is always rejected.** `haiku-4-5[1m]` is
-   429 when the credit gate applies (Pro, credits off) and 400 otherwise.
-6. **The subscription/OAuth path differs from the public API path.** Anthropic's
-   platform docs state Opus 4.8/4.7 default to 1M on the Claude API with no beta
-   header; the SDK subscription path serves 200K for a bare 4.8 id. The public
-   API default does not carry over to subscription-billed SDK calls.
-
-## Open questions
-
-- **Opus 4.7 and 4.8 get 1M-favorable treatment on Pro that 4.6 does not.**
-  `opus-4-7` bare serves 1M on Pro (where 4.8 and 4.6 bare serve 200K), and
-  `opus-4-8[1m]`/`opus-4-7[1m]` serve 1M on Pro without credits (where
-  `opus-4-6[1m]` is 429 without credits). Stable across runs, not per-turn
-  variance. Possibly a subscription-side policy for the newest Opus, a model
-  remap, or a transitional state.
-- All measurements are single-turn on one account. The served window appears
-  to be a stable property of (model id, plan, credits), but multi-turn or
-  longer-duration behavior wasn't tested.
+   429 (credit gate) or 400 (capability) depending on plan/credits.
+6. **The subscription/OAuth path differs from the public API.** Anthropic's docs
+   say Opus 4.8/4.7 default to 1M on the API with no beta header; subscription
+   SDK serves 200K for a bare 4.8 id.
