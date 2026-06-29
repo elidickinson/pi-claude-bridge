@@ -8,7 +8,7 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
 2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
 
 
-**FYI:** Antrhopic [announced and then unannounced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) a change to how you would be billed for tools that use the Agent SDK like this one. As of June 15, 2026 it uses subscription quota just like Claude Code direct does.
+**FYI:** Anthropic [announced and then unannounced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) a change to how you would be billed for tools that use the Agent SDK like this one. As of June 15, 2026 it uses subscription quota just like Claude Code direct does.
 
 <p>
 <a href="assets/claude-bridge1.png"><img src="assets/claude-bridge1.png" width="49%"></a>&nbsp;
@@ -27,7 +27,7 @@ Use `/model` to select `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-op
 
 Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
 
-**1M Context:** Opus 4.6 and Opus 4.7 get 1M context by default. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 at 1M is not included with subscriptions and requires Extra Usage. Haiku is always 200k. You may need to set `provider.plan` and/or `provider.longContextExtraUsage` as described in [Configuration](#configuration).
+**1M Context:** Opus 4.7 and Opus 4.8 get 1M context by default. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
 
 ## AskClaude Tool
 
@@ -72,7 +72,9 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 
 `askClaude`:
 - `enabled` — register the AskClaude tool (default `true`)
-- `name`, `label`, `description` — overrides for the tool's pi-side name, TUI label, and description
+- `name` — override the tool's pi-side name (default `"AskClaude"`)
+- `label` — override the TUI label (default `"Ask Claude Code"`)
+- `description` — override the tool description. Default when `allowFullMode: true`: *"Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself."*
 - `defaultMode` — `"read"` (default), `"none"`, or `"full"`
 - `defaultIsolated` — start each call in a fresh session (default `false`)
 - `allowFullMode` — allow `mode: "full"`; set `false` to lock it out
