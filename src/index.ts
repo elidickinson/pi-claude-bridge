@@ -801,21 +801,21 @@ function markStreamComplete(stream: AssistantMessageEventStream | null): void {
 	if (stream) completedStreams.add(stream as object);
 }
 
-function claimCurrentPiStream(stream: AssistantMessageEventStream, label: string, c = ctx()): void {
+function claimCurrentPiStream(stream: AssistantMessageEventStream, label: string, c: QueryContext): void {
 	if (c.currentPiStream && !completedStreams.has(c.currentPiStream as object)) {
 		debug(`WARNING: currentPiStream overwritten before terminal event (${label}); activeQuery=${Boolean(c.activeQuery)} pendingHandlers=${c.pendingToolCalls.size}`);
 	}
 	c.currentPiStream = stream;
 }
 
-function ensureTurnStarted(c = ctx()): void {
+function ensureTurnStarted(c: QueryContext): void {
 	if (!c.turnStarted && c.currentPiStream && c.turnOutput) {
 		c.currentPiStream!.push({ type: "start", partial: c.turnOutput });
 		c.turnStarted = true;
 	}
 }
 
-function finalizeCurrentStream(c = ctx(), stopReason?: string): void {
+function finalizeCurrentStream(c: QueryContext, stopReason?: string): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: c.turnOutput!.stopReason, error: c.turnOutput!.errorMessage})}`);
 	if (!c.turnStarted) ensureTurnStarted(c);
@@ -833,7 +833,7 @@ function processStreamEvent(
 	message: SDKMessage,
 	customToolNameToPi: Map<string, string>,
 	model: Model<any>,
-	c = ctx(),
+	c: QueryContext,
 ): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	c.turnSawStreamEvent = true;
@@ -946,7 +946,7 @@ function processStreamEvent(
 // arrives before any stream_events, this is the primary content path. Must maintain
 // the same stream lifecycle as processStreamEvent — including ending the stream on
 // tool_use to prevent deadlock with the MCP handler.
-function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c = ctx()): void {
+function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext): void {
 	if (c.turnSawStreamEvent) return;
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
@@ -1009,7 +1009,7 @@ async function consumeQuery(
 	customToolNameToPi: Map<string, string>,
 	model: Model<any>,
 	wasAborted: () => boolean,
-	queryCtx = ctx(),
+	queryCtx: QueryContext,
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
 
