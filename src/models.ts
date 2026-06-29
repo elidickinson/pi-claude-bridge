@@ -58,7 +58,8 @@ export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongCon
 		case "claude-haiku-4-5":
 			return { cliModelId: "claude-haiku-4-5", contextWindow: TWO_HUNDRED_K_CONTEXT };
 		default:
-			throw new Error(`No measured Claude Code context policy for model ${modelId}`);
+			console.error(`claude-bridge: encountered model ${modelId} with no known context size, defaulting to 200K`);
+			return { cliModelId: modelId, contextWindow: TWO_HUNDRED_K_CONTEXT };
 	}
 }
 
