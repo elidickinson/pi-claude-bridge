@@ -2,6 +2,8 @@
 
 ## UNRELEASED
 
+- **Add: claude-sonnet-5 model** — Anthropic's Claude Sonnet 5 (released 2026-06-30) is now selectable via `/model claude-bridge/claude-sonnet-5`. The `sonnet` shortcut now resolves to Sonnet 5; Sonnet 4.6 remains available for explicit pinning. Per Anthropic, Sonnet 5 ships 1M context only (no 200K variant, no `[1m]` entitlement toggle), forces adaptive thinking, and rejects non-default `temperature`/`top_p`/`top_k` (returns 400). pi-ai's catalog supplies the metadata; runtime policy matches the measured Agent SDK behavior for the other 1M-only models (Opus 4.7/4.8).
+
 ## 0.6.0 — 2026-06-29
 
 - **Fix: `/compact` hang (issue #18)** — the bridge now owns compaction for claude-bridge models, running split-turn summaries as isolated Claude Code subprocesses instead of routing them through the live provider stream. File ops (`<read-files>`/`<modified-files>`) carry forward across compactions. If compaction fails it is cancelled with a notification rather than falling back to the buggy native path.
