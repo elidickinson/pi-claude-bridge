@@ -2,7 +2,8 @@
 
 ## UNRELEASED
 
-- **Add: claude-sonnet-5 model** — Anthropic's Claude Sonnet 5 (released 2026-06-30) is now selectable via `/model claude-bridge/claude-sonnet-5`. The `sonnet` shortcut now resolves to Sonnet 5; Sonnet 4.6 remains available for explicit pinning. Per Anthropic, Sonnet 5 ships 1M context only (no 200K variant, no `[1m]` entitlement toggle), forces adaptive thinking, and rejects non-default `temperature`/`top_p`/`top_k` (returns 400). pi-ai's catalog supplies the metadata; runtime policy matches the measured Agent SDK behavior for the other 1M-only models (Opus 4.7/4.8).
+- **Add: claude-fable-5 and claude-sonnet-5 models** — Anthropic's Claude Fable 5 (released 2026-06-09) and Sonnet 5 (released 2026-06-30) are now selectable via `/model`. Both ship 1M context only (no 200K variant, no `[1m]` entitlement toggle) and force adaptive thinking. The `fable` and `sonnet` shortcuts resolve to these new models.
+- **Bump: pi-ai >=0.80.3** — required for claude-fable-5 and claude-sonnet-5 model catalog entries.
 
 ## 0.6.0 — 2026-06-29
 
