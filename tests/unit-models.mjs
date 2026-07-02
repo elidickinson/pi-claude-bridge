@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MODEL_IDS_IN_ORDER, applyLongContext, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel, resolveModel } from "../src/models.js";
+import { MODEL_IDS_IN_ORDER, applyLongContext, buildModels, claudeCodeModelId, isAdaptiveModel, resolveClaudeCodeRuntimeModel, resolveModel, resolveThinking } from "../src/models.js";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
 const MAX = { plan: "max", longContextExtraUsage: false };
@@ -166,5 +166,64 @@ describe("resolveModel", () => {
 		const model = resolveModel(oneMModels, "opus");
 		assert.equal(model.id, "claude-opus-4-8");
 		assert.equal(claudeCodeModelId(model, PRO), "claude-opus-4-8[1m]");
+	});
+});
+
+describe("isAdaptiveModel", () => {
+	it("every bridge model except Haiku is adaptive", () => {
+		for (const id of MODEL_IDS_IN_ORDER) {
+			assert.equal(isAdaptiveModel(id), id !== "claude-haiku-4-5", id);
+		}
+	});
+
+	it("unknown ids are not adaptive (arbitrary AskClaude model params)", () => {
+		assert.equal(isAdaptiveModel("gpt-9"), false);
+		assert.equal(isAdaptiveModel("claude-opus-4-7-20251115"), false);
+	});
+});
+
+describe("resolveThinking", () => {
+	const r = (modelId, reasoning, map) => resolveThinking(modelId, reasoning, "high", map);
+	const ADAPTIVE_ON = { type: "adaptive", display: "summarized" };
+
+	it("adaptive + undefined (pi slider off) → thinking disabled with effortWhenOff", () => {
+		assert.deepEqual(r("claude-opus-4-7", undefined), { effort: "high", thinking: { type: "disabled" } });
+	});
+
+	it('adaptive + literal "off" (AskClaude) → same as undefined', () => {
+		assert.deepEqual(r("claude-sonnet-5", "off"), { effort: "high", thinking: { type: "disabled" } });
+	});
+
+	it("respects a custom effortWhenOff", () => {
+		assert.deepEqual(resolveThinking("claude-opus-4-7", "off", "max"), { effort: "max", thinking: { type: "disabled" } });
+	});
+
+	it("off unsupported per pi-ai map (fable-5) → clamps to minimal, thinking stays adaptive", () => {
+		assert.deepEqual(r("claude-fable-5", "off", { off: null, xhigh: "xhigh" }), { effort: "low", thinking: ADAPTIVE_ON });
+	});
+
+	it("xhigh prefers the model thinkingLevelMap (opus-4-7 → xhigh, opus-4-6 → max)", () => {
+		assert.deepEqual(r("claude-opus-4-7", "xhigh", { xhigh: "xhigh" }), { effort: "xhigh", thinking: ADAPTIVE_ON });
+		assert.deepEqual(r("claude-opus-4-6", "xhigh", { xhigh: "max" }), { effort: "max", thinking: ADAPTIVE_ON });
+	});
+
+	it("xhigh with no map falls back to the table (sonnet-4-6 → max)", () => {
+		assert.deepEqual(r("claude-sonnet-4-6", "xhigh"), { effort: "max", thinking: ADAPTIVE_ON });
+	});
+
+	it("minimal/low/medium/high fall through to the table, thinking explicitly adaptive", () => {
+		assert.deepEqual(r("claude-opus-4-7", "minimal"), { effort: "low", thinking: ADAPTIVE_ON });
+		assert.deepEqual(r("claude-opus-4-7", "high"), { effort: "high", thinking: ADAPTIVE_ON });
+	});
+
+	it("haiku keeps legacy behavior: level → table effort, off/undefined → nothing", () => {
+		assert.deepEqual(r("claude-haiku-4-5", "high"), { effort: "high" });
+		assert.deepEqual(r("claude-haiku-4-5", "off"), {});
+		assert.deepEqual(r("claude-haiku-4-5", undefined), {});
+	});
+
+	it("unknown model → legacy behavior, never sends a thinking flag", () => {
+		assert.deepEqual(r("gpt-9", "off"), {});
+		assert.deepEqual(r("gpt-9", "high"), { effort: "high" });
 	});
 });

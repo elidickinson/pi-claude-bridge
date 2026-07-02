@@ -3,7 +3,7 @@
 // overriding global. Missing or unparseable files are ignored (error to
 // console.error, empty object returned) so the extension always starts.
 
-import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type { EffortLevel, SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
@@ -32,6 +32,11 @@ export interface Config {
 		// Anthropic billing). Enables Sonnet 4.6 [1m] on every plan and Opus 4.6
 		// [1m] on Pro.
 		longContextExtraUsage?: boolean;
+		// Effort sent when pi's reasoning level is "off" on an adaptive-thinking
+		// model. The bridge also passes thinking: disabled so ~/.claude/settings.json
+		// (alwaysThinkingEnabled / effortLevel) can't silently re-enable reasoning
+		// (see resolveThinking in models.ts). Defaults to "high".
+		effortWhenReasoningOff?: EffortLevel;
 	};
 }
 
