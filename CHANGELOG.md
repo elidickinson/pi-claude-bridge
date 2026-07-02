@@ -1,5 +1,10 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: pi's reasoning slider is now authoritative for adaptive models** — on adaptive-thinking models (every bridge model except Haiku 4.5) the bridge now always passes an explicit thinking config: `off` sends `thinking: disabled` plus a deterministic effort (configurable via `provider.effortWhenReasoningOff`, default `"high"`), and any other level sends `thinking: adaptive` plus the mapped effort. Verified live in both directions: previously `off` still produced thinking (CC defaults thinking ON), and `~/.claude/settings.json` `alwaysThinkingEnabled: false` silently suppressed thinking the slider asked for. Fable 5 can't disable thinking (verified live: it ignores `thinking: disabled`; pi-ai marks `off` unsupported and pi hides it from the slider) — an explicit AskClaude `thinking: "off"` on it clamps to `minimal` instead. Haiku 4.5 is unchanged (budget-based thinking, no effort knob).
+- **Change: AskClaude `thinking` defaults to `high` on adaptive models** — omitting `thinking` previously sent no effort and let Claude Code pick its own settings-dependent default. It now resolves to `high` (Anthropic's recommended starting point) so AskClaude behaves the same regardless of CC settings. Unknown model ids keep the old behavior — no effort sent, CC picks.
+
 ## 0.6.1 — 2026-07-01
 
 - **Add: claude-fable-5 and claude-sonnet-5 models** — Anthropic's Claude Fable 5 (released 2026-06-09) and Sonnet 5 (released 2026-06-30) are now selectable via `/model`. Both ship 1M context only (no 200K variant, no `[1m]` entitlement toggle) and force adaptive thinking. The `fable` and `sonnet` shortcuts resolve to these new models.
