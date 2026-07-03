@@ -20,6 +20,7 @@ import { loadConfig, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
+import { fetchUsage, formatStatus, formatPanel, applyRateLimitInfo, type UsageSnapshot } from "./usage.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -659,6 +660,40 @@ function mapToolArgs(
 
 // Global (not query state):
 let piUI: ExtensionUIContext | null = null;
+
+// --- Usage meter state ---
+let usageSnapshot: UsageSnapshot | null = null;
+let usageTimer: ReturnType<typeof setInterval> | null = null;
+let usageMeterEnabled = true;
+
+function renderUsageStatus() {
+	if (!usageMeterEnabled) return;
+	piUI?.setStatus("claude-usage", usageSnapshot ? formatStatus(usageSnapshot) : undefined);
+}
+
+async function refreshUsage(): Promise<UsageSnapshot | null> {
+	const snap = await fetchUsage();
+	if (snap) {
+		usageSnapshot = snap;
+		renderUsageStatus();
+	}
+	return snap ?? usageSnapshot;
+}
+
+function stopUsageTimer() {
+	if (usageTimer) {
+		clearInterval(usageTimer);
+		usageTimer = null;
+	}
+}
+
+function startUsageMeter(refreshMinutes: number) {
+	if (!usageMeterEnabled) return;
+	void refreshUsage();
+	stopUsageTimer();
+	usageTimer = setInterval(() => void refreshUsage(), Math.max(1, refreshMinutes) * 60_000);
+	usageTimer.unref?.();
+}
 const activeQueryContexts = new Set<QueryContext>();
 
 function contextForToolResults(results: McpResult[]): QueryContext | undefined {
@@ -1055,6 +1090,10 @@ async function consumeQuery(
 					piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
 				} else if (info?.status === "allowed_warning") {
 					piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
+				}
+				if (info) {
+					usageSnapshot = applyRateLimitInfo(usageSnapshot, info);
+					renderUsageStatus();
 				}
 				break;
 			}
@@ -1601,6 +1640,9 @@ export default function (pi: ExtensionAPI) {
 		plan: providerSettings.plan ?? "pro",
 		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
 	};
+	const usageConf = config.usageMeter ?? {};
+	usageMeterEnabled = usageConf.enabled !== false;
+	const usageRefreshMinutes = usageConf.refreshMinutes ?? 5;
 	const registeredModels = applyLongContext(MODELS, longContextSettings);
 
 	// Reset shared session on pi session lifecycle events
@@ -1622,8 +1664,13 @@ export default function (pi: ExtensionAPI) {
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
+		if (usageSnapshot) renderUsageStatus();
+		startUsageMeter(usageRefreshMinutes);
 	});
-	pi.on("session_shutdown", () => clearSession("session_shutdown"));
+	pi.on("session_shutdown", () => {
+		stopUsageTimer();
+		clearSession("session_shutdown");
+	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
@@ -1829,4 +1876,40 @@ export default function (pi: ExtensionAPI) {
 			},
 		});
 	}
+
+	// --- /claude-usage command ---
+	// No argument: print the full usage panel. `on` / `off` / `toggle`: flip the
+	// always-on footer meter for this session (the persistent default is the
+	// `usageMeter.enabled` config key).
+	pi.registerCommand("claude-usage", {
+		description: "Show Claude subscription usage, or toggle the footer meter: /claude-usage [on|off]",
+		getArgumentCompletions: (prefix) => {
+			const p = prefix.trim().toLowerCase();
+			return [
+				{ value: "on", label: "on", description: "Show the always-on footer meter" },
+				{ value: "off", label: "off", description: "Hide the footer meter" },
+			].filter((i) => i.value.startsWith(p));
+		},
+		handler: async (args, ctx) => {
+			const arg = args.trim().toLowerCase();
+			if (arg === "on" || arg === "off" || arg === "toggle") {
+				usageMeterEnabled = arg === "toggle" ? !usageMeterEnabled : arg === "on";
+				if (usageMeterEnabled) {
+					startUsageMeter(usageRefreshMinutes);
+					ctx.ui.notify("Claude usage meter enabled.", "info");
+				} else {
+					stopUsageTimer();
+					ctx.ui.setStatus("claude-usage", undefined);
+					ctx.ui.notify("Claude usage meter hidden. Run /claude-usage on to restore, or /claude-usage for a one-off report.", "info");
+				}
+				return;
+			}
+			const snap = await refreshUsage();
+			if (!snap) {
+				ctx.ui.notify("Claude usage unavailable: no OAuth token found, or the usage request failed.", "warning");
+				return;
+			}
+			ctx.ui.notify(formatPanel(snap), "info");
+		},
+	});
 }

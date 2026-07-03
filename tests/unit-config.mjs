@@ -33,6 +33,7 @@ describe("loadConfig", () => {
 			assert.deepEqual(loadConfig(cwd), {
 				provider: { plan: "max" },
 				askClaude: { enabled: false },
+				usageMeter: {},
 			});
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -58,6 +59,7 @@ describe("loadConfig", () => {
 			assert.deepEqual(loadConfig(cwd), {
 				provider: { plan: "max", strictMcpConfig: true },
 				askClaude: { enabled: false, defaultMode: "read" },
+				usageMeter: {},
 			});
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });

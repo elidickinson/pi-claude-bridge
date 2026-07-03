@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Add: Claude subscription usage meter** — an always-on footer statusline (e.g. `Claude 5h 44% (Res. 13:50) · 7d 23% (Res. Mon)`, percent used with per-window reset hints) plus a `/claude-usage` command for the full breakdown (5-hour + 7-day windows, reset times, metered extra usage). Data comes from the same `api.anthropic.com/api/oauth/usage` endpoint Claude Code's own `/usage` screen uses — read via the existing Claude Code OAuth token (macOS Keychain or `~/.claude/.credentials.json`), nothing sent elsewhere. The footer also refreshes for free from the `rate_limit_event` metadata the bridge already receives while you work. Toggle the footer live with `/claude-usage on`/`off`; configure via `usageMeter.enabled` / `usageMeter.refreshMinutes`.
+
 ## 0.6.1 — 2026-07-01
 
 - **Add: claude-fable-5 and claude-sonnet-5 models** — Anthropic's Claude Fable 5 (released 2026-06-09) and Sonnet 5 (released 2026-06-30) are now selectable via `/model`. Both ship 1M context only (no 200K variant, no `[1m]` entitlement toggle) and force adaptive thinking. The `fable` and `sonnet` shortcuts resolve to these new models.

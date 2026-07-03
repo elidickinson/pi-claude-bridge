@@ -33,6 +33,13 @@ export interface Config {
 		// [1m] on Pro.
 		longContextExtraUsage?: boolean;
 	};
+	/** Claude subscription usage meter (footer statusline + /claude-usage). */
+	usageMeter?: {
+		/** Show the always-on footer meter (default true). The /claude-usage command works regardless. */
+		enabled?: boolean;
+		/** How often to refresh the active snapshot, in minutes (default 5). */
+		refreshMinutes?: number;
+	};
 }
 
 export function tryParseJson(path: string): Partial<Config> {
@@ -51,5 +58,6 @@ export function loadConfig(cwd: string): Config {
 	return {
 		askClaude: { ...global.askClaude, ...project.askClaude },
 		provider: { ...global.provider, ...project.provider },
+		usageMeter: { ...global.usageMeter, ...project.usageMeter },
 	};
 }

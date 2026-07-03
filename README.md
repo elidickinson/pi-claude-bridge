@@ -49,6 +49,16 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 - **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
 - **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
 
+## Usage Meter
+
+Shows how much of your Claude subscription quota is left, using the same `api.anthropic.com/api/oauth/usage` endpoint as Claude Code's own `/usage` screen (read via your existing Claude Code OAuth token; nothing is sent anywhere else).
+
+- **Footer statusline** — an always-on meter like `Claude 5h 19% (Res. 12:50) · 7d 21% (Res. Sat)` (percentages are *used*; `Res.` is when each window resets — clock time for the 5-hour window, weekday for the 7-day window). It refreshes on session start, on a timer, and for free from the rate-limit metadata Claude returns as you work.
+- **`/claude-usage` command** — prints the full breakdown on demand: the 5-hour session window, the 7-day window, per-window reset times, and metered extra usage when enabled.
+- **`/claude-usage on` / `off`** — toggle the footer meter live for the current session (tab-completes `on`/`off`). The persistent default is the `usageMeter.enabled` config key below; the command overrides it until the next restart. A bare `/claude-usage` still prints the panel even when the footer is hidden.
+
+The token is read from the macOS Keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json` on other platforms. If no token is found the meter stays silent.
+
 ## Configuration
 
 Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global).
@@ -66,6 +76,10 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
     "longContextExtraUsage": false,
     "strictMcpConfig": true,
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
+  },
+  "usageMeter": {
+    "enabled": true,
+    "refreshMinutes": 5
   }
 }
 ```
@@ -88,6 +102,10 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
+
+`usageMeter`:
+- `enabled` — show the always-on footer meter (default `true`). The `/claude-usage` command works regardless of this setting.
+- `refreshMinutes` — how often to refresh the active snapshot (default `5`).
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not currently apply to extension-registered providers (like claude-bridge). Overriding `contextWindow` or other fields requires editing `src/models.ts` directly.
 
