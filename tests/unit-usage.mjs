@@ -34,7 +34,7 @@ describe("formatResetClock / formatResetDay", () => {
 	// Local-time constructor so formatting is timezone-independent.
 	const d = new Date(2026, 6, 3, 9, 5); // 2026-07-03 09:05 local (a Friday)
 	it("clock is zero-padded HH:MM", () => assert.equal(formatResetClock(d), "09:05"));
-	it("day is a short weekday", () => assert.match(formatResetDay(d), /^[A-Za-z]{3}/));
+	it("day is a deterministic short weekday", () => assert.equal(formatResetDay(d), "Fri"));
 	it("empty for undefined", () => {
 		assert.equal(formatResetClock(undefined), "");
 		assert.equal(formatResetDay(undefined), "");
@@ -48,7 +48,7 @@ describe("formatStatus", () => {
 			{ key: "seven_day", label: "7d", utilization: 21, remaining: 79, resetsAt: new Date(2026, 6, 6, 0, 0) },
 			{ key: "seven_day_opus", label: "7d Opus", utilization: 5, remaining: 95 },
 		]);
-		assert.match(formatStatus(s), /^Claude 5h 19% \(Res\. 12:50\) · 7d 21% \(Res\. [A-Za-z]{3}\)$/);
+		assert.equal(formatStatus(s), "Claude 5h 19% (Res. 12:50) · 7d 21% (Res. Mon)");
 	});
 	it("omits the reset hint when unknown", () => {
 		const s = snap([{ key: "five_hour", label: "5h", utilization: 19, remaining: 81 }]);

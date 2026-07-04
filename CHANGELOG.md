@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## UNRELEASED
 
 - **Add: Claude subscription usage meter** — an always-on footer statusline (e.g. `Claude 5h 44% (Res. 13:50) · 7d 23% (Res. Mon)`, percent used with per-window reset hints) plus a `/claude-usage` command for the full breakdown (5-hour + 7-day windows, reset times, metered extra usage). Data comes from the same `api.anthropic.com/api/oauth/usage` endpoint Claude Code's own `/usage` screen uses — read via the existing Claude Code OAuth token (macOS Keychain or `~/.claude/.credentials.json`), nothing sent elsewhere. The footer also refreshes for free from the `rate_limit_event` metadata the bridge already receives while you work. Toggle the footer live with `/claude-usage on`/`off`; configure via `usageMeter.enabled` / `usageMeter.refreshMinutes`.
 

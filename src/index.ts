@@ -668,7 +668,8 @@ let usageMeterEnabled = true;
 
 function renderUsageStatus() {
 	if (!usageMeterEnabled) return;
-	piUI?.setStatus("claude-usage", usageSnapshot ? formatStatus(usageSnapshot) : undefined);
+	const status = usageSnapshot ? formatStatus(usageSnapshot) : "";
+	piUI?.setStatus("claude-usage", status || undefined);
 }
 
 async function refreshUsage(): Promise<UsageSnapshot | null> {
@@ -1882,12 +1883,13 @@ export default function (pi: ExtensionAPI) {
 	// always-on footer meter for this session (the persistent default is the
 	// `usageMeter.enabled` config key).
 	pi.registerCommand("claude-usage", {
-		description: "Show Claude subscription usage, or toggle the footer meter: /claude-usage [on|off]",
+		description: "Show Claude subscription usage, or toggle the footer meter: /claude-usage [on|off|toggle]",
 		getArgumentCompletions: (prefix) => {
 			const p = prefix.trim().toLowerCase();
 			return [
 				{ value: "on", label: "on", description: "Show the always-on footer meter" },
 				{ value: "off", label: "off", description: "Hide the footer meter" },
+				{ value: "toggle", label: "toggle", description: "Toggle the footer meter" },
 			].filter((i) => i.value.startsWith(p));
 		},
 		handler: async (args, ctx) => {

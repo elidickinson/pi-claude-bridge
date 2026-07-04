@@ -225,10 +225,12 @@ export function formatResetClock(date: Date | undefined): string {
 	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
 /** Local short weekday, e.g. "Sat" (for the 7-day reset). */
 export function formatResetDay(date: Date | undefined): string {
 	if (!date) return "";
-	return date.toLocaleDateString(undefined, { weekday: "short" });
+	return WEEKDAYS[date.getDay()];
 }
 
 /**
