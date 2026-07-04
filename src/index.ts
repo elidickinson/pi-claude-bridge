@@ -672,8 +672,8 @@ function renderUsageStatus() {
 	piUI?.setStatus("claude-usage", status || undefined);
 }
 
-async function refreshUsage(): Promise<UsageSnapshot | null> {
-	const snap = await fetchUsage();
+async function refreshUsage(options: { force?: boolean } = {}): Promise<UsageSnapshot | null> {
+	const snap = await fetchUsage(options);
 	if (snap) {
 		usageSnapshot = snap;
 		renderUsageStatus();
@@ -1906,7 +1906,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				return;
 			}
-			const snap = await refreshUsage();
+			const snap = await refreshUsage({ force: true });
 			if (!snap) {
 				ctx.ui.notify("Claude usage unavailable: no OAuth token found, or the usage request failed.", "warning");
 				return;

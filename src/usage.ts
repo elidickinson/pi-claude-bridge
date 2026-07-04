@@ -25,6 +25,10 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER = "oauth-2025-04-20";
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
 const FETCH_TIMEOUT_MS = 10_000;
+const RATE_LIMIT_BACKOFF_MS = 15 * 60_000;
+const AUTH_FAILURE_BACKOFF_MS = 5 * 60_000;
+
+let usageFetchBackoffUntil = 0;
 
 /** A single quota window as shown in the meter. */
 export interface UsageWindow {
@@ -155,7 +159,8 @@ function toWindow(key: string, raw: RawWindow | null | undefined): UsageWindow |
 }
 
 /** Fetch and normalise the live usage snapshot. Returns null on any failure. */
-export async function fetchUsage(): Promise<UsageSnapshot | null> {
+export async function fetchUsage(options: { force?: boolean } = {}): Promise<UsageSnapshot | null> {
+	if (!options.force && Date.now() < usageFetchBackoffUntil) return null;
 	const token = await getOAuthToken();
 	if (!token) return null;
 
@@ -170,7 +175,12 @@ export async function fetchUsage(): Promise<UsageSnapshot | null> {
 			},
 			signal: controller.signal,
 		});
-		if (!res.ok) return null;
+		if (!res.ok) {
+			if (res.status === 429) usageFetchBackoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS;
+			else if (res.status === 401 || res.status === 403) usageFetchBackoffUntil = Date.now() + AUTH_FAILURE_BACKOFF_MS;
+			return null;
+		}
+		usageFetchBackoffUntil = 0;
 		data = (await res.json()) as Record<string, unknown>;
 	} catch {
 		return null;
