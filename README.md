@@ -49,6 +49,12 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 - **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
 - **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
 
+## Usage stats
+
+The Claude Agent SDK reports a rate-limit sample each turn. The bridge shows the current 5-hour utilization in pi's footer (e.g. `CC 5h 34%`, with a `⚠extra` flag when Extra Usage is active) and adds a `/usage` command that prints a bar for each rolling window it has observed, with reset times, plus whether Extra Usage credits are currently in use.
+
+No credentials are read: this uses only the rate-limit events the SDK already streams. Each event covers one window, so `/usage` fills in over successive turns and shows only the windows that apply to your account. Exact credit spend and per-model limits (such as Fable) are not in the stream. For those, run `claude` and use its own `/usage`.
+
 ## Configuration
 
 Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global).

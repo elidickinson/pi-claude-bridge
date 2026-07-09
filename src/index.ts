@@ -2,7 +2,7 @@ import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessage
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKRateLimitInfo, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -20,6 +20,7 @@ import { loadConfig, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
+import { formatQuotaStatus, formatUsageReport, type UsageWindows } from "./usage.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -661,6 +662,14 @@ function mapToolArgs(
 let piUI: ExtensionUIContext | null = null;
 const activeQueryContexts = new Set<QueryContext>();
 
+// Latest rate-limit sample per window; fills in over turns since each event covers one.
+const usageWindows: UsageWindows = new Map();
+
+function recordUsage(info: SDKRateLimitInfo): void {
+	if (info.rateLimitType) usageWindows.set(info.rateLimitType, { ...info, capturedAt: Date.now() });
+	piUI?.setStatus("claude-quota", formatQuotaStatus(usageWindows));
+}
+
 function contextForToolResults(results: McpResult[]): QueryContext | undefined {
 	for (const result of results) {
 		const id = result.toolCallId;
@@ -1048,8 +1057,9 @@ async function consumeQuery(
 			case "user":
 				break; // SDK echo of user prompt — not needed
 			case "rate_limit_event": {
-				const info = (message as any).rate_limit_info;
+				const info = (message as any).rate_limit_info as SDKRateLimitInfo;
 				debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+				recordUsage(info);
 				if (info?.status === "rejected") {
 					const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
 					piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
@@ -1624,6 +1634,13 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 	pi.on("session_shutdown", () => clearSession("session_shutdown"));
+
+	pi.registerCommand("usage", {
+		description: "Show Claude Code subscription quota usage seen by the bridge",
+		handler: async (_args, ctx) => {
+			ctx.ui.notify(formatUsageReport(usageWindows), "info");
+		},
+	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
