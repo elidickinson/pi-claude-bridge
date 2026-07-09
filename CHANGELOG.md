@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: `/usage` command and quota footer** — the bridge records the subscription rate-limit windows the Claude Agent SDK streams each turn and shows the 5-hour utilization in the footer. `/usage` prints a bar for each window that has streamed in, with reset times, plus an Extra Usage in-use flag. Only windows the SDK actually emits are shown; windows that do not apply to the account are not referenced. No credentials are read. Exact credit spend and per-model limits are not in the stream, so `/usage` points at Claude Code's own `/usage` for those.
+
 ## 0.6.2 — 2026-07-06
 
 - **Fix: Sonnet 5 and Fable 5 with 1M context** — bare model IDs (`claude-sonnet-5`, `claude-fable-5`) are 200K context. Must pass `[1m]` suffix for both, similar to Opus 4.8.
