@@ -41,10 +41,25 @@ describe("MODELS projection", () => {
 		assert.deepEqual(models.map((m) => m.id), MODEL_IDS_IN_ORDER);
 	});
 
-	it("silently drops IDs missing from pi-ai (no fallback)", () => {
-		// Only haiku present — opus/sonnet vanish from picker.
+	it("supplies Opus 5 while pi-ai has not published its catalog entry", () => {
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
-		assert.deepEqual(models.map((m) => m.id), ["claude-haiku-4-5"]);
+		assert.deepEqual(find(models, "claude-opus-5"), {
+			id: "claude-opus-5",
+			name: "Claude Opus 5",
+			reasoning: true,
+			input: ["text", "image"],
+			contextWindow: 1000000,
+			maxTokens: 128000,
+			thinkingLevelMap: { xhigh: "xhigh" },
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		});
+	});
+
+	it("prefers pi-ai metadata when Opus 5 becomes available there", () => {
+		const upstream = { ...mockPiAiModel("claude-opus-5"), name: "Upstream Opus 5", maxTokens: 64000 };
+		const models = buildModels([upstream]);
+		assert.equal(find(models, "claude-opus-5")?.name, "Upstream Opus 5");
+		assert.equal(find(models, "claude-opus-5")?.maxTokens, 64000);
 	});
 
 	it("zeros out cost regardless of pi-ai pricing", () => {
@@ -80,6 +95,7 @@ describe("MODELS projection", () => {
 
 describe("Claude Code runtime model policy", () => {
 	it("uses measured Pro defaults", () => {
+		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-5", PRO), { cliModelId: "claude-opus-5[1m]", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-8", PRO), { cliModelId: "claude-opus-4-8[1m]", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-7", PRO), { cliModelId: "claude-opus-4-7", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-6", PRO), { cliModelId: "claude-opus-4-6", contextWindow: 200000 });
@@ -109,6 +125,7 @@ describe("claudeCodeModelId", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(oneM));
 
 	it("returns the measured SDK request id", () => {
+		assert.equal(claudeCodeModelId(find(models, "claude-opus-5"), PRO), "claude-opus-5[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-8"), PRO), "claude-opus-4-8[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-7"), PRO), "claude-opus-4-7");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-6"), PRO), "claude-opus-4-6");
@@ -124,6 +141,7 @@ describe("applyLongContext", () => {
 
 	it("registers measured Pro defaults", () => {
 		const registered = applyLongContext(models, PRO);
+		assert.equal(find(registered, "claude-opus-5").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-opus-4-8").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-opus-4-7").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-opus-4-6").contextWindow, 200000);
@@ -148,6 +166,7 @@ describe("applyLongContext", () => {
 
 	it("labels exactly the registered 1M models", () => {
 		const pro = applyLongContext(models, PRO);
+		assert.equal(find(pro, "claude-opus-5").name, "claude-opus-5 1M");
 		assert.equal(find(pro, "claude-opus-4-8").name, "claude-opus-4-8 1M");
 		assert.equal(find(pro, "claude-opus-4-7").name, "claude-opus-4-7 1M");
 		assert.equal(find(pro, "claude-opus-4-6").name, "claude-opus-4-6");
@@ -162,8 +181,8 @@ describe("applyLongContext", () => {
 describe("resolveModel", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
 
-	it("opus shortcut resolves to claude-opus-4-8 (first opus in order)", () => {
-		assert.equal(resolveModel(models, "opus")?.id, "claude-opus-4-8");
+	it("opus shortcut resolves to claude-opus-5 (first opus in order)", () => {
+		assert.equal(resolveModel(models, "opus")?.id, "claude-opus-5");
 	});
 
 	it("haiku shortcut resolves to claude-haiku-4-5", () => {
@@ -181,7 +200,7 @@ describe("resolveModel", () => {
 	it("returns the matched model object for CLI-arg conversion", () => {
 		const oneMModels = buildModels(MODEL_IDS_IN_ORDER.map(oneM));
 		const model = resolveModel(oneMModels, "opus");
-		assert.equal(model.id, "claude-opus-4-8");
-		assert.equal(claudeCodeModelId(model, PRO), "claude-opus-4-8[1m]");
+		assert.equal(model.id, "claude-opus-5");
+		assert.equal(claudeCodeModelId(model, PRO), "claude-opus-5[1m]");
 	});
 });

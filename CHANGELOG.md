@@ -1,5 +1,10 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: Claude Opus 5 model** — register `claude-opus-5` with its 1M Claude Code runtime ID and make the `opus` shortcut select it. A temporary local catalog fallback keeps the model available until pi-ai publishes matching metadata.
+- **Bump: aligned Pi development packages** — update pi-ai, pi-coding-agent, and pi-tui to 0.80.10-compatible ranges so typechecking uses one event-stream type.
+
 ## 0.6.2 — 2026-07-06
 
 - **Fix: Sonnet 5 and Fable 5 with 1M context** — bare model IDs (`claude-sonnet-5`, `claude-fable-5`) are 200K context. Must pass `[1m]` suffix for both, similar to Opus 4.8.
