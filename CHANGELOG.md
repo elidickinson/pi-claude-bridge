@@ -1,5 +1,10 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: configurable Claude Code permission modes** — provider and AskClaude sessions now have independent `provider.permissionMode` and `askClaude.permissionMode` overrides, while preserving the existing `bypassPermissions` default.
+- **Fix: compaction stream typecheck** — cast across the duplicated `pi-ai` dev dependency boundary, matching provider registration.
+
 ## 0.6.2 — 2026-07-06
 
 - **Fix: Sonnet 5 and Fable 5 with 1M context** — bare model IDs (`claude-sonnet-5`, `claude-fable-5`) are 200K context. Must pass `[1m]` suffix for both, similar to Opus 4.8.

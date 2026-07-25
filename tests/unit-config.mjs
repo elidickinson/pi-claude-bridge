@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, resolvePermissionMode } from "../src/config.js";
 
 function withTempHome(fn) {
 	const oldHome = process.env.HOME;
@@ -19,6 +19,16 @@ function withTempHome(fn) {
 	}
 }
 
+describe("resolvePermissionMode", () => {
+	it("preserves the existing bypassPermissions default", () => {
+		assert.equal(resolvePermissionMode(), "bypassPermissions");
+	});
+
+	it("preserves an explicit mode", () => {
+		assert.equal(resolvePermissionMode("bypassPermissions"), "bypassPermissions");
+	});
+});
+
 describe("loadConfig", () => {
 	it("loads project config from Pi's configured project directory", () => withTempHome(() => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
@@ -26,13 +36,13 @@ describe("loadConfig", () => {
 			const configDir = join(cwd, CONFIG_DIR_NAME);
 			mkdirSync(configDir, { recursive: true });
 			writeFileSync(join(configDir, "claude-bridge.json"), JSON.stringify({
-				provider: { plan: "max" },
-				askClaude: { enabled: false },
+				provider: { plan: "max", permissionMode: "auto" },
+				askClaude: { enabled: false, permissionMode: "auto" },
 			}));
 
 			assert.deepEqual(loadConfig(cwd), {
-				provider: { plan: "max" },
-				askClaude: { enabled: false },
+				provider: { plan: "max", permissionMode: "auto" },
+				askClaude: { enabled: false, permissionMode: "auto" },
 			});
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });

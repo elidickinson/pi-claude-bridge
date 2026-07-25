@@ -16,7 +16,7 @@ import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.j
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
-import { loadConfig, type Config } from "./config.js";
+import { loadConfig, resolvePermissionMode, type BridgePermissionMode, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
@@ -136,6 +136,14 @@ function errorMessage(err: unknown): string {
 		try { return JSON.stringify(err); } catch {}
 	}
 	return String(err);
+}
+
+function permissionOptions(configuredMode?: BridgePermissionMode) {
+	const permissionMode = resolvePermissionMode(configuredMode);
+	return {
+		permissionMode,
+		...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
+	};
 }
 
 // AskClaude mode presets — controls which CC tools are blocked per mode.
@@ -1248,7 +1256,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		cwd,
 		env: childEnv,
 		tools: [],
-		permissionMode: "bypassPermissions",
+		...permissionOptions(providerSettings.permissionMode),
 		includePartialMessages: true,
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
@@ -1266,6 +1274,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
+		`permission=${resolvePermissionMode(providerSettings.permissionMode)}`,
 		`appendSys=${appendSystemPrompt} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
@@ -1479,6 +1488,7 @@ async function promptAndWait(
 
 	debug("askClaude:",
 		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
+		`permission=${resolvePermissionMode(askClaudePermissionMode)}`,
 		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
 		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
 
@@ -1487,7 +1497,7 @@ async function promptAndWait(
 		options: {
 			cwd,
 			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
-			permissionMode: "bypassPermissions",
+			...permissionOptions(askClaudePermissionMode),
 			...(disallowedTools.length ? { disallowedTools } : {}),
 			...(effort ? { effort } : {}),
 			systemPrompt: skillsBlock
@@ -1588,6 +1598,7 @@ const PREVIEW_MAX_CHARS = 1000;
 const PREVIEW_MAX_LINES = 6;
 
 let askClaudeToolName = "AskClaude";
+let askClaudePermissionMode: BridgePermissionMode | undefined;
 
 export default function (pi: ExtensionAPI) {
 	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
@@ -1642,7 +1653,8 @@ export default function (pi: ExtensionAPI) {
 				event.customInstructions,
 				event.signal,
 				undefined,
-				isolatedStreamFn,
+				// Cast: pi-ai is duplicated through the pi-coding-agent dev dependency.
+				isolatedStreamFn as any,
 				undefined,
 			);
 			debug(`session_before_compact: takeover complete summaryLen=${compaction.summary.length}`);
@@ -1704,6 +1716,7 @@ export default function (pi: ExtensionAPI) {
 	// --- AskClaude tool ---
 
 	const askConf = config.askClaude;
+	askClaudePermissionMode = askConf?.permissionMode;
 	const allowFull = askConf?.allowFullMode !== false;
 	const defaultMode = askConf?.defaultMode ?? "read";
 	const defaultIsolated = askConf?.defaultIsolated ?? false;

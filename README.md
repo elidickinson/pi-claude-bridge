@@ -59,9 +59,11 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
     "enabled": true,
     "allowFullMode": true,
     "defaultIsolated": false,
+    "permissionMode": "auto",
     "description": "Custom tool description override"
   },
   "provider": {
+    "permissionMode": "auto",
     "plan": "max",
     "longContextExtraUsage": false,
     "strictMcpConfig": true,
@@ -79,8 +81,10 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `defaultIsolated` — start each call in a fresh session (default `false`)
 - `allowFullMode` — allow `mode: "full"`; set `false` to lock it out
 - `appendSkills` — forward pi's skills block into the system prompt (default `true`)
+- `permissionMode` — Claude Code permission mode (default `"bypassPermissions"`). This is independent of the `read` / `full` / `none` capability mode.
 
 `provider`:
+- `permissionMode` — Claude Code permission mode for provider tool calls (default `"bypassPermissions"`)
 - `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context.
 - `longContextExtraUsage` — set to `true` to enable 1M models that cost money through Extra Usage. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 4.7 or 4.8.
 - `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
