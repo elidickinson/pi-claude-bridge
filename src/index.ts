@@ -1,4 +1,4 @@
-import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@earendil-works/pi-ai";
+import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
@@ -240,38 +240,45 @@ function extractUserPrompt(messages: Context["messages"]): string | null {
 	return messageContentToText(last.content) || "";
 }
 
-/** Extract the last user message as ContentBlockParam[] (preserving images).
+/** Extract the trailing user turn as ContentBlockParam[] (preserving images).
  *  Returns null if no images — caller should fall back to string prompt. */
 function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockParam[] | null {
-	const last = messages[messages.length - 1];
-	if (!last || last.role !== "user") return null;
-	if (typeof last.content === "string") {
-		debug(`extractUserPromptBlocks: content is string (length=${last.content.length})`);
-		return null;
+	const userTail: UserMessage[] = [];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (!message || message.role !== "user") break;
+		userTail.unshift(message);
 	}
-	if (!Array.isArray(last.content)) {
-		debug(`extractUserPromptBlocks: content is ${typeof last.content}`);
-		return null;
-	}
-	debug(`extractUserPromptBlocks: ${last.content.length} blocks, types=${last.content.map((b: any) => b.type).join(",")}`);
+	if (userTail.length === 0) return null;
+
 	let hasImage = false;
 	const blocks: ContentBlockParam[] = [];
-	for (const block of last.content) {
-		if (block.type === "text" && block.text) {
-			blocks.push({ type: "text", text: block.text });
-		} else if (block.type === "image") {
-			debug(`image block: mimeType=${(block as any).mimeType}, data length=${((block as any).data ?? "").length}, keys=${Object.keys(block).join(",")}`);
-			if (!(block as any).data || !(block as any).mimeType) {
-				debug(`image block missing data or mimeType, skipping`);
-				continue;
+	for (const message of userTail) {
+		const content: (TextContent | ImageContent)[] = typeof message.content === "string"
+			? [{ type: "text", text: message.content }]
+			: message.content;
+		for (const block of content) {
+			if (block.type === "text" && block.text) {
+				blocks.push({ type: "text", text: block.text });
+			} else if (block.type === "image") {
+				debug(`image block: mimeType=${block.mimeType}, data length=${block.data.length}, keys=${Object.keys(block).join(",")}`);
+				if (!block.data || !block.mimeType) {
+					debug(`image block missing data or mimeType, skipping`);
+					continue;
+				}
+				hasImage = true;
+				blocks.push({
+					type: "image",
+					source: {
+						type: "base64",
+						media_type: block.mimeType as Base64ImageSource["media_type"],
+						data: block.data,
+					},
+				});
 			}
-			hasImage = true;
-			blocks.push({
-				type: "image",
-				source: { type: "base64", media_type: block.mimeType as Base64ImageSource["media_type"], data: block.data },
-			});
 		}
 	}
+	debug(`extractUserPromptBlocks: ${userTail.length} trailing user messages, ${blocks.length} blocks`);
 	return hasImage ? blocks : null;
 }
 
@@ -606,6 +613,7 @@ export const __test = {
 		return sharedSession;
 	},
 	syncSharedSession,
+	extractUserPromptBlocks,
 };
 
 // --- Provider helpers: tool name mapping ---
