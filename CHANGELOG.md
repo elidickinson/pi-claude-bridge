@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: claude-opus-5 model** — Anthropic's Claude Opus 5 is now selectable via `/model`, and the `opus` shortcut resolves to it (newest Opus, as with the 4.8 bump). Like Opus 4.8, the bare `claude-opus-5` id serves 200K, so the bridge requests `claude-opus-5[1m]` for 1M context. Measured 2026-07-26 via the Agent SDK (subscription OAuth): bare `claude-opus-5` → 200K, `claude-opus-5[1m]` → 1M, served with no credit gate. pi-ai supplies the metadata (`thinkingLevelMap` present, so no workaround needed).
+
 ## 0.6.2 — 2026-07-06
 
 - **Fix: Sonnet 5 and Fable 5 with 1M context** — bare model IDs (`claude-sonnet-5`, `claude-fable-5`) are 200K context. Must pass `[1m]` suffix for both, similar to Opus 4.8.
