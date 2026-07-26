@@ -106,6 +106,8 @@ Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 When filing a bug about a session-resume failure (e.g. "No conversation found"), the most useful attachments are the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file for the failing query.
 
+The bridge stops an SDK query that produces no events for 120 seconds after streaming has started. The first event gets a longer 300-second minimum because large contexts can have a slow prefill. The timer stands down while a pi tool call is pending. Set `CLAUDE_BRIDGE_IDLE_TIMEOUT_MS` or `CLAUDE_BRIDGE_FIRST_TOKEN_TIMEOUT_MS` to override the defaults; set both to `0` to disable the watchdog.
+
 ## Maintenance
 
 After a Claude Code release, review `MODE_DISALLOWED_TOOLS` in `src/index.ts` — it gates which CC tools the AskClaude subagent may invoke per mode (`read` / `full` / `none`). Add new agentic tools (PlanMode, Task spawning, etc.) to the appropriate mode lists if they shouldn't be available to subagents.
