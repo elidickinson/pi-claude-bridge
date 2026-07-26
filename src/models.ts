@@ -2,7 +2,7 @@
 // `resolveModel` returns the first partial match, so `opus` resolves to the first-listed opus entry.
 // Extracted from index.ts so tests can import without activating the extension.
 
-export const MODEL_IDS_IN_ORDER = ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+export const MODEL_IDS_IN_ORDER = ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
 
 // Workaround for missing thinkingLevelMap in pi-ai (earendil-works/pi#6371).
 // Sonnet 5 and Sonnet 4.6 have no map, so getSupportedThinkingLevels hides
@@ -49,6 +49,8 @@ const ONE_M_CONTEXT = 1_000_000;
 // not, and [1m] entitlement differs by model. See diag/CONTEXT-SIZE.md.
 export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongContextSettings): ClaudeCodeRuntimeModel {
 	switch (modelId) {
+		case "claude-opus-5":
+			return { cliModelId: "claude-opus-5[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-8":
 			return { cliModelId: "claude-opus-4-8[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-7":
