@@ -606,6 +606,7 @@ export const __test = {
 		return sharedSession;
 	},
 	syncSharedSession,
+	consumeQuery,
 };
 
 // --- Provider helpers: tool name mapping ---
@@ -1012,52 +1013,102 @@ async function consumeQuery(
 	queryCtx: QueryContext,
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
-
-	for await (const message of sdkQuery) {
-		if (wasAborted()) break;
-		if (!queryCtx.currentPiStream || !queryCtx.turnOutput) continue;
-
-		switch (message.type) {
-			case "stream_event":
-				processStreamEvent(message, customToolNameToPi, model, queryCtx);
-				break;
-			case "assistant":
-				processAssistantMessage(message, model, customToolNameToPi, queryCtx);
-				break;
-			case "result":
-				logServedContextWindow("result", message, model);
-				if (!queryCtx.turnSawStreamEvent && message.subtype === "success") {
-					ensureTurnStarted(queryCtx);
-					const text = message.result || "";
-					queryCtx.turnBlocks.push({ type: "text", text });
-					const idx = queryCtx.turnBlocks.length - 1;
-					queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
-					queryCtx.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: queryCtx.turnOutput });
-					queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
-				}
-				break;
-			case "system":
-				if ((message as any).subtype === "init" && (message as any).session_id) {
-					capturedSessionId = (message as any).session_id;
-				}
-				break;
-			case "user":
-				break; // SDK echo of user prompt — not needed
-			case "rate_limit_event": {
-				const info = (message as any).rate_limit_info;
-				debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
-				if (info?.status === "rejected") {
-					const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
-					piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
-				} else if (info?.status === "allowed_warning") {
-					piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
-				}
-				break;
+	const idleMsValue = Number(process.env.CLAUDE_BRIDGE_IDLE_TIMEOUT_MS ?? 120_000);
+	const idleMs = Number.isFinite(idleMsValue) && idleMsValue >= 0 ? idleMsValue : 120_000;
+	const firstTokenDefault = idleMs > 0 ? Math.max(300_000, idleMs * 3) : 0;
+	const firstTokenMsValue = Number(process.env.CLAUDE_BRIDGE_FIRST_TOKEN_TIMEOUT_MS ?? firstTokenDefault);
+	const firstTokenMs = Number.isFinite(firstTokenMsValue) && firstTokenMsValue >= 0 ? firstTokenMsValue : firstTokenDefault;
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+	let streamPhase: "first-token" | "stream" = "first-token";
+	let stalledPhase: "first-token" | "stream" = "first-token";
+	let stalledBudgetMs = 0;
+	let idleTimedOut = false;
+	const clearIdleTimer = () => {
+		if (idleTimer !== undefined) clearTimeout(idleTimer);
+		idleTimer = undefined;
+	};
+	const armIdleTimer = () => {
+		clearIdleTimer();
+		const budgetMs = streamPhase === "stream" ? idleMs : firstTokenMs;
+		if (!(budgetMs > 0)) return;
+		idleTimer = setTimeout(() => {
+			idleTimer = undefined;
+			if (queryCtx.pendingToolCalls.size > 0) {
+				armIdleTimer();
+				return;
 			}
-			default:
-				debug("consumeQuery: unhandled SDK message type", message.type);
-				break;
+			idleTimedOut = true;
+			stalledPhase = streamPhase;
+			stalledBudgetMs = budgetMs;
+			piUI?.notify(`Claude stream idle for ${Math.round(budgetMs / 1000)}s; stopping stalled request`, "warning");
+			void sdkQuery.interrupt().catch(() => {});
+			try { sdkQuery.close(); } catch {}
+		}, budgetMs);
+	};
+	armIdleTimer();
+
+	try {
+		for await (const message of sdkQuery) {
+			if (wasAborted()) break;
+			if (message.type === "stream_event") {
+				streamPhase = "stream";
+			} else if (message.type === "assistant" && message.message.content.some((block) => block.type === "tool_use")) {
+				streamPhase = "first-token";
+			} else if (message.type === "result") {
+				streamPhase = "first-token";
+			}
+			armIdleTimer();
+			if (!queryCtx.currentPiStream || !queryCtx.turnOutput) continue;
+
+			switch (message.type) {
+				case "stream_event":
+					processStreamEvent(message, customToolNameToPi, model, queryCtx);
+					break;
+				case "assistant":
+					processAssistantMessage(message, model, customToolNameToPi, queryCtx);
+					break;
+				case "result":
+					logServedContextWindow("result", message, model);
+					if (!queryCtx.turnSawStreamEvent && message.subtype === "success") {
+						ensureTurnStarted(queryCtx);
+						const text = message.result || "";
+						queryCtx.turnBlocks.push({ type: "text", text });
+						const idx = queryCtx.turnBlocks.length - 1;
+						queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
+						queryCtx.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: queryCtx.turnOutput });
+						queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
+					}
+					break;
+				case "system":
+					if ((message as any).subtype === "init" && (message as any).session_id) {
+						capturedSessionId = (message as any).session_id;
+					}
+					break;
+				case "user":
+					break; // SDK echo of user prompt — not needed
+				case "rate_limit_event": {
+					const info = (message as any).rate_limit_info;
+					debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+					if (info?.status === "rejected") {
+						const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
+						piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+					} else if (info?.status === "allowed_warning") {
+						piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
+					}
+					break;
+				}
+				default:
+					debug("consumeQuery: unhandled SDK message type", message.type);
+					break;
+			}
 		}
+	} catch (error) {
+		if (!idleTimedOut || wasAborted()) throw error;
+	} finally {
+		clearIdleTimer();
+	}
+	if (idleTimedOut && !wasAborted()) {
+		throw new Error(`Claude SDK stream stalled: no ${stalledPhase} activity for ${stalledBudgetMs}ms`);
 	}
 
 	// DEBUG: trace when consumeQuery exits
