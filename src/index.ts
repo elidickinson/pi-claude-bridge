@@ -1983,6 +1983,14 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
+		if (config.compaction?.takeover === false) {
+			// Still contribute cumulative file ops. pi's own extractFileOperations
+			// skips details from hook-authored compaction entries, so whoever owns
+			// the summary would otherwise restart file tracking from scratch.
+			reinjectPriorCompactionFileOps(event.branchEntries, event.preparation);
+			debug(`session_before_compact: takeover disabled, deferring reason=${event.reason}`);
+			return undefined;
+		}
 		debug(
 			`session_before_compact: takeover reason=${event.reason} willRetry=${event.willRetry} ` +
 			`isSplitTurn=${event.preparation.isSplitTurn} messages=${event.preparation.messagesToSummarize.length} ` +
@@ -2040,6 +2048,13 @@ export default function (pi: ExtensionAPI) {
 	// Claude Code subprocess, never touching the live session or the resolver.
 	pi.on("session_before_tree", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
+		if (config.branchSummary?.takeover === false) {
+			// Only sound when a later handler answers this event. Falling through to
+			// pi's own path sends the branch-summary prompt to the provider, where
+			// resolveOrDerive throws because no before_agent_start ever recorded it.
+			debug(`session_before_tree: takeover disabled, deferring target=${event.preparation.targetId.slice(0, 8)}`);
+			return undefined;
+		}
 		const { entriesToSummarize, userWantsSummary, customInstructions, replaceInstructions } = event.preparation;
 		if (!userWantsSummary || entriesToSummarize.length === 0) return undefined;
 		debug(`session_before_tree: takeover entries=${entriesToSummarize.length} target=${event.preparation.targetId.slice(0, 8)}`);
