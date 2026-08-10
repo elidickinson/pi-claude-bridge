@@ -92,6 +92,30 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not currently apply to extension-registered providers (like claude-bridge). Overriding `contextWindow` or other fields requires editing `src/models.ts` directly.
 
+## Profiles (multiple Claude Code accounts)
+
+Claude Code supports several accounts side by side via `CLAUDE_CONFIG_DIR` — each config dir gets its own login (on macOS, its own keychain entry). `provider.profiles` exposes those accounts as separate pi providers:
+
+```json
+{
+  "provider": {
+    "profiles": [
+      { "slug": "work", "label": "Work", "configDir": "~/.claude-work" }
+    ]
+  }
+}
+```
+
+Log the account in once (`CLAUDE_CONFIG_DIR=~/.claude-work claude auth login`), and `/model` gains a `claude-bridge-work/*` provider whose model names carry the label — e.g. `Opus 5 1M (Work)`. The default `claude-bridge/*` provider keeps using the environment as-is, exactly as before.
+
+- `slug` — lowercase `[a-z0-9-]`; the provider registers as `claude-bridge-<slug>`.
+- `label` — display suffix in the model picker (defaults to the slug).
+- `configDir` — the account's `CLAUDE_CONFIG_DIR`; `~` expands. Use `null` to force default resolution (the variable is *removed* from the child env — on macOS, unset and `~/.claude` are different keychain namespaces, and the default profile's `.claude.json` lives at `~/.claude.json`, not inside `~/.claude`).
+- Profiles are read from the **global** config only; a project-level `profiles` list is ignored (providers register once per process).
+- A profile with a `configDir` also drops inherited `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` from the child environment — those override the config dir's stored login, which would silently run every profile on one account (relevant when the default account authenticates via a token in the environment, e.g. for daemons). `configDir: null` profiles alias the default account and keep inherited credentials.
+
+Each profile keeps its own Claude Code session store: switching profiles mid-conversation rebuilds the CC session from pi's history under the new account (one slower first turn; thinking blocks signed by the other account are dropped from the replay). Quotas, subscriptions, and rate limits are per account. Subagents can pin an account via model overrides like `claude-bridge-work/claude-opus-5`; AskClaude follows the profile of the session it resumes, or the default account when starting fresh.
+
 ## Tests
 
 `npm run test:unit` for offline tests (`tests/unit-*.mjs`: queue, import, skills). 

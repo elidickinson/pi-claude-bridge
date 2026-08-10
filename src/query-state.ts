@@ -15,6 +15,32 @@ export interface PendingToolCall {
 	resolve: (result: McpResult) => void;
 }
 
+/** The Claude Code session this pi session is currently tracking. */
+export interface SessionState {
+	sessionId: string;
+	cursor: number;
+	cwd: string;
+	// Provider id of the profile whose CLAUDE_CONFIG_DIR this CC session file
+	// lives under (undefined = default profile, incl. pre-profile states). A
+	// query on a different profile can neither resume nor delete this file —
+	// its config dir cannot see it, so a mismatch forces a rotated REBUILD.
+	providerId?: string;
+	// Force the next syncSharedSession call down the REBUILD path. Set when
+	// pi has mutated its messages array out from under us (compact, tree
+	// navigation) or after an abort left the JSONL in an indeterminate state.
+	// REBUILD wipes and rewrites the file to match pi's current history.
+	needsRebuild?: boolean;
+	// Set ONLY after an abort. The killed CC subprocess may still be flushing
+	// a late "[Request interrupted by user]" record to the session JSONL.
+	// Reusing the same sessionId/path would race that orphan write into our
+	// fresh file and break CC's parent-uuid chain on the next resume. When
+	// this flag is set, REBUILD takes a fresh UUID and skips deleteSession
+	// so the orphan writes land on a dead inode. Compact/tree do NOT set
+	// this — there's no concurrent CC writer during those events, so
+	// in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
+	forceRotate?: boolean;
+}
+
 export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: unknown | null = null;
