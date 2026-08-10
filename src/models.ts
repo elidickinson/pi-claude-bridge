@@ -93,3 +93,9 @@ export function applyLongContext<T extends { id: string; name: string; contextWi
 		return contextWindow === m.contextWindow && name === m.name ? m : { ...m, contextWindow, name };
 	});
 }
+
+// Display names for a profile provider's model list, so the picker shows which
+// account a model burns at a glance: "Opus 5 1M (Work)".
+export function labelModels<T extends { name: string }>(models: T[], label: string): T[] {
+	return models.map((m) => ({ ...m, name: `${m.name} (${label})` }));
+}

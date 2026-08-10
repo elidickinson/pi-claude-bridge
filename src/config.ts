@@ -32,6 +32,12 @@ export interface Config {
 		// Anthropic billing). Enables Sonnet 4.6 [1m] on every plan and Opus 4.6
 		// [1m] on Pro.
 		longContextExtraUsage?: boolean;
+		// Extra Claude Code accounts, each registered as provider
+		// claude-bridge-<slug> pinned to its own CLAUDE_CONFIG_DIR. configDir is
+		// a path, or null to force default resolution (variable removed from the
+		// child env). Global config only — providers register once per process,
+		// so a per-project list would desync co-hosted sessions. See profiles.ts.
+		profiles?: Array<{ slug: string; label?: string; configDir: string | null }>;
 	};
 }
 
@@ -81,9 +87,14 @@ export function markStartupNoticeShown(): string {
 export function loadConfig(cwd: string): Config {
 	const global = tryParseJson(globalConfigPath());
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
+	const provider = { ...global.provider, ...project.provider };
+	// Profiles are global-only: registration happens once per process, so a
+	// project override would leave co-hosted sessions with mismatched provider sets.
+	if (global.provider?.profiles) provider.profiles = global.provider.profiles;
+	else delete provider.profiles;
 	return {
 		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
 		askClaude: { ...global.askClaude, ...project.askClaude },
-		provider: { ...global.provider, ...project.provider },
+		provider,
 	};
 }

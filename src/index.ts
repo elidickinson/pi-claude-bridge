@@ -11,11 +11,12 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { applyLongContext, buildModels, claudeCodeModelId, labelModels, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { DEFAULT_PROFILE, applyProfileEnv, effectiveClaudeDir, extraProfiles, profileForProvider, type BridgeProfile } from "./profiles.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx } from "./query-state.js";
+import { QueryContext, ctx, type SessionState } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
 import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
 import {
@@ -206,35 +207,15 @@ const MODE_DISALLOWED_TOOLS: Record<string, string[]> = {
 
 // --- Session persistence ---
 
-interface SessionState {
-	sessionId: string;
-	cursor: number;
-	cwd: string;
-	// Force the next syncSharedSession call down the REBUILD path. Set when
-	// pi has mutated its messages array out from under us (compact, tree
-	// navigation) or after an abort left the JSONL in an indeterminate state.
-	// REBUILD wipes and rewrites the file to match pi's current history.
-	needsRebuild?: boolean;
-	// Set ONLY after an abort. The killed CC subprocess may still be flushing
-	// a late "[Request interrupted by user]" record to the session JSONL.
-	// Reusing the same sessionId/path would race that orphan write into our
-	// fresh file and break CC's parent-uuid chain on the next resume. When
-	// this flag is set, REBUILD takes a fresh UUID and skips deleteSession
-	// so the orphan writes land on a dead inode. Compact/tree do NOT set
-	// this — there's no concurrent CC writer during those events, so
-	// in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
-	forceRotate?: boolean;
-}
-
 /**
  * Claude Code's `@file` expansions from the session about to be replaced.
  *
  * Must be called before `deleteSession`, which wipes the file they live in —
  * reading after it yields nothing, with no error to notice.
  */
-function readCarriedAttachments(sessionId: string, cwd: string): CarriedAttachment[] {
+function readCarriedAttachments(sessionId: string, cwd: string, claudeDir?: string): CarriedAttachment[] {
 	try {
-		const previous = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		const previous = openSession({ sessionId, projectPath: cwd, claudeDir });
 		return collectCarriedAttachments(previous.records);
 	} catch (error) {
 		// A post-abort rebuild reads a file the killed CC subprocess may have been
@@ -261,8 +242,9 @@ function convertAndImportMessages(
 	messages: Context["messages"],
 	customToolNameToSdk?: Map<string, string>,
 	carried?: readonly CarriedAttachment[],
+	thinkingProviderId?: string,
 ): void {
-	const { anthropicMessages, sanitizedIds, dropped } = convertPiMessages(messages, customToolNameToSdk);
+	const { anthropicMessages, sanitizedIds, dropped } = convertPiMessages(messages, customToolNameToSdk, thinkingProviderId);
 
 	debug(`convertAndImportMessages: ${messages.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
 	debug(`convertAndImportMessages: imported roles:`, anthropicMessages.map((m, i) => {
@@ -458,14 +440,15 @@ async function runIsolatedSummary(
 		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 		const compactProviderSettings = loadConfig(cwd).provider;
 		const claudeExecutable = compactProviderSettings?.pathToClaudeCodeExecutable;
+		const profile = profileForProvider(model.provider, providerSettings);
 		const cliModel = claudeCodeModelId(model, longContextSettings);
-		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
+		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} profile=${profile.providerId} promptLen=${promptText.length}`);
 
 		sdkQuery = query({
 			prompt: promptText,
 			options: {
 				cwd,
-				env: { ...process.env, ...CC_CHILD_ENV },
+				env: applyProfileEnv({ ...process.env, ...CC_CHILD_ENV }, profile),
 				settings: { autoMemoryEnabled: false },
 				tools: [],
 				strictMcpConfig: true,
@@ -568,18 +551,19 @@ function verifyWrittenSession(
 	expectedSessionId: string,
 	expectedRecordCount: number,
 	cwd: string,
+	claudeDir?: string,
 ): void {
 	const warnings = _verifyWrittenSession(jsonlPath, expectedSessionId, expectedRecordCount);
 	for (const msg of warnings) {
 		debug(`WARNING session verify: ${msg}`);
 		piUI?.notify(
 			`Session file issue: ${msg}\n` +
-			`cwd=${cwd} realpath=${safeRealpath(cwd)} CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? "(unset)"}\n` +
+			`cwd=${cwd} realpath=${safeRealpath(cwd)} claudeDir=${claudeDir ?? process.env.CLAUDE_CONFIG_DIR ?? "(default)"}\n` +
 			`Please copy and paste this message into a new issue at https://github.com/elidickinson/pi-claude-bridge/issues/new` +
 			(DEBUG ? ` and attach ${DEBUG_LOG_PATH}` : ` (rerun with CLAUDE_BRIDGE_DEBUG=1 to capture a debug log)`),
 			"warning",
 		);
-		diagDump("session_verify_fail", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? null });
+		diagDump("session_verify_fail", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: claudeDir ?? process.env.CLAUDE_CONFIG_DIR ?? null });
 	}
 }
 
@@ -636,8 +620,12 @@ function syncSharedSession(
 	cwd: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
+	profile: BridgeProfile = DEFAULT_PROFILE,
 ): SyncResult {
 	const priorMessages = messages.slice(0, turnStart(messages)); // everything before the current user turn
+	const claudeDir = effectiveClaudeDir(profile);
+	const profileSwitched =
+		sharedSession != null && (sharedSession.providerId ?? PROVIDER_ID) !== profile.providerId;
 
 	// REUSE path
 	//
@@ -646,7 +634,7 @@ function syncSharedSession(
 	// pi-side history rewrites such as /compact and session_tree: without it,
 	// missed = [].slice(cursor) can falsely hit REUSE and resume an unrelated
 	// longer CC session. See issue #25.
-	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length >= sharedSession.cursor) {
+	if (sharedSession && !sharedSession.needsRebuild && !profileSwitched && priorMessages.length >= sharedSession.cursor) {
 		const missed = priorMessages.slice(sharedSession.cursor);
 		const trailingAssistantOnly =
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
@@ -687,39 +675,45 @@ function syncSharedSession(
 	}
 	const previousSessionId = sharedSession?.sessionId;
 	const previousCursor = sharedSession?.cursor ?? 0;
-	// preserveId: rebuild in place (deleteSession + createSession with the
-	// existing UUID), so prompt-cache UUIDs stay stable for log correlation
-	// and for any tools that key off them. Skipped only when there's a
-	// concurrent writer we shouldn't race — see forceRotate docs above.
-	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
+	const previousProviderId = sharedSession?.providerId ?? PROVIDER_ID;
+	// A profile switch cannot see the existing session file. Rotate rather than
+	// deleting or overwriting the foreign profile's session.
+	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate && !profileSwitched;
 	// Before deleteSession — it wipes the file these live in.
-	const carried = previousSessionId !== undefined ? readCarriedAttachments(previousSessionId, cwd) : [];
+	const carried = !profileSwitched && previousSessionId !== undefined
+		? readCarriedAttachments(previousSessionId, cwd, claudeDir)
+		: [];
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
-		deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
+		deleteSession(previousSessionId!, cwd, claudeDir);
 	}
 	const session = createSession({
 		projectPath: cwd,
-		claudeDir: process.env.CLAUDE_CONFIG_DIR,
+		claudeDir,
 		...(preserveId ? { sessionId: previousSessionId } : {}),
 		...(modelId ? { model: modelId } : {}),
 	});
-	convertAndImportMessages(session, priorMessages, customToolNameToSdk, carried);
+	convertAndImportMessages(session, priorMessages, customToolNameToSdk, carried, profile.providerId);
 	session.save();
 	// records, not messages: `messages` filters out the attachment records that
 	// carrying an `@file` expansion across a rebuild writes into the same file.
-	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
-	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
+	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd, claudeDir);
+	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd, providerId: profile.providerId };
+	if (profileSwitched) {
+		debug(`rebuild reason: profile switched (${previousProviderId} → ${profile.providerId}); previous file left in its own config dir`);
+	}
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.records.length} records`);
 	} else if (preserveId) {
 		const missedCount = priorMessages.length - previousCursor;
 		debug(`Case 4: ${missedCount} missed messages, ${priorMessages.length} total → rewrote session ${session.sessionId.slice(0, 8)} (same id), ${session.records.length} records`);
+	} else if (profileSwitched) {
+		debug(`Case 4 profile switch: ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId.slice(0, 8)}, foreign file left untouched), ${session.records.length} records`);
 	} else {
 		debug(`Case 4 post-abort: ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId.slice(0, 8)}, rotated to avoid race with orphan writer), ${session.records.length} records`);
 	}
 	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
-	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${previousSessionId === undefined ? "first" : preserveId ? "preserved" : "rotated-post-abort"}`);
+	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${previousSessionId === undefined ? "first" : preserveId ? "preserved" : profileSwitched ? "rotated-profile" : "rotated-post-abort"}`);
 	return { sessionId: session.sessionId };
 }
 
@@ -1518,10 +1512,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.latestCursor = 0;
 
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	// Which account serves this query: the registered provider id on the model
+	// picks the profile, the profile picks the child CLAUDE_CONFIG_DIR and the
+	// session store the tracked CC session lives in.
+	const profile = profileForProvider(model.provider, providerSettings);
+	const profileClaudeDir = effectiveClaudeDir(profile);
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, profile);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1585,7 +1584,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// also autocompact would double-flush the prompt cache and races pi's
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ...CC_CHILD_ENV };
+	const childEnv = applyProfileEnv({ ...process.env, ...CC_CHILD_ENV }, profile);
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
@@ -1607,6 +1606,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
+		`profile=${profile.providerId}${profile.configDir ? ` configDir=${profile.configDir}` : ""}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
 		`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
@@ -1661,14 +1661,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			const sessionId = capturedSessionId ?? sharedSession?.sessionId;
 			if (syncResult.preserveSharedSession) {
 				if (capturedSessionId && capturedSessionId !== sharedSession?.sessionId) {
-					deleteSession(capturedSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+					// The ephemeral session was written by THIS query's CC subprocess,
+					// so it lives under this query's profile dir — not the shared
+					// session's, which may belong to a different profile.
+					deleteSession(capturedSessionId, cwd, profileClaudeDir);
 					debug(`provider: query done, deleted ephemeral session ${capturedSessionId.slice(0, 8)} to preserve shared session`);
 				}
 				debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
 			} else if (sessionId) {
 				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, sharedSession?.cursor ?? 0);
 				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-				sharedSession = { sessionId, cursor, cwd };
+				// Stamp providerId only when this query captured the session: a fallback
+				// id may belong to a concurrent query using another profile.
+				sharedSession = {
+					...(sharedSession ?? {}), sessionId, cursor, cwd,
+					...(capturedSessionId ? { providerId: profile.providerId } : {}),
+				};
 			}
 
 			if (!isReentrant && queryCtx.activeQuery === sdkQuery) {
@@ -1748,6 +1756,9 @@ async function promptAndWait(
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
 	const cliModel = model ? claudeCodeModelId(model, longContextSettings) : modelId;
+	// AskClaude follows the profile owning the session it may resume; with no
+	// tracked session it uses the default account.
+	const profile = profileForProvider(sharedSession?.providerId, providerSettings);
 
 	// Session resume for shared mode — reuse provider's session if it exists,
 	// otherwise create one from pi's context.
@@ -1762,7 +1773,7 @@ async function promptAndWait(
 		} else {
 			// No provider session yet — create one from pi's context
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel);
+			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel, profile);
 			resumeSessionId = sync.sessionId;
 		}
 	}
@@ -1799,7 +1810,7 @@ async function promptAndWait(
 
 	debug("askClaude:",
 		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
-		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
+		`profile=${profile.providerId} isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
 		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
 
 	// skills: [] suppresses Claude Code's own skill listing, a system-reminder naming every
@@ -1811,7 +1822,7 @@ async function promptAndWait(
 		prompt,
 		options: {
 			cwd,
-			env: { ...process.env, ...CC_CHILD_ENV },
+			env: applyProfileEnv({ ...process.env, ...CC_CHILD_ENV }, profile),
 			permissionMode: "bypassPermissions",
 			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 			skills: [],
@@ -2081,6 +2092,18 @@ export default function (pi: ExtensionAPI) {
 			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
 			streamSimple: streamClaudeAgentSdk as any,
 		});
+		// One provider per configured account profile, sharing the same baseUrl so
+		// baseUrl-keyed compact takeover and AskClaude guards cover all profiles.
+		for (const p of extraProfiles(providerSettings)) {
+			pi.registerProvider(p.providerId, {
+				baseUrl: "claude-bridge",
+				apiKey: "not-used",
+				api: "claude-bridge",
+				models: labelModels(registeredModels, p.label!),
+				streamSimple: streamClaudeAgentSdk as any,
+			});
+			debug(`provider: registered profile provider ${p.providerId} (${p.configDir ?? "default resolution"})`);
+		}
 	} else {
 		// Subsequent instance (subagent session): skip registration entirely.
 		// The subagent already has access to claude-bridge models via the shared
