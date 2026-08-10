@@ -45,6 +45,8 @@ describe("loadConfig", () => {
 				startupNoticeShown: undefined,
 				provider: { plan: "max" },
 				askClaude: { enabled: false },
+				compaction: {},
+				branchSummary: {},
 			});
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -71,7 +73,61 @@ describe("loadConfig", () => {
 				startupNoticeShown: undefined,
 				provider: { plan: "max", strictMcpConfig: true, autoMemoryEnabled: true },
 				askClaude: { enabled: false, defaultMode: "read" },
+				compaction: {},
+				branchSummary: {},
 			});
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
+	it("merges takeover flags with project overriding global", () => withTempHome(() => {
+		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		try {
+			const globalDir = getAgentDir();
+			const projectDir = join(cwd, CONFIG_DIR_NAME);
+			mkdirSync(globalDir, { recursive: true });
+			mkdirSync(projectDir, { recursive: true });
+			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
+				compaction: { takeover: true },
+				branchSummary: { takeover: true },
+			}));
+			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
+				compaction: { takeover: false },
+				branchSummary: { takeover: false },
+			}));
+
+			const config = loadConfig(cwd);
+			assert.equal(config.compaction?.takeover, false);
+			assert.equal(config.branchSummary?.takeover, false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
+	it("leaves the takeover flags independent of each other", () => withTempHome(() => {
+		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		try {
+			const projectDir = join(cwd, CONFIG_DIR_NAME);
+			mkdirSync(projectDir, { recursive: true });
+			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
+				compaction: { takeover: false },
+			}));
+
+			const config = loadConfig(cwd);
+			assert.equal(config.compaction?.takeover, false);
+			assert.equal(config.branchSummary?.takeover, undefined);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
+	it("leaves both takeover flags undefined when unconfigured, so takeover stays on", () => withTempHome(() => {
+		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		try {
+			const config = loadConfig(cwd);
+			assert.equal(config.compaction?.takeover, undefined);
+			assert.equal(config.branchSummary?.takeover, undefined);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -135,6 +191,8 @@ describe("loadConfig", () => {
 				startupNoticeShown: undefined,
 				provider: { plan: "max" },
 				askClaude: {},
+				compaction: {},
+				branchSummary: {},
 			});
 		} finally {
 			if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
