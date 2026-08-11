@@ -2,6 +2,8 @@
 
 ## UNRELEASED
 
+- **Fix: another extension's own agent loop killed pi** — an extension that drives its own `agentLoop` is served by pi-ai's default stream function, which resolves the api id in pi-ai's registry rather than in pi's model runtime, where `pi.registerProvider` put the provider. On a bridge model that threw "No API provider registered for api: claude-bridge", and since `agentLoop` never catches its own rejection, the process exited. The bridge now registers there too and serves such a call as a self-contained Claude Code session: the caller's system prompt verbatim (no prompt-capture lookup, which cannot account for a prompt pi never assembled), the caller's tools over MCP, its own session deleted when the call ends, and no read or write of the shared session — including on failure, where the error path used to discard it. Setup failures are now reported on the stream instead of thrown, since the caller cannot handle a throw.
+
 - **Fix: better isolate AskClaude tool (issue #59)** — AskClaude children no longer inherit the user's `~/.claude` `CLAUDE.md` files or skill listing, and now always get Claude Code's system prompt preset instead of only when pi-side skills exist. Thanks @JAtkinsonKO.
 - **Fix: Bogus debug message about "record count mismatch" after switching providers** — the post-rebuild integrity check did not take `@file` expansion into account when switching providers.
 

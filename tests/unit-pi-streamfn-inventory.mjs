@@ -38,7 +38,7 @@ const PI_DIST = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding
  *  A changed count is not automatically a bug; it means read the diff and re-decide. */
 const HANDLED = {
 	"agent-session.js": { mentions: 1, why: "the one hand-off: `streamFn: this.agent.streamFunction` into generateBranchSummary" },
-	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize" },
+	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize; also installs pi-ai's compat streamSimple as agent-core's default — the route a caller passing no streamFn takes, covered below" },
 	"compaction/compaction.js": { mentions: 13, why: "taken over via session_before_compact -> isolatedStreamFn" },
 	"compaction/branch-summarization.js": { mentions: 2, why: "taken over via session_before_tree -> isolatedStreamFn" },
 };
@@ -84,6 +84,58 @@ describe("pi streamFn consumers", () => {
 			[],
 			`pi changed how often these reference streamFn: ${drifted.join("; ")}. `
 			+ `Read the diff — a new call site inside a file we already trust is the case a filename-only inventory misses — then update the counts.`,
+		);
+	});
+});
+
+/**
+ * The consumer this inventory could never have found: one that passes no `streamFn`
+ * at all. `agentLoop` then falls back to pi-ai's default, which resolves the model's
+ * api id against pi-ai's own registry — a list `pi.registerProvider` does not
+ * populate. Such a caller exited pi on the unresolved id rather than failing its
+ * own call.
+ *
+ * Probed live against a stand-in api id, so it pins the routing rule the bridge's
+ * api-provider registration depends on without spawning Claude Code.
+ */
+describe("a caller that passes no streamFn", () => {
+	it("is routed by api id through pi-ai's api registry", async () => {
+		// Located by path, and both from pi's own tree: pi-agent-core is nested under
+		// pi-coding-agent with its own pi-ai copy, and it is that pair pi runs. Importing
+		// either by specifier would reach this package's top-level copy instead, whose
+		// registry the loop never consults.
+		const piTree = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works", import.meta.url));
+		const { agentLoop } = await import(join(piTree, "pi-agent-core/dist/index.js"));
+		const { registerApiProvider, unregisterApiProviders } = await import(join(piTree, "pi-ai/dist/compat.js"));
+		// agent-core ships no default of its own — it throws until something installs one.
+		// pi does that from this module, so the fallback only exists because pi is loaded.
+		await import(fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/sdk.js", import.meta.url)));
+
+		const api = "claude-bridge-inventory-probe";
+		const calls = [];
+		const streamSimple = (model) => {
+			calls.push(model.api);
+			return {
+				async *[Symbol.asyncIterator]() {},
+				result: () => Promise.resolve({ role: "assistant", content: [], stopReason: "stop" }),
+			};
+		};
+		registerApiProvider({ api, stream: streamSimple, streamSimple }, api);
+		try {
+			const loop = agentLoop(
+				[{ role: "user", content: "probe", timestamp: Date.now() }],
+				{ systemPrompt: "probe", messages: [], tools: [] },
+				{ model: { id: "probe", api, provider: api, baseUrl: "probe" }, convertToLlm: (messages) => messages },
+			);
+			await loop.result();
+		} finally {
+			unregisterApiProviders(api);
+		}
+
+		assert.deepEqual(
+			calls,
+			[api],
+			"pi-ai no longer resolves a default-streamFn call by api id — that resolution is how a caller with no streamFn reaches the bridge at all",
 		);
 	});
 });
