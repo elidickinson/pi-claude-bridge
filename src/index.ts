@@ -1,7 +1,8 @@
 import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
-import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import * as codingAgent from "@earendil-works/pi-coding-agent";
+import type { BranchSummaryResult, CompactionEntry, ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
@@ -17,15 +18,56 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
+import {
+	claudeCodeSettingSources,
+	claudeCodeSettings,
+	loadConfig,
+	markStartupNoticeShown,
+	type Config,
+} from "./config.js";
 import {
 	collectPromptSkills,
 	projectPromptCapture,
 	PromptCaptures,
+	type PromptCaptureInput,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
+
+// OMP loads legacy Pi extensions through a package compatibility layer, but a
+// few former top-level helpers no longer exist. Read them dynamically so the
+// provider can load on both hosts and only installs lifecycle takeovers the
+// active host supports.
+type HostSessionManager = {
+	buildSessionContext?: () => { messages: Context["messages"] };
+	getBranch: () => Parameters<typeof codingAgent.buildSessionContext>[0];
+};
+type HostCodingAgent = {
+	compact?: typeof codingAgent.compact;
+	generateBranchSummary?: typeof codingAgent.generateBranchSummary;
+	buildSessionContext?: (entries: Parameters<typeof codingAgent.buildSessionContext>[0]) => { messages: Context["messages"] };
+	keyHint?: (action: string, fallback: string) => string;
+};
+
+const hostCodingAgent = codingAgent as unknown as HostCodingAgent;
+const hostCompact = hostCodingAgent.compact;
+const hostGenerateBranchSummary = hostCodingAgent.generateBranchSummary;
+
+function normalizeSystemPrompt(value: string | readonly string[] | undefined): string | undefined {
+	if (typeof value === "string") return value || undefined;
+	return value?.filter(Boolean).join("\n\n") || undefined;
+}
+
+function buildHostSessionContext(sessionManager: HostSessionManager): Context["messages"] {
+	if (sessionManager.buildSessionContext) return sessionManager.buildSessionContext().messages;
+	if (!hostCodingAgent.buildSessionContext) throw new Error("claude-bridge: host cannot build session context");
+	return hostCodingAgent.buildSessionContext(sessionManager.getBranch()).messages;
+}
+
+function hostKeyHint(action: string, fallback: string): string {
+	return hostCodingAgent.keyHint?.(action, fallback) ?? fallback;
+}
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -472,7 +514,7 @@ async function runIsolatedSummary(
 				settingSources: [] as SettingSource[],
 				skills: [],
 				persistSession: false,
-				systemPrompt: context.systemPrompt,
+				systemPrompt: normalizeSystemPrompt(context.systemPrompt),
 				model: cliModel,
 				maxTurns: 1,
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
@@ -1498,7 +1540,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// `--no-skills` reach Claude Code by leaving nothing to forward. A sub-agent's
 	// custom override embeds its parent's assembled Pi prompt; recursive projection
 	// replaces that exact inherited prompt with its already-safe portable parts.
-	const promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
+	const promptCapture = promptCaptures.resolveOrDerive(normalizeSystemPrompt(context.systemPrompt));
 	const systemPromptAppend = promptCapture
 		? projectPromptCapture(promptCapture, {
 			skillReadTool: mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none",
@@ -1553,12 +1595,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.promptStream = promptStream;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 
-	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
-	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
-	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
-	// programmatically and ignore filesystem MCP entries — applied unconditionally because
-	// settingSources is left at CC's default, which loads all sources.
+	// MCP auto-loading suppression: Claude Code can read MCP servers from its
+	// settings estate. Pi keeps its historical setting-source behavior. OMP
+	// disables all Claude setting sources by default, so repository hooks and
+	// user plugins cannot enter the bridge subprocess.
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
+	const settingSources = claudeCodeSettingSources(providerSettings);
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
 	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
@@ -1593,6 +1635,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
 		settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
+		...(settingSources ? { settingSources } : {}),
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend ? systemPromptAppend : undefined,
@@ -1790,6 +1833,7 @@ async function promptAndWait(
 		? REASONING_TO_EFFORT[options.thinking] : undefined;
 
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
+	const settingSources = claudeCodeSettingSources(providerSettings) ?? ["user", "project"] as SettingSource[];
 
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
@@ -1821,7 +1865,7 @@ async function promptAndWait(
 			// without the tool and permission guidance the bridge relies on everywhere else.
 			// Whether pi has skills to append is unrelated to whether the child needs that.
 			systemPrompt: { type: "preset", preset: "claude_code", append: skillsBlock },
-			settingSources: ["user", "project"] as SettingSource[],
+			settingSources,
 			extraArgs,
 			...(resumeSessionId ? { resume: resumeSessionId } : {}),
 			...(options?.isolated ? { persistSession: false } : {}),
@@ -1967,10 +2011,26 @@ export default function (pi: ExtensionAPI) {
 	// Code's preset carries its own tool and permission guidance that the bridge
 	// still depends on, so both flags are forwarded as an append.
 	pi.on("before_agent_start", (event) => {
-		const options = event.systemPromptOptions;
+		type PortablePromptEvent = {
+			systemPrompt: string | readonly string[];
+			systemPromptOptions?: {
+				selectedTools?: string[];
+				customPrompt?: string;
+				appendSystemPrompt?: string;
+				contextFiles?: PromptCaptureInput["contextFiles"];
+				skills?: PromptCaptureInput["skills"];
+			};
+		};
+		const portableEvent = event as unknown as PortablePromptEvent;
+		const systemPrompt = normalizeSystemPrompt(portableEvent.systemPrompt);
+		if (!systemPrompt) return;
+
+		const options = portableEvent.systemPromptOptions;
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
-		promptCaptures.record(event.systemPrompt, {
-			custom: options?.customPrompt,
+		promptCaptures.record(systemPrompt, {
+			// OMP provides the assembled prompt as ordered strings rather than
+			// Pi's source metadata. Preserve that complete prompt as custom text.
+			custom: options ? options.customPrompt : systemPrompt,
 			append: options?.appendSystemPrompt,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
@@ -1983,6 +2043,10 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
+		if (!hostCompact) {
+			debug("session_before_compact: host does not export compaction takeover API");
+			return undefined;
+		}
 		debug(
 			`session_before_compact: takeover reason=${event.reason} willRetry=${event.willRetry} ` +
 			`isSplitTurn=${event.preparation.isSplitTurn} messages=${event.preparation.messagesToSummarize.length} ` +
@@ -1990,7 +2054,7 @@ export default function (pi: ExtensionAPI) {
 		);
 		try {
 			reinjectPriorCompactionFileOps(event.branchEntries, event.preparation);
-			const compaction = await compact(
+			const compaction = await hostCompact(
 				event.preparation,
 				ctx.model,
 				undefined,
@@ -2040,11 +2104,15 @@ export default function (pi: ExtensionAPI) {
 	// Claude Code subprocess, never touching the live session or the resolver.
 	pi.on("session_before_tree", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
+		if (!hostGenerateBranchSummary) {
+			debug("session_before_tree: host does not export branch-summary takeover API");
+			return undefined;
+		}
 		const { entriesToSummarize, userWantsSummary, customInstructions, replaceInstructions } = event.preparation;
 		if (!userWantsSummary || entriesToSummarize.length === 0) return undefined;
 		debug(`session_before_tree: takeover entries=${entriesToSummarize.length} target=${event.preparation.targetId.slice(0, 8)}`);
 		try {
-			const result = await generateBranchSummary(entriesToSummarize, {
+			const result = await hostGenerateBranchSummary(entriesToSummarize, {
 				model: ctx.model,
 				signal: event.signal,
 				customInstructions,
@@ -2153,7 +2221,7 @@ export default function (pi: ExtensionAPI) {
 					const truncated = body.length > PREVIEW_MAX_CHARS ? body.substring(0, PREVIEW_MAX_CHARS) : body;
 					const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
 					if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
-					if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
+					if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) text += `\n${theme.fg("dim", `… (${hostKeyHint("app.tools.expand", "to expand")})`)}`;
 
 				}
 
@@ -2191,7 +2259,7 @@ export default function (pi: ExtensionAPI) {
 						model: params.model,
 						thinking: params.thinking,
 						isolated,
-						context: isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
+						context: isolated ? undefined : buildHostSessionContext(ctx.sessionManager),
 					});
 					clearInterval(progressInterval);
 					onUpdate?.({ content: [{ type: "text", text: "" }], details: {} });

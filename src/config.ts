@@ -1,12 +1,14 @@
 // User-facing extension config. Loaded once at extension registration from
-// the global agent dir (getAgentDir(), e.g. ~/.pi/agent/claude-bridge.json)
-// and the project Pi config directory, project overriding global. Missing or
-// unparseable files are ignored (error to console.error, empty object
-// returned) so the extension always starts.
+// the active host's global agent dir. Pi also supports project overrides.
+// OMP project overrides stay disabled until its extension API exposes the
+// project-trust decision, so an untrusted repository cannot replace the
+// Claude executable or enable native Claude hooks.
 
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+
+export type ClaudeSettingSource = "user" | "project" | "local";
 
 export interface Config {
 	/** Date (YYYY-MM-DD) the one-time startup notice was shown. Written by the extension, not the user. */
@@ -32,6 +34,7 @@ export interface Config {
 		// Anthropic billing). Enables Sonnet 4.6 [1m] on every plan and Opus 4.6
 		// [1m] on Pro.
 		longContextExtraUsage?: boolean;
+		settingSources?: ClaudeSettingSource[];
 	};
 }
 
@@ -51,6 +54,17 @@ export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMem
 
 export function globalConfigPath(): string {
 	return join(getAgentDir(), "claude-bridge.json");
+}
+
+export function isOmpAgentDir(agentDir: string): boolean {
+	return agentDir.split(/[\\/]/).includes(".omp");
+}
+
+export function claudeCodeSettingSources(
+	provider: Config["provider"] = {},
+	agentDir = getAgentDir(),
+): ClaudeSettingSource[] | undefined {
+	return provider.settingSources ?? (isOmpAgentDir(agentDir) ? [] : undefined);
 }
 
 /** Record today's date in the global config so the startup notice shows once, preserving every
@@ -79,8 +93,11 @@ export function markStartupNoticeShown(): string {
 }
 
 export function loadConfig(cwd: string): Config {
-	const global = tryParseJson(globalConfigPath());
-	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
+	const agentDir = getAgentDir();
+	const global = tryParseJson(join(agentDir, "claude-bridge.json"));
+	const project = isOmpAgentDir(agentDir)
+		? {}
+		: tryParseJson(join(cwd, ".pi", "claude-bridge.json"));
 	return {
 		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
 		askClaude: { ...global.askClaude, ...project.askClaude },

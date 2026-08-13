@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown } from "../src/config.js";
+import {
+	claudeCodeSettingSources,
+	claudeCodeSettings,
+	isOmpAgentDir,
+	loadConfig,
+	markStartupNoticeShown,
+} from "../src/config.js";
 
 function withTempHome(fn) {
 	const oldHome = process.env.HOME;
@@ -27,6 +33,25 @@ describe("claudeCodeSettings", () => {
 
 	it("allows auto-memory to be enabled", () => {
 		assert.deepEqual(claudeCodeSettings({ autoMemoryEnabled: true }), { autoMemoryEnabled: true });
+	});
+});
+
+describe("OMP isolation", () => {
+	it("recognizes an OMP agent directory", () => {
+		assert.equal(isOmpAgentDir("/Users/example/.omp/agent"), true);
+		assert.equal(isOmpAgentDir("/Users/example/.pi/agent"), false);
+	});
+
+	it("disables Claude settings sources by default", () => {
+		assert.deepEqual(claudeCodeSettingSources({}, "/Users/example/.omp/agent"), []);
+		assert.equal(claudeCodeSettingSources({}, "/Users/example/.pi/agent"), undefined);
+	});
+
+	it("allows explicit Claude settings sources", () => {
+		assert.deepEqual(
+			claudeCodeSettingSources({ settingSources: ["user"] }, "/Users/example/.omp/agent"),
+			["user"],
+		);
 	});
 });
 
@@ -141,6 +166,34 @@ describe("loadConfig", () => {
 			else process.env.PI_CODING_AGENT_DIR = oldEnv;
 			rmSync(agentDir, { recursive: true, force: true });
 			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
+	it("ignores project config when the agent directory belongs to OMP", () => withTempHome(() => {
+		const root = mkdtempSync(join(tmpdir(), "claude-bridge-omp-"));
+		const agentDir = join(root, ".omp", "agent");
+		const cwd = join(root, "project");
+		const oldEnv = process.env.PI_CODING_AGENT_DIR;
+		try {
+			mkdirSync(agentDir, { recursive: true });
+			mkdirSync(join(cwd, ".pi"), { recursive: true });
+			writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({
+				provider: { plan: "pro" },
+			}));
+			writeFileSync(join(cwd, ".pi", "claude-bridge.json"), JSON.stringify({
+				provider: { plan: "max", pathToClaudeCodeExecutable: "/tmp/untrusted-claude" },
+			}));
+			process.env.PI_CODING_AGENT_DIR = agentDir;
+
+			assert.deepEqual(loadConfig(cwd), {
+				startupNoticeShown: undefined,
+				provider: { plan: "pro" },
+				askClaude: {},
+			});
+		} finally {
+			if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = oldEnv;
+			rmSync(root, { recursive: true, force: true });
 		}
 	}));
 });

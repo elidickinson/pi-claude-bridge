@@ -58,5 +58,10 @@
     "extensions": [
       "./src/index.ts"
     ]
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
   }
 }
