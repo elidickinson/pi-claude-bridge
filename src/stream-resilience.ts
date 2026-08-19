@@ -1,7 +1,9 @@
 export type FailureClass = "rate-limit" | "transient" | "fatal";
 
+const AUTH_PERMISSION_PATTERN =
+	/\b(401|403)\b|authentication|unauthenticated|unauthorized|invalid[ _-]?api[ _-]?key|api[ _-]?key not|oauth|please (log|sign) ?in|credential|permission denied|forbidden|not permitted/i;
 const FATAL_PATTERN =
-	/\b(401|403)\b|authentication|unauthenticated|unauthorized|invalid[ _-]?api[ _-]?key|api[ _-]?key not|oauth|please (log|sign) ?in|credential|permission denied|forbidden|not permitted|payment|billing|insufficient[ _](quota|funds|credits?)|credit balance|out of budget|quota exceeded/i;
+	/payment|billing|insufficient[ _](quota|funds|credits?)|credit balance|out of budget|quota exceeded/i;
 const TRANSIENT_PATTERN =
 	/temporarily limiting requests|not your usage limit|overloaded|\b(429|500|502|503|504|524|529)\b|service unavailable|server error|internal error|rate limited|too many requests|ECONNRESET|ETIMEDOUT|EPIPE|ENETUNREACH|EAI_AGAIN|socket hang up|fetch failed|premature close|other side closed|stream (ended|closed) (before|without)|ended without|timed out|timeout|network error|connection (error|refused|reset|lost)/i;
 const SUBSCRIPTION_LIMIT_PATTERN =
@@ -28,14 +30,12 @@ export interface ClassifiedFailure {
 
 export function classifyFailure(text: string, rateLimitRejected = false): ClassifiedFailure {
 	const message = (text ?? "").trim();
-	if (message && FATAL_PATTERN.test(message)) return { kind: "fatal", message };
-	if (rateLimitRejected) return { kind: "rate-limit", message: rateLimitMessage(message) };
-	if (message && TRANSIENT_PATTERN.test(message) && !SUBSCRIPTION_LIMIT_PATTERN.test(message)) {
-		return { kind: "transient", message };
-	}
-	if (message && SUBSCRIPTION_LIMIT_PATTERN.test(message)) {
+	if (message && AUTH_PERMISSION_PATTERN.test(message)) return { kind: "fatal", message };
+	if (rateLimitRejected || (message && SUBSCRIPTION_LIMIT_PATTERN.test(message))) {
 		return { kind: "rate-limit", message: rateLimitMessage(message) };
 	}
+	if (message && FATAL_PATTERN.test(message)) return { kind: "fatal", message };
+	if (message && TRANSIENT_PATTERN.test(message)) return { kind: "transient", message };
 	return { kind: "fatal", message };
 }
 
@@ -102,6 +102,8 @@ export class StreamMonitor {
 	stalled = false;
 	stallError: StreamStalledError | undefined;
 	rateLimitRejected = false;
+	/** A result followed by a stall means generator shutdown hung; preserve the outcome. */
+	resultReceived = false;
 
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	private finished = false;
@@ -116,12 +118,12 @@ export class StreamMonitor {
 	}
 
 	onSdkEvent(type?: string): void {
-		if (type === "result") this.stop();
-		else this.arm();
+		if (type === "result") this.resultReceived = true;
+		this.arm();
 	}
 
 	noteRateLimitEvent(info: RateLimitInfo | undefined): void {
-		this.rateLimitRejected = info?.status === "rejected" || info?.overageStatus === "rejected";
+		this.rateLimitRejected ||= info?.status === "rejected" || info?.overageStatus === "rejected";
 	}
 
 	stop(): void {
