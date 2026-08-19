@@ -17,14 +17,14 @@ describe("syncSharedSession", () => {
 		__test.setPiUI(null);
 	});
 
-	// Nested queries get a disposable session instead of overwriting the parent.
-	it("starts a fresh session for a shorter reentrant context and preserves the parent", () => {
+	it("starts a disposable session for every reentrant context and preserves the parent", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
 		try {
 			const mainSession = {
 				sessionId: "11111111-1111-4111-8111-111111111111",
 				cursor: 42,
 				cwd,
+				needsRebuild: true,
 			};
 			__test.setSharedSession(mainSession);
 
@@ -36,20 +36,39 @@ describe("syncSharedSession", () => {
 				},
 			], cwd, undefined, undefined, { reentrant: true });
 
-			assert.equal(
-				result.sessionId,
-				null,
-				"a context shorter than the cursor — a subagent, or AskClaude — must start a fresh Claude Code session instead of resuming the parent's",
-			);
-			assert.equal(
-				result.preserveSharedSession,
-				true,
-				"the fresh session must not replace the parent's when it completes",
-			);
+			assert.equal(result.sessionId, null);
+			assert.equal(result.preserveSharedSession, true);
 			assert.deepEqual(__test.getSharedSession(), mainSession);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+
+	it("does not reuse a valid parent for a reentrant context", () => {
+		const parent = {
+			sessionId: "11111111-1111-4111-8111-111111111111",
+			cursor: 1,
+			cwd: "/tmp/parent-session",
+		};
+		__test.setSharedSession(parent);
+
+		const result = __test.syncSharedSession([
+			{ role: "user", content: "Earlier prompt.", timestamp: 1 },
+			{ role: "user", content: "Child prompt.", timestamp: 2 },
+		], parent.cwd, undefined, undefined, { reentrant: true });
+
+		assert.deepEqual(result, { sessionId: null, preserveSharedSession: true });
+		assert.deepEqual(__test.getSharedSession(), parent);
+	});
+
+	it("preserves (empty) shared session and marks disposable for an orphaned reentrant context", () => {
+		const result = __test.syncSharedSession([
+			{ role: "user", content: "Earlier prompt.", timestamp: 1 },
+			{ role: "user", content: "Child prompt.", timestamp: 2 },
+		], "/tmp/child-session", undefined, undefined, { reentrant: true });
+
+		assert.deepEqual(result, { sessionId: null, preserveSharedSession: true });
+		assert.equal(__test.getSharedSession(), null);
 	});
 
 	it("rebuilds a shorter top-level history instead of dropping conversation context", () => {
@@ -80,7 +99,7 @@ describe("syncSharedSession", () => {
 		__test.setSharedSession({ sessionId, cursor: 42, cwd });
 
 		__test.markRebuild("session_compact");
-		__test.recordQueryCompletion(sessionId, 5, cwd, false);
+		__test.recordQueryCompletion(sessionId, 5, cwd);
 
 		assert.deepEqual(__test.getSharedSession(), {
 			sessionId,
@@ -90,15 +109,6 @@ describe("syncSharedSession", () => {
 		});
 	});
 
-	it("does not lower the parent cursor when a reentrant query completes", () => {
-		const cwd = "/tmp/reentrant-session";
-		const sessionId = "11111111-1111-4111-8111-111111111111";
-		__test.setSharedSession({ sessionId, cursor: 42, cwd });
-
-		__test.recordQueryCompletion(sessionId, 5, cwd, true);
-
-		assert.equal(__test.getSharedSession().cursor, 42);
-	});
 
 	// The rebuilt file holds one line per record, and a carried `@file` expansion
 	// is an `attachment` record — which `session.messages` filters out. Counting
