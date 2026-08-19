@@ -26,6 +26,7 @@ import {
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
+import { RECOVERED_CONTINUATION_PROMPT, coerceInvokeArgs, planInvokeRecovery, recoveredToolResultPending } from "./invoke-recovery.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -1053,6 +1054,7 @@ function finalizeCurrentStream(c: QueryContext, stopReason?: string): void {
 function processStreamEvent(
 	message: SDKMessage,
 	customToolNameToPi: Map<string, string>,
+	mcpTools: readonly Tool[],
 	model: Model<any>,
 	c: QueryContext,
 ): void {
@@ -1148,6 +1150,7 @@ function processStreamEvent(
 		// assistant message for this turn, but currentPiStream=null causes
 		// consumeQuery to skip it. The MCP handler blocks the generator until
 		// pi delivers the tool result via the next streamSimple call.
+		recoverLeakedInvokes(c, customToolNameToPi, mcpTools);
 		c.turnOutput.stopReason = "toolUse";
 		const stream = c.currentPiStream;
 		stream!.push({ type: "done", reason: "toolUse", message: c.turnOutput });
@@ -1171,7 +1174,7 @@ function processStreamEvent(
 // arrives before any stream_events, this is the primary content path. Must maintain
 // the same stream lifecycle as processStreamEvent — including ending the stream on
 // tool_use to prevent deadlock with the MCP handler.
-function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext): void {
+function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, mcpTools: readonly Tool[], c: QueryContext): void {
 	if (c.turnSawStreamEvent) return;
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
@@ -1218,6 +1221,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 
 	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
 	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
+		recoverLeakedInvokes(c, customToolNameToPi, mcpTools);
 		c.turnOutput.stopReason = "toolUse";
 		const stream = c.currentPiStream;
 		stream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
@@ -1225,6 +1229,49 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 		stream.end();
 		c.currentPiStream = null;
 	}
+}
+
+function recoverLeakedInvokes(
+	c: QueryContext,
+	customToolNameToPi: Map<string, string>,
+	mcpTools: readonly Tool[],
+): void {
+	if (!c.turnOutput || c.turnOutput.stopReason === "error") return;
+	const plan = planInvokeRecovery(c.turnBlocks, {
+		sawToolCall: c.turnSawToolCall,
+		resolveToolName: (name) =>
+			piToolNameFor(name, customToolNameToPi)
+			?? piToolNameFor(`${MCP_TOOL_PREFIX}${name}`, customToolNameToPi),
+		mapArgs: (piName, args) => coerceInvokeArgs(
+			mapToolArgs(piName, args),
+			mcpTools.find((tool) => tool.name === piName)?.parameters,
+		),
+	});
+	if (!plan) return;
+
+	for (const rewrite of plan.rewrites) {
+		const block = c.turnBlocks[rewrite.blockIndex];
+		if (block?.type === "text") block.text = rewrite.text;
+	}
+	if (!plan.calls.length || !c.currentPiStream) return;
+
+	const stream = c.currentPiStream;
+	ensureTurnStarted(c);
+	for (const call of plan.calls) {
+		c.turnSawToolCall = true;
+		// Recovered ids do not enter turnToolCallIds because Claude Code has no
+		// MCP handler waiting for these synthesized calls.
+		c.turnBlocks.push({ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments });
+		const index = c.turnBlocks.length - 1;
+		stream.push({ type: "toolcall_start", contentIndex: index, partial: c.turnOutput });
+		stream.push({ type: "toolcall_end", contentIndex: index, toolCall: c.turnBlocks[index], partial: c.turnOutput });
+	}
+	piUI?.notify(`Claude bridge: recovered ${plan.calls.length} tool call(s) Claude wrote as text instead of calling`, "warning");
+	c.turnOutput.stopReason = "toolUse";
+	stream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
+	markStreamComplete(stream);
+	stream.end();
+	c.currentPiStream = null;
 }
 
 /** Background consumer: iterates the SDK generator, pushing events to currentPiStream.
@@ -1238,6 +1285,7 @@ async function consumeQuery(
 	model: Model<any>,
 	wasAborted: () => boolean,
 	queryCtx: QueryContext,
+	mcpTools: readonly Tool[] = [],
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
 
@@ -1284,10 +1332,10 @@ async function consumeQuery(
 
 		switch (message.type) {
 			case "stream_event":
-				processStreamEvent(message, customToolNameToPi, model, queryCtx);
+				processStreamEvent(message, customToolNameToPi, mcpTools, model, queryCtx);
 				break;
 			case "assistant":
-				processAssistantMessage(message, model, customToolNameToPi, queryCtx);
+				processAssistantMessage(message, model, customToolNameToPi, mcpTools, queryCtx);
 				break;
 			case "result": {
 					// The failure itself was recorded above the guard, along with the served
@@ -1325,6 +1373,9 @@ async function consumeQuery(
 
 	// DEBUG: trace when consumeQuery exits
 	debug(`consumeQuery: for-await loop exited, wasAborted=${wasAborted()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
+	if (!wasAborted() && queryCtx.turnOutput?.stopReason === "stop") {
+		recoverLeakedInvokes(queryCtx, customToolNameToPi, mcpTools);
+	}
 
 	return { capturedSessionId };
 }
@@ -1461,11 +1512,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		return stream;
 	}
 
-	// --- Orphaned tool result (e.g. user aborted a tool call) ---
-	// The query is gone but pi still delivered the result. Nothing to do — just
-	// emit end_turn so pi waits for the next real user message.
+	// A recovered call has no live MCP handler by construction. Its result must
+	// start a continuation query so Claude can consume it.
 	const lastMsg = context.messages[context.messages.length - 1];
-	if (lastMsg?.role === "toolResult") {
+	const recoveredInvokeResult = lastMsg?.role === "toolResult" && recoveredToolResultPending(context.messages);
+	if (lastMsg?.role === "toolResult" && !recoveredInvokeResult) {
 		debug(`provider: orphaned tool result after abort, emitting end_turn`);
 		if (sharedSession && activeQueryContexts.size === 0) sharedSession.cursor = context.messages.length;
 		// No query owns this result, so there is no context to reset: resetTurnState
@@ -1525,6 +1576,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
+	if (recoveredInvokeResult && !promptText && !promptBlocks) {
+		promptText = RECOVERED_CONTINUATION_PROMPT;
+	}
 
 	// Guard: empty prompt means the last context message isn't a user message.
 	// This should never happen with per-query state — dump diagnostics if it does.
@@ -1637,7 +1691,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	}
 
 	// Background consumer — runs until query ends
-	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx)
+	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx, mcpTools)
 		.then(async ({ capturedSessionId }) => {
 			debug(`provider: consumeQuery completed, stopReason=${queryCtx.turnOutput?.stopReason}, error=${queryCtx.turnOutput?.errorMessage}, aborted=${wasAborted}`);
 

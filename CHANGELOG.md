@@ -2,6 +2,8 @@
 
 ## UNRELEASED
 
+- **Fix: recover tool calls emitted as literal `<invoke>` text (issue #36)** — complete leaked calls are converted to structured tool calls, while a stale literal draft beside a genuine call is hidden from the visible answer.
+
 - **Fix: better isolate AskClaude tool (issue #59)** — AskClaude children no longer inherit the user's `~/.claude` `CLAUDE.md` files or skill listing, and now always get Claude Code's system prompt preset instead of only when pi-side skills exist. Thanks @JAtkinsonKO.
 - **Fix: Bogus debug message about "record count mismatch" after switching providers** — the post-rebuild integrity check did not take `@file` expansion into account when switching providers.
 
