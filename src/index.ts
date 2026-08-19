@@ -831,8 +831,6 @@ function showStartupNoticeOnce(): void {
 	piUI?.notify([title, ...bullets, "─".repeat(64)].join("\n"), "info");
 }
 
-// Isolated agents record captures in a second module instance while streaming
-// stays pinned to the parent instance.
 const promptCaptures = sharedPromptCaptures();
 
 /** Whatever a settled session left behind, named in one greppable line.

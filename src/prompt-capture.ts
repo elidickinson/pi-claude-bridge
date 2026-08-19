@@ -189,11 +189,7 @@ export class PromptCaptures {
 
 const SHARED_CAPTURES_KEY = Symbol.for("claude-bridge:promptCaptures");
 
-/**
- * Isolated agents re-evaluate this module, while provider streaming stays pinned
- * to the parent module instance. A process-wide registry keeps the child's
- * capture visible to the parent and remains bounded by PromptCaptures' LRU cap.
- */
+/** Isolated agents re-evaluate this module; process-wide state lets the parent stream their captures. */
 export function sharedPromptCaptures(): PromptCaptures {
 	const globals = globalThis as Record<symbol, PromptCaptures | undefined>;
 	return (globals[SHARED_CAPTURES_KEY] ??= new PromptCaptures());

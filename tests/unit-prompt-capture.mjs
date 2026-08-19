@@ -261,10 +261,10 @@ describe("PromptCaptures", () => {
 		assert.equal(resolved?.contextFiles[0].content, "isolated rules");
 	});
 
-	it("bounds the process-wide registry", () => {
-		const shared = sharedPromptCaptures();
-		for (let i = 0; i < 400; i++) shared.record(`shared-session-key-${i}`, capture());
-		assert.ok(shared.size <= 256);
-		assert.ok(shared.resolve("shared-session-key-399"));
+	it("bounds the capture registry", () => {
+		const captures = new PromptCaptures();
+		for (let i = 0; i < 400; i++) captures.record(`session-key-${i}`, capture());
+		assert.ok(captures.size <= 256);
+		assert.ok(captures.resolve("session-key-399"));
 	});
 });
