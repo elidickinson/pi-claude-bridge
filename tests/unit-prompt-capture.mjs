@@ -2,7 +2,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { collectPromptSkills, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import {
+	collectPromptSkills,
+	projectPromptCapture,
+	PromptCaptures,
+	sharedPromptCaptures,
+} from "../src/prompt-capture.js";
 
 const PI_HARNESS = "You are an expert coding assistant operating inside pi. Pi documentation: pi packages (docs/packages.md).";
 const PARENT_KEY = `${PI_HARNESS}\n\n<project_context>raw parent context</project_context>\nCurrent working directory: /parent`;
@@ -239,5 +244,27 @@ describe("PromptCaptures", () => {
 		assert.equal(captures.resolve("b"), undefined);
 		assert.equal(captures.resolve("a").custom, "refreshed");
 		assert.ok(captures.resolve("c") && captures.resolve("d"));
+	});
+
+	it("shares isolated-agent captures across module instances", async () => {
+		const childModule = await import("../src/prompt-capture.js?instance=isolated-child");
+		assert.notEqual(childModule.PromptCaptures, PromptCaptures);
+		const isolatedPrompt = "You are an isolated smoke-test agent.";
+
+		childModule.sharedPromptCaptures().record(isolatedPrompt, capture({
+			custom: isolatedPrompt,
+			contextFiles: [{ path: "/AGENTS.md", content: "isolated rules" }],
+		}));
+
+		const resolved = sharedPromptCaptures().resolveOrDerive(isolatedPrompt);
+		assert.equal(resolved?.assembledPrompt, isolatedPrompt);
+		assert.equal(resolved?.contextFiles[0].content, "isolated rules");
+	});
+
+	it("bounds the process-wide registry", () => {
+		const shared = sharedPromptCaptures();
+		for (let i = 0; i < 400; i++) shared.record(`shared-session-key-${i}`, capture());
+		assert.ok(shared.size <= 256);
+		assert.ok(shared.resolve("shared-session-key-399"));
 	});
 });
