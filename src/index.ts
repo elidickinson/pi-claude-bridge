@@ -1054,7 +1054,6 @@ function finalizeCurrentStream(c: QueryContext, stopReason?: string): void {
 function processStreamEvent(
 	message: SDKMessage,
 	customToolNameToPi: Map<string, string>,
-	mcpTools: readonly Tool[],
 	model: Model<any>,
 	c: QueryContext,
 ): void {
@@ -1150,7 +1149,6 @@ function processStreamEvent(
 		// assistant message for this turn, but currentPiStream=null causes
 		// consumeQuery to skip it. The MCP handler blocks the generator until
 		// pi delivers the tool result via the next streamSimple call.
-		recoverLeakedInvokes(c, customToolNameToPi, mcpTools);
 		c.turnOutput.stopReason = "toolUse";
 		const stream = c.currentPiStream;
 		stream!.push({ type: "done", reason: "toolUse", message: c.turnOutput });
@@ -1174,7 +1172,7 @@ function processStreamEvent(
 // arrives before any stream_events, this is the primary content path. Must maintain
 // the same stream lifecycle as processStreamEvent — including ending the stream on
 // tool_use to prevent deadlock with the MCP handler.
-function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, mcpTools: readonly Tool[], c: QueryContext): void {
+function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext): void {
 	if (c.turnSawStreamEvent) return;
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
@@ -1221,7 +1219,6 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 
 	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
 	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
-		recoverLeakedInvokes(c, customToolNameToPi, mcpTools);
 		c.turnOutput.stopReason = "toolUse";
 		const stream = c.currentPiStream;
 		stream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
@@ -1236,7 +1233,7 @@ function recoverLeakedInvokes(
 	customToolNameToPi: Map<string, string>,
 	mcpTools: readonly Tool[],
 ): void {
-	if (!c.turnOutput || c.turnOutput.stopReason === "error") return;
+	if (!c.turnOutput) return;
 	const plan = planInvokeRecovery(c.turnBlocks, {
 		sawToolCall: c.turnSawToolCall,
 		resolveToolName: (name) =>
@@ -1249,11 +1246,7 @@ function recoverLeakedInvokes(
 	});
 	if (!plan) return;
 
-	for (const rewrite of plan.rewrites) {
-		const block = c.turnBlocks[rewrite.blockIndex];
-		if (block?.type === "text") block.text = rewrite.text;
-	}
-	if (!plan.calls.length || !c.currentPiStream) return;
+	if (!c.currentPiStream) return;
 
 	const stream = c.currentPiStream;
 	ensureTurnStarted(c);
@@ -1285,7 +1278,7 @@ async function consumeQuery(
 	model: Model<any>,
 	wasAborted: () => boolean,
 	queryCtx: QueryContext,
-	mcpTools: readonly Tool[] = [],
+	mcpTools: readonly Tool[],
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
 
@@ -1332,10 +1325,10 @@ async function consumeQuery(
 
 		switch (message.type) {
 			case "stream_event":
-				processStreamEvent(message, customToolNameToPi, mcpTools, model, queryCtx);
+				processStreamEvent(message, customToolNameToPi, model, queryCtx);
 				break;
 			case "assistant":
-				processAssistantMessage(message, model, customToolNameToPi, mcpTools, queryCtx);
+				processAssistantMessage(message, model, customToolNameToPi, queryCtx);
 				break;
 			case "result": {
 					// The failure itself was recorded above the guard, along with the served

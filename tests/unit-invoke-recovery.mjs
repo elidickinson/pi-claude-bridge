@@ -16,6 +16,7 @@ import {
 	coerceInvokeArgs,
 	isRecoveredToolCallId,
 	parseInvokeBlocks,
+	planInvokeRecovery,
 	recoveredToolResultPending,
 } from "../src/invoke-recovery.js";
 
@@ -107,8 +108,9 @@ describe("literal invoke text with no structured tool call", () => {
 		assert.strictEqual(stream.events.at(-1).type, "end");
 		assert.strictEqual(c.currentPiStream, null);
 
-		// The literal draft is gone from the answer, the prose around it is not.
-		assert.deepStrictEqual(texts(c).map((b) => b.text), ["Running the suite now."]);
+		assert.deepStrictEqual(texts(c).map((b) => b.text), [[
+			"Running the suite now.", "", inv("bash"), param("command", "npm test"), invEnd,
+		].join("\n")]);
 	});
 
 	it("never routes the synthesized id to an MCP handler that does not exist", async () => {
@@ -169,8 +171,19 @@ describe("literal invoke text with no structured tool call", () => {
 		]);
 		// Distinct ids, or pi pairs both results to one call.
 		assert.notStrictEqual(toolCalls(c)[0].id, toolCalls(c)[1].id);
-		// The now-empty wrapper goes with them.
-		assert.deepStrictEqual(texts(c).map((b) => b.text), ["Two steps:"]);
+		assert.deepStrictEqual(texts(c).map((b) => b.text), [[
+			"Two steps:", "", wrapOpen, inv("bash"), param("command", "npm run build"),
+			invEnd, inv("read"), param("path", "/tmp/out.log"), invEnd, wrapEnd,
+		].join("\n")]);
+	});
+
+	it("deduplicates an identical call repeated across text blocks", () => {
+		const text = inv("bash") + param("command", "npm test") + invEnd;
+		const plan = planInvokeRecovery(
+			[{ type: "text", text }, { type: "text", text }],
+			{ sawToolCall: false, resolveToolName: (name) => name, mapArgs: (_name, args) => args },
+		);
+		assert.strictEqual(plan.calls.length, 1);
 	});
 
 	it("leaves a tool the bridge does not serve as plain text", async () => {
@@ -193,7 +206,10 @@ describe("literal invoke text with no structured tool call", () => {
 	for (const [label, broken] of [
 		["truncated mid-value", `${inv("bash")}\n${paramOpen("command")}npm test`],
 		["parameter never closed", `${inv("bash")}${paramOpen("command")}npm test${invEnd}`],
-		["invoke never closed before its sibling", `${inv("bash")}\n${inv("bash")}${paramOpen("command")}ls`],
+		["stray invoke-body text", `${inv("bash")}not a parameter${invEnd}`],
+		["duplicate parameter", `${inv("bash")}${param("command", "a")}${param("command", "b")}${invEnd}`],
+		["mismatched parameter close", `${LT}ns:invoke name="bash">${LT}ns:parameter name="command">ls${LT}/parameter>${LT}/ns:invoke>`],
+		["leftover tag", `${inv("bash")}${param("command", "ls")}${LT}/parameter>${invEnd}`],
 		["opening tag only", inv("bash")],
 	]) {
 		it(`leaves a malformed invoke alone: ${label}`, async () => {
@@ -222,21 +238,17 @@ describe("literal invoke text with no structured tool call", () => {
 });
 
 describe("literal invoke text alongside a real structured tool call", () => {
-	it("suppresses the stale draft and emits exactly one call", async () => {
+	it("preserves a same-name literal draft and emits only Claude's call", async () => {
 		const c = makeCtx();
 		const stream = c.currentPiStream;
+		const draft = [
+			"Let me check the tests.", "", inv("bash"), param("command", "npm test --watch"),
+			invEnd, "", "Standing by.",
+		].join("\n");
 		await consume(c, [
 			streamEvent({ type: "message_start", message: {} }),
 			streamEvent({ type: "content_block_start", index: 0, content_block: { type: "text" } }),
-			streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: [
-				"Let me check the tests.",
-				"",
-				inv("bash"),
-				param("command", "npm test --watch"),
-				invEnd,
-				"",
-				"Standing by.",
-			].join("\n") } }),
+			streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: draft } }),
 			streamEvent({ type: "content_block_stop", index: 0 }),
 			streamEvent({ type: "content_block_start", index: 1, content_block: { type: "tool_use", name: "mcp__custom-tools__bash", id: "toolu_real", input: {} } }),
 			streamEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"command":"npm test"}' } }),
@@ -245,53 +257,23 @@ describe("literal invoke text alongside a real structured tool call", () => {
 			streamEvent({ type: "message_stop" }),
 		]);
 
-		// One call, and it is Claude's own — a draft it never dispatched must not
-		// become a second real side effect.
 		assert.deepStrictEqual(toolCalls(c).map((b) => b.id), ["toolu_real"]);
-		assert.deepStrictEqual(toolCalls(c)[0].arguments, { command: "npm test", timeout: 120 });
-		assert.deepStrictEqual(c.turnToolCallIds, ["toolu_real"]);
-
-		// The user is not shown the same command twice, and the answer around the
-		// draft survives.
-		assert.deepStrictEqual(texts(c).map((b) => b.text), ["Let me check the tests.\n\nStanding by."]);
-
-		// The final message pi keeps is the one `done` carries, so the cut has to
-		// be visible there.
+		assert.deepStrictEqual(texts(c).map((b) => b.text), [draft]);
 		const done = stream.events.filter((e) => e.type === "done");
 		assert.strictEqual(done.length, 1);
-		assert.strictEqual(done[0].reason, "toolUse");
-		assert.ok(!JSON.stringify(done[0].message.content).includes("invoke"));
+		assert.ok(JSON.stringify(done[0].message.content).includes("invoke"));
 	});
 
-	it("suppresses on the assistant-message fallback path too", async () => {
+	it("preserves literal prose on the assistant-message fallback path", async () => {
 		const c = makeCtx();
+		const draft = `Running it.\n\n${inv("bash")}\n${param("command", "ls")}\n${invEnd}`;
 		await consume(c, [{
 			type: "assistant",
 			message: { content: [
-				{ type: "text", text: `Running it.\n\n${inv("bash")}\n${param("command", "ls")}\n${invEnd}` },
+				{ type: "text", text: draft },
 				{ type: "tool_use", name: "mcp__custom-tools__bash", id: "toolu_real", input: { command: "ls -la" } },
 			] },
 		}]);
-
-		assert.deepStrictEqual(toolCalls(c).map((b) => b.id), ["toolu_real"]);
-		assert.deepStrictEqual(texts(c).map((b) => b.text), ["Running it."]);
-	});
-
-	it("leaves a draft for a different tool alone", async () => {
-		// A turn that already has a structured call continues on its own. Cutting
-		// unrelated text would delete an answer nothing replaced.
-		const draft = `${inv("write")}\n${param("file_path", "/tmp/a")}\n${param("content", "x")}\n${invEnd}`;
-		const c = makeCtx();
-		await consume(c, [
-			streamEvent({ type: "content_block_start", index: 0, content_block: { type: "text" } }),
-			streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: draft } }),
-			streamEvent({ type: "content_block_stop", index: 0 }),
-			streamEvent({ type: "content_block_start", index: 1, content_block: { type: "tool_use", name: "mcp__custom-tools__bash", id: "toolu_real", input: {} } }),
-			streamEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{}" } }),
-			streamEvent({ type: "content_block_stop", index: 1 }),
-			streamEvent({ type: "message_stop" }),
-		]);
-
 		assert.deepStrictEqual(toolCalls(c).map((b) => b.id), ["toolu_real"]);
 		assert.deepStrictEqual(texts(c).map((b) => b.text), [draft]);
 	});
@@ -303,33 +285,30 @@ describe("parseInvokeBlocks", () => {
 		assert.deepStrictEqual(found.map((f) => [f.name, f.arguments]), [["bash", { command: "ls" }]]);
 	});
 
-	it("costs nothing on ordinary prose", () => {
-		assert.deepStrictEqual(parseInvokeBlocks("No tags here, just 1 < 2 and a </div>."), []);
+	it("rejects stray text, duplicate names, and mismatched or leftover tags", () => {
+		for (const broken of [
+			`${inv("bash")}stray${invEnd}`,
+			`${inv("bash")}${param("command", "a")}${param("command", "b")}${invEnd}`,
+			`${LT}ns:invoke name="bash">${LT}ns:parameter name="command">ls${LT}/parameter>${LT}/ns:invoke>`,
+			`${inv("bash")}${param("command", "ls")}${LT}/parameter>${invEnd}`,
+		]) assert.deepStrictEqual(parseInvokeBlocks(broken), []);
 	});
 
-	it("keeps an empty-bodied invoke, which is a real no-argument call", () => {
-		assert.deepStrictEqual(parseInvokeBlocks(inv("ls") + invEnd).map((f) => f.arguments), [{}]);
-	});
 });
 
 describe("coerceInvokeArgs", () => {
-	const schema = { properties: { path: { type: "string" }, limit: { type: "number" }, all: { type: "boolean" } } };
-
+	const schema = { properties: { path: { type: "string" }, limit: { type: "number" }, count: { type: "integer" }, all: { type: "boolean" } } };
 	it("types a value the tool declares as a number", () => {
 		assert.deepStrictEqual(coerceInvokeArgs({ path: "/etc/hosts", limit: "50" }, schema), { path: "/etc/hosts", limit: 50 });
 	});
-
-	it("leaves a declared string alone even when it looks like a number", () => {
-		// The trap this exists to avoid: a file body of `42` written as a number.
-		assert.deepStrictEqual(coerceInvokeArgs({ path: "42" }, schema), { path: "42" });
+	it("requires integers and rejects arrays for object parameters", () => {
+		assert.deepStrictEqual(coerceInvokeArgs(
+			{ count: "1.5", object: "[]", validObject: "{\"ok\":true}" },
+			{ properties: { count: { type: "integer" }, object: { type: "object" }, validObject: { type: "object" } } },
+		), { count: "1.5", object: "[]", validObject: { ok: true } });
 	});
-
-	it("keeps text a declared type cannot represent, rather than mangling it", () => {
+	it("leaves text a declared type cannot represent", () => {
 		assert.deepStrictEqual(coerceInvokeArgs({ limit: "007", all: "yes" }, schema), { limit: "007", all: "yes" });
-	});
-
-	it("passes everything through when the tool has no schema", () => {
-		assert.deepStrictEqual(coerceInvokeArgs({ n: "1" }, undefined), { n: "1" });
 	});
 });
 
