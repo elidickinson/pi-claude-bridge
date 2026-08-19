@@ -21,7 +21,7 @@ import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } f
 import {
 	collectPromptSkills,
 	projectPromptCapture,
-	PromptCaptures,
+	sharedPromptCaptures,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
@@ -831,9 +831,7 @@ function showStartupNoticeOnce(): void {
 	piUI?.notify([title, ...bullets, "─".repeat(64)].join("\n"), "info");
 }
 
-// Captures of what pi assembled per agent; see src/prompt-capture.ts for why this
-// is keyed rather than held in a single slot.
-const promptCaptures = new PromptCaptures();
+const promptCaptures = sharedPromptCaptures();
 
 /** Whatever a settled session left behind, named in one greppable line.
  *
