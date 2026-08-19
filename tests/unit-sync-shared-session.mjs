@@ -17,13 +17,8 @@ describe("syncSharedSession", () => {
 		__test.setPiUI(null);
 	});
 
-	// The branch this exercises is the guard that stops a reentrant subagent from
-	// resuming — and then overwriting — the parent's session: a subagent's context
-	// is shorter than the parent's cursor, so it starts fresh and the parent's
-	// session is preserved. It was previously described here as the compact-summary
-	// path, which cannot reach syncSharedSession at all, so the branch read as
-	// covered for a case that never happens.
-	it("starts a fresh session for a shorter context and preserves the parent's", () => {
+	// Nested queries get a disposable session instead of overwriting the parent.
+	it("starts a fresh session for a shorter reentrant context and preserves the parent", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
 		try {
 			const mainSession = {
@@ -39,7 +34,7 @@ describe("syncSharedSession", () => {
 					content: "Summarize this conversation.",
 					timestamp: Date.now(),
 				},
-			], cwd);
+			], cwd, undefined, undefined, { reentrant: true });
 
 			assert.equal(
 				result.sessionId,
@@ -55,6 +50,54 @@ describe("syncSharedSession", () => {
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+
+	it("rebuilds a shorter top-level history instead of dropping conversation context", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+		const sessionId = randomUUID();
+		try {
+			__test.setSharedSession({ sessionId, cursor: 42, cwd });
+
+			const result = __test.syncSharedSession([
+				{ role: "user", content: "Remember this.", timestamp: 1 },
+				{ role: "assistant", content: [{ type: "text", text: "Remembered." }], timestamp: 2 },
+				{ role: "user", content: "What did I ask?", timestamp: 3 },
+			], cwd);
+
+			assert.equal(result.sessionId, sessionId);
+			assert.equal(result.preserveSharedSession, undefined);
+			assert.equal(__test.getSharedSession().cursor, 2);
+			assert.equal(openSession({ sessionId, projectPath: cwd }).messages.length, 2);
+		} finally {
+			deleteSession(sessionId, cwd);
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("carries a compaction invalidation through a concurrent query completion", () => {
+		const cwd = "/tmp/session-race";
+		const sessionId = "11111111-1111-4111-8111-111111111111";
+		__test.setSharedSession({ sessionId, cursor: 42, cwd });
+
+		__test.markRebuild("session_compact");
+		__test.recordQueryCompletion(sessionId, 5, cwd, false);
+
+		assert.deepEqual(__test.getSharedSession(), {
+			sessionId,
+			cursor: 5,
+			cwd,
+			needsRebuild: true,
+		});
+	});
+
+	it("does not lower the parent cursor when a reentrant query completes", () => {
+		const cwd = "/tmp/reentrant-session";
+		const sessionId = "11111111-1111-4111-8111-111111111111";
+		__test.setSharedSession({ sessionId, cursor: 42, cwd });
+
+		__test.recordQueryCompletion(sessionId, 5, cwd, true);
+
+		assert.equal(__test.getSharedSession().cursor, 42);
 	});
 
 	// The rebuilt file holds one line per record, and a carried `@file` expansion

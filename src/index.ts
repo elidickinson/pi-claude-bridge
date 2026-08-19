@@ -248,6 +248,20 @@ function readCarriedAttachments(sessionId: string, cwd: string): CarriedAttachme
 }
 
 let sharedSession: SessionState | null = null;
+function markRebuild(reason: string): void {
+	if (!sharedSession) return;
+	debug(`${reason}: marking needsRebuild on session ${sharedSession.sessionId.slice(0, 8)}`);
+	sharedSession = { ...sharedSession, needsRebuild: true };
+}
+
+function recordQueryCompletion(sessionId: string, observedCursor: number, cwd: string, isReentrant: boolean): void {
+	const cursor = isReentrant ? Math.max(observedCursor, sharedSession?.cursor ?? 0) : observedCursor;
+	debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
+	// A compaction can finish while a query is completing. Preserve its
+	// invalidation so the next turn cannot resume the pre-compaction session.
+	sharedSession = { ...sharedSession, sessionId, cursor, cwd };
+}
+
 
 // Convert pi messages to Anthropic API format for session import.
 // Lossy: only text, thinking and toolCall blocks survive, and thinking only when
@@ -636,6 +650,7 @@ function syncSharedSession(
 	cwd: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
+	options?: { reentrant?: boolean },
 ): SyncResult {
 	const priorMessages = messages.slice(0, turnStart(messages)); // everything before the current user turn
 
@@ -659,24 +674,17 @@ function syncSharedSession(
 			return { sessionId: sharedSession.sessionId };
 		}
 	}
-	// This is what keeps a reentrant subagent from taking over the parent's
-	// session: a subagent starts with priors of its own, shorter than the parent's
-	// cursor, so it lands here, gets a fresh session, and the ephemeral session it
-	// captures is deleted once its query completes (see preserveSharedSession in
-	// the completion handler). Remove this branch and a subagent resumes — then
-	// overwrites — the parent's session. The non-isolated AskClaude path reaches it
-	// the same way.
-	//
-	// It is NOT, despite an earlier comment here, the isolated compact-summary
-	// path: runIsolatedSummary never calls syncSharedSession at all.
-	//
-	// Only reachable when needsRebuild is false — user-facing history rewrites
-	// (/compact, session_tree, /new, fork) always set needsRebuild or clear
-	// sharedSession before the next syncSharedSession call.
+	// A shorter context means one of two things. Nested queries must start a
+	// disposable session so they cannot overwrite the parent. Top-level turns
+	// reached here because Pi rewrote its history; rebuild from that history
+	// rather than silently answering without conversation context (#30, #55).
 	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
-		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
-		debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
-		return { sessionId: null, preserveSharedSession: true };
+		if (options?.reentrant) {
+			debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
+			debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
+			return { sessionId: null, preserveSharedSession: true };
+		}
+		debug(`Case 3→4: Pi history compressed ${sharedSession.cursor}→${priorMessages.length} msgs on a top-level turn, forcing rebuild`);
 	}
 
 	// REBUILD path
@@ -738,6 +746,8 @@ export const __test = {
 		piUI = ui;
 	},
 	syncSharedSession,
+	markRebuild,
+	recordQueryCompletion,
 	extractUserPromptBlocks,
 	consumeQuery,
 	finalizeCurrentStream,
@@ -1521,7 +1531,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, { reentrant: isReentrant });
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1666,9 +1676,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				}
 				debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
 			} else if (sessionId) {
-				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, sharedSession?.cursor ?? 0);
-				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-				sharedSession = { sessionId, cursor, cwd };
+				const observedCursor = Math.max(context.messages.length, queryCtx.latestCursor);
+				recordQueryCompletion(sessionId, observedCursor, cwd, isReentrant);
 			}
 
 			if (!isReentrant && queryCtx.activeQuery === sdkQuery) {
@@ -1762,7 +1771,7 @@ async function promptAndWait(
 		} else {
 			// No provider session yet — create one from pi's context
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel);
+			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel, { reentrant: true });
 			resumeSessionId = sync.sessionId;
 		}
 	}
@@ -2014,21 +2023,9 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// pi /compact and session-tree navigation (rewind / fork-at-point /
-	// branch switch) both mutate pi's messages array out from under the
-	// bridge. syncSharedSession's REUSE check would otherwise see
-	// slice(cursor) === [] (or skip entries) and keep --resume'ing a CC
-	// session that no longer matches pi's history. /compact in particular
-	// triggers CC's autocompact-thrashing guard (issue #8). Force the next
-	// call down the REBUILD path so CC sees the current history.
-	const markRebuild = (event: string) => {
-		if (sharedSession) {
-			debug(`${event}: marking needsRebuild on session ${sharedSession.sessionId.slice(0, 8)}`);
-			sharedSession = { ...sharedSession, needsRebuild: true };
-		}
-	};
 	pi.on("session_compact", (event) => markRebuild(`session_compact:${event.reason}:willRetry=${event.willRetry}`));
 	pi.on("session_tree", () => markRebuild("session_tree"));
+	pi.on("model_select", (event) => markRebuild(`model_select:${event.previousModel?.id ?? "?"}->${event.model?.id ?? "?"}`));
 
 	// Branch summarization — rewind or fork-at-point with "summarize" — is the other
 	// place pi asks the model for a summary, and unlike compaction it runs through
