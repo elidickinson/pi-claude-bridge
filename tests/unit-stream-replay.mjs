@@ -43,7 +43,7 @@ async function replay(name, { toolNames = ["read"] } = {}) {
 
 	const messages = fixture(name);
 	async function* stream() { for (const m of messages) yield m; }
-	const { capturedSessionId } = await __test.consumeQuery(stream(), customToolNameToPi, model, () => false, c);
+	const { capturedSessionId } = await __test.consumeQuery(stream(), customToolNameToPi, model, () => false, c, []);
 	return { events, ctx: c, messages, capturedSessionId };
 }
 

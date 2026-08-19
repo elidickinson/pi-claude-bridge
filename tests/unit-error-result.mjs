@@ -26,7 +26,7 @@ function makeCtx() {
 
 async function consume(c, messages) {
 	async function* gen() { for (const m of messages) yield m; }
-	await __test.consumeQuery(gen(), new Map(), fakeModel, () => false, c);
+	await __test.consumeQuery(gen(), new Map(), fakeModel, () => false, c, []);
 }
 
 const errorResult = {

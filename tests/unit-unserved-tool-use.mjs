@@ -32,7 +32,7 @@ function makeCtx() {
 
 async function consume(c, messages) {
 	async function* gen() { for (const m of messages) yield m; }
-	await __test.consumeQuery(gen(), toolMap, fakeModel, () => false, c);
+	await __test.consumeQuery(gen(), toolMap, fakeModel, () => false, c, []);
 }
 
 const streamEvent = (event) => ({ type: "stream_event", event });
