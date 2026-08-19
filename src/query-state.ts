@@ -9,6 +9,7 @@
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
+import type { StreamMonitor } from "./stream-resilience.js";
 
 export interface PendingToolCall {
 	toolName: string;
@@ -20,6 +21,7 @@ export class QueryContext {
 	activeQuery: unknown | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
 	latestCursor = 0;
+	streamMonitor: StreamMonitor | null = null;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();
 	/** tool_use ids emitted this turn. Sole purpose is routing a delivered result
