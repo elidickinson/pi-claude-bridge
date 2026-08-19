@@ -25,7 +25,7 @@ import {
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
-import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults } from "./askclaude-schema.js";
+import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -186,10 +186,8 @@ const ASKCLAUDE_ALWAYS_BLOCKED = [
 	"ToolSearch", // probes for blocked tools, wastes tokens
 	"ScheduleWakeup", // no harness to fire wakeup from inside a delegated subagent
 ];
-const MODE_DISALLOWED_TOOLS: Record<string, string[]> = {
-	full: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-	],
+const MODE_DISALLOWED_TOOLS: Record<AskClaudeMode, string[]> = {
+	full: ASKCLAUDE_ALWAYS_BLOCKED,
 	read: [
 		...ASKCLAUDE_ALWAYS_BLOCKED,
 		"Write", "Edit", "Bash", "NotebookEdit",
@@ -1768,7 +1766,7 @@ async function promptAndWait(
 	}
 
 	// Mode → disallowed tools
-	const disallowedTools = MODE_DISALLOWED_TOOLS[mode] ?? [];
+	const disallowedTools = MODE_DISALLOWED_TOOLS[mode];
 
 	// AskClaude uses Claude Code's native Read tool rather than Pi's MCP bridge.
 	// Same resolver as the provider path: a prompt neither recorded nor derivable
@@ -2149,7 +2147,7 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
-				const mode = params.mode ?? askDefaults.mode;
+				const mode = resolveAskClaudeMode(params.mode, askDefaults);
 				const isolated = params.isolated ?? askDefaults.isolated;
 				const toolCalls = new Map<string, ToolCallState>();
 				const start = Date.now();

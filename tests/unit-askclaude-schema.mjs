@@ -5,6 +5,7 @@ import {
 	askClaudeToolDescription,
 	buildAskClaudeParams,
 	resolveAskClaudeDefaults,
+	resolveAskClaudeMode,
 } from "../src/askclaude-schema.js";
 
 const props = (conf) => buildAskClaudeParams(resolveAskClaudeDefaults(conf)).properties;
@@ -40,9 +41,9 @@ describe("defaultMode: full", () => {
 		assert.match(toolDescription(conf), /Defaults to full mode/);
 	});
 
-	it("shows inherited write access in the status line", () => {
+	it("shows inherited write access and a read-only override in the status line", () => {
 		assert.deepEqual(tags({ prompt: "review this" }, conf), ["mode=full"]);
-		assert.deepEqual(tags({ prompt: "review this", mode: "read" }, conf), []);
+		assert.deepEqual(tags({ prompt: "review this", mode: "read" }, conf), ["mode=read"]);
 	});
 });
 
@@ -73,16 +74,50 @@ describe("allowFullMode: false", () => {
 		assert.equal(resolveAskClaudeDefaults(conf).mode, "read");
 		assert.deepEqual(tags({ prompt: "hi" }, conf), []);
 	});
+
+	it("rejects full mode during execution even if a caller bypasses the schema", () => {
+		const defaults = resolveAskClaudeDefaults({ allowFullMode: false });
+		assert.throws(() => resolveAskClaudeMode("full", defaults), /full mode is disabled/);
+		assert.throws(() => resolveAskClaudeMode("unexpected", defaults), /Invalid AskClaude mode/);
+		assert.throws(() => resolveAskClaudeMode(null, defaults), /Invalid AskClaude mode/);
+		assert.equal(resolveAskClaudeMode(undefined, defaults), "read");
+	});
+
+	it("fails closed for a malformed non-boolean allowFullMode", () => {
+		assert.equal(resolveAskClaudeDefaults({ allowFullMode: "false" }).allowFull, false);
+		assert.equal(resolveAskClaudeDefaults({ allowFullMode: 0 }).allowFull, false);
+	});
+
+	it("keeps the package default true for a null or omitted allowFullMode", () => {
+		assert.equal(resolveAskClaudeDefaults({ allowFullMode: null }).allowFull, true);
+		assert.equal(resolveAskClaudeDefaults({}).allowFull, true);
+		assert.equal(resolveAskClaudeDefaults(undefined).allowFull, true);
+	});
 });
 
 describe("other configured defaults", () => {
-	it("states and renders none as the default mode", () => {
-		assert.match(props({ defaultMode: "none" }).mode.description, /"none" \(default\)/);
-		assert.match(toolDescription({ defaultMode: "none" }), /Defaults to no file access/);
-		assert.deepEqual(tags({ prompt: "what is a monad" }, { defaultMode: "none" }), ["mode=none"]);
+	it("states and renders none as the default mode, including an explicit read escalation", () => {
+		const conf = { defaultMode: "none" };
+		assert.match(props(conf).mode.description, /"none" \(default\)/);
+		assert.match(toolDescription(conf), /Defaults to no file access/);
+		assert.deepEqual(tags({ prompt: "what is a monad" }, conf), ["mode=none"]);
+		assert.deepEqual(tags({ prompt: "review this", mode: "read" }, conf), ["mode=read"]);
 	});
 
-	it("preserves a description override verbatim", () => {
-		assert.equal(toolDescription({ description: "Ask the other Claude.", defaultMode: "full", defaultIsolated: true }), "Ask the other Claude.");
+	it("falls back to generated text for a null description", () => {
+		assert.equal(toolDescription({ description: null }), toolDescription({}));
+	});
+
+	it("returns a non-null configured description verbatim", () => {
+		const conf = { defaultMode: "none", description: "Custom override text" };
+		assert.equal(toolDescription(conf), "Custom override text");
+	});
+
+	it("treats a null configured mode as unset, falling back to the package default", () => {
+		assert.equal(resolveAskClaudeDefaults({ defaultMode: null }).mode, "read");
+	});
+
+	it("fails closed for an invalid configured mode", () => {
+		assert.equal(resolveAskClaudeDefaults({ defaultMode: "unexpected" }).mode, "none");
 	});
 });

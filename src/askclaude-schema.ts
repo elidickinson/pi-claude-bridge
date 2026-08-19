@@ -14,11 +14,22 @@ const PACKAGE_DEFAULT_MODE: AskClaudeMode = "read";
 const PACKAGE_DEFAULT_ISOLATED = false;
 
 export function resolveAskClaudeDefaults(conf: Config["askClaude"]): AskClaudeDefaults {
-	const allowFull = conf?.allowFullMode !== false;
-	const configuredMode = conf?.defaultMode ?? PACKAGE_DEFAULT_MODE;
-	// The full-mode lockout must also override a configured default.
-	const mode = !allowFull && configuredMode === "full" ? PACKAGE_DEFAULT_MODE : configuredMode;
-	return { mode, isolated: conf?.defaultIsolated ?? PACKAGE_DEFAULT_ISOLATED, allowFull };
+	const rawAllowFull: unknown = conf?.allowFullMode;
+	const allowFull = rawAllowFull == null ? true : rawAllowFull === true;
+	const configuredMode: unknown = conf?.defaultMode;
+	const mode = configuredMode == null
+		? PACKAGE_DEFAULT_MODE
+		: configuredMode === "full" || configuredMode === "read" || configuredMode === "none"
+			? configuredMode
+			: "none";
+	return { mode: !allowFull && mode === "full" ? PACKAGE_DEFAULT_MODE : mode, isolated: conf?.defaultIsolated ?? PACKAGE_DEFAULT_ISOLATED, allowFull };
+}
+
+export function resolveAskClaudeMode(mode: unknown, defaults: AskClaudeDefaults): AskClaudeMode {
+	const resolved = mode === undefined ? defaults.mode : mode;
+	if (resolved !== "full" && resolved !== "read" && resolved !== "none") throw new Error(`Invalid AskClaude mode: ${String(resolved)}`);
+	if (resolved === "full" && !defaults.allowFull) throw new Error("AskClaude full mode is disabled.");
+	return resolved;
 }
 
 function modeDescription(defaults: AskClaudeDefaults): string {
@@ -49,8 +60,8 @@ export function buildAskClaudeParams(defaults: AskClaudeDefaults) {
 	});
 }
 
-export function askClaudeToolDescription(defaults: AskClaudeDefaults, override?: string): string {
-	if (override !== undefined) return override;
+export function askClaudeToolDescription(defaults: AskClaudeDefaults, override?: string | null): string {
+	if (override != null) return override;
 	const suffix = " Prefer to handle straightforward tasks yourself.";
 	if (!defaults.allowFull) {
 		const middle = defaults.mode === "none"
@@ -72,7 +83,7 @@ export function askClaudeCallTags(
 ): string[] {
 	const tags: string[] = [];
 	const mode = args.mode ?? defaults.mode;
-	if (mode !== PACKAGE_DEFAULT_MODE) tags.push(`mode=${mode}`);
+	if (mode !== PACKAGE_DEFAULT_MODE || (args.mode !== undefined && args.mode !== defaults.mode)) tags.push(`mode=${mode}`);
 	if (args.model) tags.push(`model=${args.model}`);
 	if (args.thinking) tags.push(`thinking=${args.thinking}`);
 	if ((args.isolated ?? defaults.isolated) !== PACKAGE_DEFAULT_ISOLATED) tags.push("isolated");
