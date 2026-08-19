@@ -184,17 +184,40 @@ try {
   await send({ type: "abort" });
   await idle7;
 
+  // Turn 8: AskClaude after abort must not resume the invalidated parent.
+  const ephemeralMarkersBefore = (
+    readFileSync(DEBUG_LOG, "utf8").match(/askClaude: created ephemeral session/g) || []
+  ).length;
+  console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
+  await send({ type: "set_model", provider: OTHER_PROVIDER, modelId: OTHER_MODEL });
+  console.log("Turn 8: AskClaude shared mode after invalidation...");
+  await promptAndWait(
+    'Use the AskClaude tool with prompt="What were all three words mentioned earlier? Reply with just the words."'
+  );
+  console.log(`  AskClaude args: ${JSON.stringify(lastToolArgs)}`);
+  console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
+  const ephemeralMarkersAfter = (
+    readFileSync(DEBUG_LOG, "utf8").match(/askClaude: created ephemeral session/g) || []
+  ).length;
+  if (ephemeralMarkersAfter <= ephemeralMarkersBefore) {
+    throw new Error("Turn 8 AskClaude resumed or rebuilt the invalidated shared session instead of creating a new ephemeral one");
+  }
+  if (!promptContains(WORD_C) && !lastToolResult?.toLowerCase().includes(WORD_C)) {
+    throw new Error(`Turn 8 AskClaude result missing '${WORD_C}': ${lastToolResult}`);
+  }
 
-  // Turn 8: Provider turn after abort — should NOT get "conversation not found"
-  console.log("Turn 8: Provider turn after abort (should recover)...");
-  const text8 = await promptAndWait(
+  // Turn 9: Provider turn after abort — should NOT get "conversation not found"
+  console.log(`Switching back to ${BRIDGE_MODEL}...`);
+  await send({ type: "set_model", provider: bridgeProvider, modelId: bridgeModelId });
+  console.log("Turn 9: Provider turn after abort (should recover)...");
+  const text9 = await promptAndWait(
     "What were all three words? Reply with just the three words separated by commas."
   );
-  console.log(`  Response: ${text8.slice(0, 80)}`);
-  const lower8 = text8.toLowerCase();
-  if (!lower8.includes(WORD_A)) throw new Error(`Turn 8 response missing '${WORD_A}': ${text8}`);
-  if (!lower8.includes(WORD_B)) throw new Error(`Turn 8 response missing '${WORD_B}': ${text8}`);
-  if (!lower8.includes(WORD_C)) throw new Error(`Turn 8 response missing '${WORD_C}': ${text8}`);
+  console.log(`  Response: ${text9.slice(0, 80)}`);
+  const lower9 = text9.toLowerCase();
+  if (!lower9.includes(WORD_A)) throw new Error(`Turn 9 response missing '${WORD_A}': ${text9}`);
+  if (!lower9.includes(WORD_B)) throw new Error(`Turn 9 response missing '${WORD_B}': ${text9}`);
+  if (!lower9.includes(WORD_C)) throw new Error(`Turn 9 response missing '${WORD_C}': ${text9}`);
 
   // sessionId stability: sessionId should stay stable across normal
   // rebuilds (Case 2 → Case 4 → Case 3). It's allowed to rotate exactly
