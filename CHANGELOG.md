@@ -2,6 +2,8 @@
 
 ## UNRELEASED
 
+- **Fix: classify and recover from Claude stream failures (issues #35, #43, #58)** — exhausted subscription limits reach Pi's model fallback, a transient overload before output retries once, and a tool-aware watchdog aborts half-open streams.
+
 - **Fix: better isolate AskClaude tool (issue #59)** — AskClaude children no longer inherit the user's `~/.claude` `CLAUDE.md` files or skill listing, and now always get Claude Code's system prompt preset instead of only when pi-side skills exist. Thanks @JAtkinsonKO.
 - **Fix: Bogus debug message about "record count mismatch" after switching providers** — the post-rebuild integrity check did not take `@file` expansion into account when switching providers.
 

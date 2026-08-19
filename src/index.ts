@@ -2,7 +2,7 @@ import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessage
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { query, type EffortLevel, type Query as ClaudeQuery, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -26,6 +26,7 @@ import {
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
+import { classifyFailure, decideRetry, stallTimeoutMs, StreamMonitor, TRANSIENT_RETRY_DELAY_MS } from "./stream-resilience.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -445,7 +446,7 @@ async function runIsolatedSummary(
 	options: SimpleStreamOptions | undefined,
 	stream: AssistantMessageEventStream,
 ): Promise<void> {
-	let sdkQuery: ReturnType<typeof query> | undefined;
+	let sdkQuery: ClaudeQuery | undefined;
 	let wasAborted = false;
 	const onAbort = () => {
 		wasAborted = true;
@@ -740,6 +741,7 @@ export const __test = {
 	syncSharedSession,
 	extractUserPromptBlocks,
 	consumeQuery,
+	consumeQueryWithRetry,
 	finalizeCurrentStream,
 	resultErrorText,
 	deliverToolResults,
@@ -1233,7 +1235,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
  *  whichever path handles it first (processStreamEvent or processAssistantMessage),
  *  and the MCP handler blocks the generator until pi delivers the tool result. */
 async function consumeQuery(
-	sdkQuery: ReturnType<typeof query>,
+	sdkQuery: ClaudeQuery,
 	customToolNameToPi: Map<string, string>,
 	model: Model<any>,
 	wasAborted: () => boolean,
@@ -1243,6 +1245,7 @@ async function consumeQuery(
 
 	for await (const message of sdkQuery) {
 		if (RECORD_STREAM_PATH) appendFileSync(RECORD_STREAM_PATH, `${JSON.stringify(message)}\n`);
+		queryCtx.streamMonitor?.onSdkEvent(message.type);
 		if (wasAborted()) break;
 		// Everything below the currentPiStream guard is content, which there is
 		// nowhere to put once a turn has ended on a tool call. These three are not
@@ -1262,15 +1265,17 @@ async function consumeQuery(
 			logServedContextWindow("result", message, model);
 			resultError = resultErrorText(message);
 			if (resultError !== undefined) {
-				debug(`consumeQuery: error result, subtype=${message.subtype}, error=${resultError}`);
+				const classified = classifyFailure(resultError, queryCtx.streamMonitor?.rateLimitRejected ?? false);
+				debug(`consumeQuery: error result classified as ${classified.kind}`);
 				if (queryCtx.turnOutput) {
 					queryCtx.turnOutput.stopReason = "error";
-					queryCtx.turnOutput.errorMessage = resultError;
+					queryCtx.turnOutput.errorMessage = classified.message;
 				}
 			}
 		}
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
+			queryCtx.streamMonitor?.noteRateLimitEvent(info);
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
 			if (info?.status === "rejected") {
 				const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
@@ -1327,6 +1332,76 @@ async function consumeQuery(
 	debug(`consumeQuery: for-await loop exited, wasAborted=${wasAborted()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
 
 	return { capturedSessionId };
+}
+
+interface QueryAttempt {
+	current: () => ClaudeQuery;
+	restart: () => void;
+	abort: () => void;
+}
+
+async function consumeQueryWithRetry(
+	attempt: QueryAttempt,
+	customToolNameToPi: Map<string, string>,
+	model: Model<any>,
+	wasAborted: () => boolean,
+	queryCtx: QueryContext,
+): Promise<{ capturedSessionId?: string }> {
+	for (let retriesUsed = 0; ; retriesUsed++) {
+		const monitor = new StreamMonitor({
+			idleMs: stallTimeoutMs(),
+			hasPendingWork: () => queryCtx.pendingToolCalls.size > 0,
+			onStall: (error) => {
+				if (queryCtx.turnOutput) {
+					queryCtx.turnOutput.stopReason = "error";
+					queryCtx.turnOutput.errorMessage = error.message;
+				}
+				attempt.abort();
+			},
+			log: debug,
+		});
+		queryCtx.streamMonitor = monitor;
+
+		let failure: unknown;
+		let outcome: { capturedSessionId?: string } | undefined;
+		try {
+			monitor.arm();
+			outcome = await consumeQuery(attempt.current(), customToolNameToPi, model, wasAborted, queryCtx);
+			if (monitor.stalled) failure = monitor.stallError;
+			else if (queryCtx.turnOutput?.stopReason === "error") failure = new Error(queryCtx.turnOutput.errorMessage);
+			if (!failure) return outcome;
+		} catch (error) {
+			failure = monitor.stalled ? monitor.stallError ?? error : error;
+		} finally {
+			monitor.stop();
+		}
+
+		const outputStarted = queryCtx.turnStarted || queryCtx.turnSawStreamEvent || queryCtx.turnSawToolCall
+			|| (queryCtx.turnOutput?.content.length ?? 0) > 0;
+		const decision = decideRetry({
+			failure,
+			rateLimitRejected: monitor.rateLimitRejected,
+			outputStarted,
+			retriesUsed,
+			aborted: wasAborted(),
+		});
+		debug(`consumeQueryWithRetry: attempt ${retriesUsed + 1} failed (${decision.kind}): ${decision.reason}`);
+
+		if (!decision.retry) {
+			if (queryCtx.turnOutput && decision.kind !== "fatal") {
+				queryCtx.turnOutput.stopReason = "error";
+				queryCtx.turnOutput.errorMessage = decision.message;
+			}
+			if (outcome) return outcome;
+			throw failure;
+		}
+
+		queryCtx.resetTurnState(model);
+		if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true };
+		await new Promise<void>((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS));
+		if (wasAborted()) throw failure;
+		attempt.restart();
+	}
 }
 
 /** The trailing user turn as content blocks, or null if there isn't one.
@@ -1547,10 +1622,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// that `isSingleUserTurn` is false, so the SDK no longer closes stdin on the
 	// first result — consumeQuery ends the stream explicitly instead, or the
 	// query would never terminate.
-	const promptStream = makePromptStream();
-	void promptStream.push(userMessage(promptBlocks ?? [{ type: "text", text: promptText }]))
-		.catch((error) => debug(`provider: initial prompt push rejected:`, error));
-	queryCtx.promptStream = promptStream;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
@@ -1611,10 +1682,23 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
-	// 3. Start SDK query and claim it for this context
+	// A retry needs a fresh prompt iterable because image prompt streams are
+	// single-use. Keep both handles mutable so abort and cleanup target the live
+	// attempt.
 	let wasAborted = false;
-	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
-	queryCtx.activeQuery = sdkQuery;
+	let promptStream!: PromptStream;
+	let sdkQuery!: ClaudeQuery;
+	const startAttempt = () => {
+		promptStream?.fail(new Error("query restarted after a transient failure"));
+		try { sdkQuery?.close(); } catch {}
+		promptStream = makePromptStream();
+		void promptStream.push(userMessage(promptBlocks ?? [{ type: "text", text: promptText }]))
+			.catch((error) => debug(`provider: initial prompt push rejected:`, error));
+		queryCtx.promptStream = promptStream;
+		sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
+		queryCtx.activeQuery = sdkQuery;
+	};
+	startAttempt();
 	activeQueryContexts.add(queryCtx);
 
 	// 4. Capture context for abort handling
@@ -1637,7 +1721,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	}
 
 	// Background consumer — runs until query ends
-	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx)
+	consumeQueryWithRetry(
+		{ current: () => sdkQuery, restart: startAttempt, abort: requestAbort },
+		customToolNameToPi,
+		model,
+		() => wasAborted,
+		queryCtx,
+	)
 		.then(async ({ capturedSessionId }) => {
 			debug(`provider: consumeQuery completed, stopReason=${queryCtx.turnOutput?.stopReason}, error=${queryCtx.turnOutput?.errorMessage}, aborted=${wasAborted}`);
 
