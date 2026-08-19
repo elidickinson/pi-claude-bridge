@@ -28,6 +28,9 @@ export class QueryContext {
 	 *  to the owning query when several queries are in flight — pairing a result
 	 *  to its call is done by id from Claude's tools/call _meta, not from here. */
 	turnToolCallIds: string[] = [];
+	/** Session id from the active attempt, retained through an aborted generator
+	 *  shutdown so provider finalization can still record it. */
+	capturedSessionId: string | undefined;
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
 

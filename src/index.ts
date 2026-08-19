@@ -1312,6 +1312,7 @@ async function consumeQuery(
 			case "system":
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
+					queryCtx.capturedSessionId = capturedSessionId;
 				}
 				break;
 			case "user":
@@ -1348,16 +1349,19 @@ async function consumeQueryWithRetry(
 	queryCtx: QueryContext,
 ): Promise<{ capturedSessionId?: string }> {
 	for (let retriesUsed = 0; ; retriesUsed++) {
+		const onStall = (error: Error): void => {
+			// After `result`, only generator shutdown is hung; preserve the recorded
+			// outcome and abort the generator.
+			if (!monitor.resultReceived && queryCtx.turnOutput) {
+				queryCtx.turnOutput.stopReason = "error";
+				queryCtx.turnOutput.errorMessage = error.message;
+			}
+			attempt.abort();
+		};
 		const monitor = new StreamMonitor({
 			idleMs: stallTimeoutMs(),
 			hasPendingWork: () => queryCtx.pendingToolCalls.size > 0,
-			onStall: (error) => {
-				if (queryCtx.turnOutput) {
-					queryCtx.turnOutput.stopReason = "error";
-					queryCtx.turnOutput.errorMessage = error.message;
-				}
-				attempt.abort();
-			},
+			onStall,
 			log: debug,
 		});
 		queryCtx.streamMonitor = monitor;
@@ -1376,8 +1380,13 @@ async function consumeQueryWithRetry(
 			monitor.stop();
 		}
 
+		if (monitor.stalled && monitor.resultReceived) {
+			debug("consumeQueryWithRetry: post-result stall during shutdown, keeping recorded outcome");
+			return { capturedSessionId: outcome?.capturedSessionId ?? queryCtx.capturedSessionId };
+		}
+
 		const outputStarted = queryCtx.turnStarted || queryCtx.turnSawStreamEvent || queryCtx.turnSawToolCall
-			|| (queryCtx.turnOutput?.content.length ?? 0) > 0;
+			|| (queryCtx.turnOutput?.content.length ?? 0) > 0 || queryCtx.turnToolCallIds.length > 0;
 		const decision = decideRetry({
 			failure,
 			rateLimitRejected: monitor.rateLimitRejected,
@@ -1397,7 +1406,6 @@ async function consumeQueryWithRetry(
 		}
 
 		queryCtx.resetTurnState(model);
-		if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true };
 		await new Promise<void>((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS));
 		if (wasAborted()) throw failure;
 		attempt.restart();
@@ -1596,8 +1604,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
-	const { sessionId: resumeSessionId } = syncResult;
+	let syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	let resumeSessionId = syncResult.sessionId;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
 
@@ -1617,11 +1625,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		promptText = "[continue]";
 	}
 
-	// Always stream the prompt rather than passing a string: a parked input
-	// generator is what lets us write steers to CC's stdin mid-turn. The cost is
-	// that `isSingleUserTurn` is false, so the SDK no longer closes stdin on the
-	// first result — consumeQuery ends the stream explicitly instead, or the
-	// query would never terminate.
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
@@ -1657,7 +1660,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
 	const childEnv = { ...process.env, ...CC_CHILD_ENV };
-	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+	const makeQueryOptions = (resume: string | null | undefined): NonNullable<Parameters<typeof query>[0]["options"]> => ({
 		cwd,
 		env: childEnv,
 		tools: [],
@@ -1671,10 +1674,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		extraArgs,
 		...(effort ? { effort } : {}),
 		...(mcpServers ? { mcpServers } : {}),
-		...(resumeSessionId ? { resume: resumeSessionId } : {}),
+		...(resume ? { resume } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 		...makeCliDebugOptions("provider"),
-	};
+	});
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -1682,20 +1685,29 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
-	// A retry needs a fresh prompt iterable because image prompt streams are
-	// single-use. Keep both handles mutable so abort and cleanup target the live
-	// attempt.
+	// Keep handles mutable so abort and cleanup target the current attempt.
 	let wasAborted = false;
 	let promptStream!: PromptStream;
 	let sdkQuery!: ClaudeQuery;
-	const startAttempt = () => {
+	const startAttempt = (retry = false) => {
+		if (retry) {
+			if (syncResult.preserveSharedSession) {
+				resumeSessionId = null;
+			} else {
+				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
+				syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+				resumeSessionId = syncResult.sessionId;
+			}
+		}
 		promptStream?.fail(new Error("query restarted after a transient failure"));
 		try { sdkQuery?.close(); } catch {}
+		queryCtx.capturedSessionId = undefined;
+		// Retry attempts need a fresh prompt stream; image streams are single-use.
 		promptStream = makePromptStream();
 		void promptStream.push(userMessage(promptBlocks ?? [{ type: "text", text: promptText }]))
 			.catch((error) => debug(`provider: initial prompt push rejected:`, error));
 		queryCtx.promptStream = promptStream;
-		sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
+		sdkQuery = query({ prompt: promptStream.stream, options: makeQueryOptions(resumeSessionId) });
 		queryCtx.activeQuery = sdkQuery;
 	};
 	startAttempt();
@@ -1722,7 +1734,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// Background consumer — runs until query ends
 	consumeQueryWithRetry(
-		{ current: () => sdkQuery, restart: startAttempt, abort: requestAbort },
+		{ current: () => sdkQuery, restart: () => startAttempt(true), abort: requestAbort },
 		customToolNameToPi,
 		model,
 		() => wasAborted,

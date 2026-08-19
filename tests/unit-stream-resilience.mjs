@@ -1,5 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSession, deleteSession } from "cc-session-io";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import { QueryContext } from "../src/query-state.js";
 import {
@@ -31,7 +36,6 @@ async function* streamOf(messages) {
 }
 
 async function* failedStream(error) {
-	yield* [];
 	throw error;
 }
 
@@ -61,6 +65,18 @@ describe("subscription limit fallback", () => {
 		assert.equal(classified.kind, "rate-limit");
 		assert.doesNotMatch(classified.message, /available balance/);
 		assert.equal(isRetryableAssistantError(asPiMessage(classified.message)), true);
+	});
+
+	it("keeps rejected fallback authoritative over billing words but not auth", () => {
+		assert.equal(classifyFailure(`${LIMIT_TEXT}: billing quota exceeded`).kind, "rate-limit");
+		assert.equal(classifyFailure("permission denied", true).kind, "fatal");
+	});
+
+	it("latches rejection after later allowed warnings", () => {
+		const monitor = new StreamMonitor({ idleMs: 0, hasPendingWork: () => false, onStall: () => {} });
+		monitor.noteRateLimitEvent({ status: "rejected" });
+		monitor.noteRateLimitEvent({ status: "allowed_warning" });
+		assert.equal(monitor.rateLimitRejected, true);
 	});
 
 	it("never retries subscription, auth, billing, or permission failures", () => {
@@ -136,6 +152,28 @@ describe("transient overload retry", () => {
 		assert.deepEqual(events.filter((event) => event.type === "text_end").map((event) => event.content), ["partial answer"]);
 	});
 
+	it("blocks retry when tool work survives a resetTurnState", async () => {
+		const { context } = harness();
+		context.turnToolCallIds.push("toolu_01");
+		context.resetTurnState(model);
+		let starts = 0;
+		const attempt = {
+			current: () => {
+				starts++;
+				return failedStream(new Error(OVERLOAD_TEXT));
+			},
+			restart: () => { assert.fail("must not restart after tool work survived reset"); },
+			abort: () => {},
+		};
+
+		await assert.rejects(
+			__test.consumeQueryWithRetry(attempt, new Map(), model, () => false, context),
+			/temporarily limiting requests/,
+		);
+		assert.equal(starts, 1);
+		assert.deepEqual(context.turnToolCallIds, ["toolu_01"]);
+	});
+
 	it("stops after one failed retry", async () => {
 		const { context } = harness();
 		let starts = 0;
@@ -153,6 +191,30 @@ describe("transient overload retry", () => {
 			/temporarily limiting requests/,
 		);
 		assert.equal(starts, 2);
+	});
+});
+
+describe("retry session resume", () => {
+	it("rotates the retry resume session and clears its rebuild markers", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "retry-resume-"));
+		const sessionId = randomUUID();
+		try {
+			createSession({ sessionId, projectPath: cwd }).save();
+			__test.setSharedSession({ sessionId, cursor: 0, cwd, needsRebuild: true, forceRotate: true });
+			const result = __test.syncSharedSession([
+				{ role: "user", content: "first", timestamp: Date.now() },
+				{ role: "assistant", content: [{ type: "text", text: "done" }], timestamp: Date.now() },
+				{ role: "user", content: "retry this", timestamp: Date.now() },
+			], cwd);
+			assert.notEqual(result.sessionId, sessionId);
+			assert.deepEqual(__test.getSharedSession(), { sessionId: result.sessionId, cursor: 2, cwd });
+		} finally {
+			const rotatedSessionId = __test.getSharedSession()?.sessionId;
+			__test.resetSharedSession();
+			if (rotatedSessionId && rotatedSessionId !== sessionId) deleteSession(rotatedSessionId, cwd);
+			deleteSession(sessionId, cwd);
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -204,6 +266,90 @@ describe("idle stall watchdog", () => {
 			await __test.consumeQueryWithRetry(attempt, new Map(), model, () => false, context);
 			assert.equal(starts, 2);
 			assert.equal(context.turnOutput.stopReason, "stop");
+		} finally {
+			clearInterval(keepAlive);
+			if (previous === undefined) delete process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS;
+			else process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS = previous;
+		}
+	});
+});
+
+describe("post-result shutdown watchdog", () => {
+	it("stalls after a result while generator shutdown is still pending", async () => {
+		let stalled;
+		const monitor = new StreamMonitor({
+			idleMs: 20,
+			hasPendingWork: () => false,
+			onStall: (error) => { stalled = error; },
+		});
+		monitor.arm();
+		monitor.onSdkEvent("result");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		assert.ok(stalled instanceof StreamStalledError);
+		assert.equal(monitor.resultReceived, true);
+	});
+
+	it("preserves a successful turn and the captured session id when shutdown hangs after result", async () => {
+		const previous = process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS;
+		process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS = "20";
+		const keepAlive = setInterval(() => {}, 1_000);
+		try {
+			const { context } = harness();
+			let starts = 0;
+			let release;
+			const attempt = {
+				current: () => {
+					starts++;
+					return (async function* () {
+						yield { type: "system", subtype: "init", session_id: "sess-post-result" };
+						yield { type: "result", subtype: "success", result: "done" };
+						await new Promise((resolve) => { release = resolve; });
+					})();
+				},
+				restart: () => { assert.fail("must not restart after a successful result"); },
+				abort: () => release?.(),
+			};
+
+			const outcome = await __test.consumeQueryWithRetry(attempt, new Map(), model, () => false, context);
+
+			assert.equal(starts, 1);
+			assert.equal(context.turnOutput.stopReason, "stop");
+			assert.equal(context.turnOutput.errorMessage, undefined);
+			assert.equal(outcome.capturedSessionId, "sess-post-result");
+		} finally {
+			clearInterval(keepAlive);
+			if (previous === undefined) delete process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS;
+			else process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS = previous;
+		}
+	});
+
+	it("preserves a failing result when shutdown hangs", async () => {
+		const previous = process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS;
+		process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS = "20";
+		const keepAlive = setInterval(() => {}, 1_000);
+		try {
+			const { context } = harness();
+			let starts = 0;
+			let release;
+			const attempt = {
+				current: () => {
+					starts++;
+					return (async function* () {
+						yield { type: "system", subtype: "init", session_id: "sess-post-error" };
+						yield { type: "result", subtype: "success", is_error: true, result: LIMIT_TEXT };
+						await new Promise((resolve) => { release = resolve; });
+					})();
+				},
+				restart: () => { assert.fail("must not restart after a failing result"); },
+				abort: () => release?.(),
+			};
+
+			const outcome = await __test.consumeQueryWithRetry(attempt, new Map(), model, () => false, context);
+
+			assert.equal(starts, 1);
+			assert.equal(context.turnOutput.stopReason, "error");
+			assert.match(context.turnOutput.errorMessage, /Rate limit \(429\)/);
+			assert.equal(outcome.capturedSessionId, "sess-post-error");
 		} finally {
 			clearInterval(keepAlive);
 			if (previous === undefined) delete process.env.CLAUDE_BRIDGE_STALL_TIMEOUT_MS;
