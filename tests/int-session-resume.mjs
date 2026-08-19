@@ -150,48 +150,72 @@ try {
   await idle5;
 
 
-  // Turn 6: Provider turn after abort — should NOT get "conversation not found"
-  console.log("Turn 6: Provider turn after abort (should recover)...");
-  const text6 = await promptAndWait(
-    "What were all three words from earlier? Reply with just the three words separated by commas."
-  );
-  console.log(`  Response: ${text6.slice(0, 80)}`);
-  const lower6 = text6.toLowerCase();
-  if (!lower6.includes(WORD_A)) throw new Error(`Turn 6 response missing '${WORD_A}': ${text6}`);
-  if (!lower6.includes(WORD_B)) throw new Error(`Turn 6 response missing '${WORD_B}': ${text6}`);
-  if (!lower6.includes(WORD_C)) throw new Error(`Turn 6 response missing '${WORD_C}': ${text6}`);
-
-  // Turn 7: AskClaude shared mode — should see WORD_C which was only told to the non-provider model
+  // Turn 6: AskClaude after abort must not resume the invalidated parent.
+  const ephemeralMarkersBefore = (
+    readFileSync(DEBUG_LOG, "utf8").match(/askClaude: created ephemeral session/g) || []
+  ).length;
   console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
   await send({ type: "set_model", provider: OTHER_PROVIDER, modelId: OTHER_MODEL });
+  console.log("Turn 6: AskClaude shared mode after invalidation...");
+  await promptAndWait(
+    'Use the AskClaude tool with prompt="What were all three words mentioned earlier? Reply with just the words."'
+  );
+  console.log(`  AskClaude args: ${JSON.stringify(lastToolArgs)}`);
+  console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
+  const ephemeralMarkersAfter = (
+    readFileSync(DEBUG_LOG, "utf8").match(/askClaude: created ephemeral session/g) || []
+  ).length;
+  if (ephemeralMarkersAfter <= ephemeralMarkersBefore) {
+    throw new Error("Turn 6 AskClaude resumed or rebuilt the invalidated shared session instead of creating a new ephemeral one");
+  }
+  if (!promptContains(WORD_C) && !lastToolResult?.toLowerCase().includes(WORD_C)) {
+    throw new Error(`Turn 6 AskClaude result missing '${WORD_C}': ${lastToolResult}`);
+  }
 
-
-  console.log("Turn 7: AskClaude shared mode (should see non-provider context)...");
+  // Turn 7: Provider turn after abort — should recover.
+  console.log(`Switching back to ${BRIDGE_MODEL}...`);
+  await send({ type: "set_model", provider: bridgeProvider, modelId: bridgeModelId });
+  console.log("Turn 7: Provider turn after abort...");
   const text7 = await promptAndWait(
+    "What were all three words from earlier? Reply with just the three words separated by commas."
+  );
+  console.log(`  Response: ${text7.slice(0, 80)}`);
+  const lower7 = text7.toLowerCase();
+  if (!lower7.includes(WORD_A)) throw new Error(`Turn 7 response missing '${WORD_A}': ${text7}`);
+  if (!lower7.includes(WORD_B)) throw new Error(`Turn 7 response missing '${WORD_B}': ${text7}`);
+  if (!lower7.includes(WORD_C)) throw new Error(`Turn 7 response missing '${WORD_C}': ${text7}`);
+
+  // Turn 8: AskClaude shared mode — should see non-provider context.
+  console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
+  await send({ type: "set_model", provider: OTHER_PROVIDER, modelId: OTHER_MODEL });
+  console.log("Turn 8: AskClaude shared mode (should see non-provider context)...");
+  lastToolResult = null;
+  const text8 = await promptAndWait(
     'Use the AskClaude tool with prompt="What was the third word mentioned earlier? Reply with just the word."'
   );
   console.log(`  AskClaude args: ${JSON.stringify(lastToolArgs)}`);
   console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
+  if (lastToolResult === null) {
+    throw new Error("Turn 8: AskClaude tool was not called");
+  }
   if (promptContains(WORD_C)) {
     console.log(`  INCONCLUSIVE: ${OTHER_MODEL} put '${WORD_C}' in the prompt, so a correct answer proves nothing about shared context`);
-  } else if (!lastToolResult?.toLowerCase().includes(WORD_C)) {
-    throw new Error(`Turn 7 AskClaude tool result missing '${WORD_C}': ${lastToolResult}`);
+  } else if (!lastToolResult.toLowerCase().includes(WORD_C)) {
+    throw new Error(`Turn 8 AskClaude tool result missing '${WORD_C}': ${lastToolResult}`);
   }
 
-  // Turn 8: AskClaude isolated mode — should NOT see conversation history
-  console.log("Turn 8: AskClaude isolated mode (should not see context)...");
+  // Turn 9: AskClaude isolated mode — should NOT see conversation history.
+  console.log("Turn 9: AskClaude isolated mode (should not see context)...");
   lastToolResult = null;
-  const text8 = await promptAndWait(
+  const text9 = await promptAndWait(
     'Use the AskClaude tool with prompt="What was the third word mentioned earlier? If you don\'t know, say UNKNOWN." and isolated=true'
   );
   console.log(`  AskClaude args: ${JSON.stringify(lastToolArgs)}`);
   console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
   if (promptContains(WORD_C)) {
-    // The ~1-in-5 flake: isolated CC is echoing a word it was handed, not one it
-    // recovered from a session it should not have seen.
     console.log(`  INCONCLUSIVE: ${OTHER_MODEL} put '${WORD_C}' in the prompt, so isolation cannot be judged from the response`);
   } else if (lastToolResult?.toLowerCase().includes(WORD_C)) {
-    throw new Error(`Turn 8 isolated AskClaude should not know '${WORD_C}' (not in its prompt, so this is a real context leak): ${lastToolResult}`);
+    throw new Error(`Turn 9 isolated AskClaude should not know '${WORD_C}' (not in its prompt, so this is a real context leak): ${lastToolResult}`);
   }
 
   // sessionId stability: sessionId should stay stable across normal
