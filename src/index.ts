@@ -1281,7 +1281,7 @@ async function consumeQuery(
 				const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
 				piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
 			} else if (info?.status === "allowed_warning") {
-				piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
+				piUI?.notify(`Claude rate limit warning: ${Math.round((info.utilization ?? 0) * 100)}% used (${info.rateLimitType ?? ""})`, "warning");
 			}
 			continue;
 		}
