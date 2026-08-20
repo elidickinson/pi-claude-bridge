@@ -6,3 +6,11 @@ eli/.DS_Store
 eli/
 capture-out.jsonl
 prompt-too-long-fable.jsonl
+
+# Agent tooling state
+.case/
+
+# Secrets: .env.test is config only and stays tracked
+.env
+.env.*
+!.env.test
