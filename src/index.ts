@@ -70,8 +70,10 @@ const CC_CHILD_ENV = {
 // is the same one that reads settings.json, where Bedrock/Vertex users keep
 // `env` and `apiKeyHelper`. Patterns are matched with picomatch against absolute
 // paths; "**/CLAUDE.md" covers the user, ancestor, project and .claude/ copies,
-// while rules need their own. Managed/policy memory is not excludable by design.
-const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/.claude/rules/**"];
+// while rules need their own. CLAUDE.local.md is a different filename, not a
+// CLAUDE.md that "**/CLAUDE.md" matches, so it needs its own pattern.
+// Managed/policy memory is not excludable by design.
+const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/CLAUDE.local.md", "**/.claude/rules/**"];
 
 // Ensure log directories exist when debug is enabled
 if (DEBUG) {
@@ -886,14 +888,31 @@ function contextForToolResults(results: McpResult[]): QueryContext | undefined {
 	return undefined;
 }
 
+// Pi tool name → the name Claude Code sees for it. Every pi tool is bridged as MCP,
+// so a session rebuilt with this map records `mcp__custom-tools__bash` where one
+// rebuilt without it records the builtin `Bash` — a tool the child really has, and
+// so a call it can be led into replaying. The provider path builds this from
+// context.tools; the AskClaude path has no Context and builds it from pi's active
+// tool names, which is the same set minus the AskClaude tool itself.
+function mapCustomToolNamesToSdk(toolNames: Iterable<string>, excludeToolName?: string): Map<string, string> {
+	const customToolNameToSdk = new Map<string, string>();
+	for (const name of toolNames) {
+		if (name === excludeToolName) continue;
+		const sdkName = `${MCP_TOOL_PREFIX}${name}`;
+		customToolNameToSdk.set(name, sdkName);
+		customToolNameToSdk.set(name.toLowerCase(), sdkName);
+	}
+	return customToolNameToSdk;
+}
+
 function resolveMcpTools(context: Context, excludeToolName?: string): {
 	mcpTools: Tool[];
 	customToolNameToSdk: Map<string, string>;
 	customToolNameToPi: Map<string, string>;
 } {
 	const mcpTools: Tool[] = [];
-	const customToolNameToSdk = new Map<string, string>();
 	const customToolNameToPi = new Map<string, string>();
+	const customToolNameToSdk = mapCustomToolNamesToSdk((context.tools ?? []).map((tool) => tool.name), excludeToolName);
 
 	if (!context.tools) return { mcpTools, customToolNameToSdk, customToolNameToPi };
 
@@ -901,8 +920,6 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 		if (tool.name === excludeToolName) continue;
 		const sdkName = `${MCP_TOOL_PREFIX}${tool.name}`;
 		mcpTools.push(tool);
-		customToolNameToSdk.set(tool.name, sdkName);
-		customToolNameToSdk.set(tool.name.toLowerCase(), sdkName);
 		customToolNameToPi.set(sdkName, tool.name);
 		customToolNameToPi.set(sdkName.toLowerCase(), tool.name);
 	}
@@ -1741,6 +1758,7 @@ async function promptAndWait(
 		thinking?: string;
 		isolated?: boolean;
 		context?: Context["messages"];
+		customToolNameToSdk?: Map<string, string>;
 	},
 ): Promise<{ responseText: string; stopReason: string }> {
 	const cwd = process.cwd();
@@ -1762,7 +1780,7 @@ async function promptAndWait(
 		} else {
 			// No provider session yet — create one from pi's context
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel);
+			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, options.customToolNameToSdk, cliModel);
 			resumeSessionId = sync.sessionId;
 		}
 	}
@@ -1821,7 +1839,13 @@ async function promptAndWait(
 			// without the tool and permission guidance the bridge relies on everywhere else.
 			// Whether pi has skills to append is unrelated to whether the child needs that.
 			systemPrompt: { type: "preset", preset: "claude_code", append: skillsBlock },
-			settingSources: ["user", "project"] as SettingSource[],
+			// "project" only: dropping "user" finishes what claudeMdExcludes and skills: []
+			// started, since ~/.claude/settings.json is also where user-level agents, hooks,
+			// outputStyle and plugins come from — the rest of the estate an AskClaude child
+			// has no business inheriting. Cost of the narrowing: a `env`/`apiKeyHelper` kept
+			// in user settings (Bedrock/Vertex) no longer reaches this child, so auth has to
+			// come from the environment the bridge already forwards.
+			settingSources: ["project"] as SettingSource[],
 			extraArgs,
 			...(resumeSessionId ? { resume: resumeSessionId } : {}),
 			...(options?.isolated ? { persistSession: false } : {}),
@@ -2192,6 +2216,7 @@ export default function (pi: ExtensionAPI) {
 						thinking: params.thinking,
 						isolated,
 						context: isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
+						customToolNameToSdk: isolated ? undefined : mapCustomToolNamesToSdk(pi.getActiveTools(), askClaudeToolName),
 					});
 					clearInterval(progressInterval);
 					onUpdate?.({ content: [{ type: "text", text: "" }], details: {} });
