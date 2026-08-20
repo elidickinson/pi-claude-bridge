@@ -7,9 +7,33 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSession, deleteSession, openSession } from "cc-session-io";
+import { createSession, openSession } from "cc-session-io";
 
 const { __test } = await import("../src/index.js");
+
+/**
+ * A throwaway project directory plus a throwaway CLAUDE_CONFIG_DIR for one test.
+ *
+ * cc-session-io falls back to ~/.claude when CLAUDE_CONFIG_DIR is unset, and the
+ * unit runner does not set it, so these tests used to seed and rebuild sessions
+ * inside the developer's real projects directory — and read back whatever earlier
+ * runs had left there, which is how the record-count assertion went flaky.
+ */
+function createSandbox() {
+	const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+	const claudeDir = mkdtempSync(join(tmpdir(), "sync-shared-session-cfg-"));
+	const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+	process.env.CLAUDE_CONFIG_DIR = claudeDir;
+	return {
+		cwd,
+		cleanup() {
+			if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+			else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+			rmSync(claudeDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		},
+	};
+}
 
 describe("syncSharedSession", () => {
 	afterEach(() => {
@@ -24,7 +48,8 @@ describe("syncSharedSession", () => {
 	// path, which cannot reach syncSharedSession at all, so the branch read as
 	// covered for a case that never happens.
 	it("starts a fresh session for a shorter context and preserves the parent's", () => {
-		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+		const sandbox = createSandbox();
+		const { cwd } = sandbox;
 		try {
 			const mainSession = {
 				sessionId: "11111111-1111-4111-8111-111111111111",
@@ -53,7 +78,7 @@ describe("syncSharedSession", () => {
 			);
 			assert.deepEqual(__test.getSharedSession(), mainSession);
 		} finally {
-			rmSync(cwd, { recursive: true, force: true });
+			sandbox.cleanup();
 		}
 	});
 
@@ -62,7 +87,8 @@ describe("syncSharedSession", () => {
 	// messages told every user who at-mentioned a file before switching providers
 	// that their session was corrupt, and asked them to open an issue about it.
 	it("does not report a count mismatch when a rebuild carries an attachment", () => {
-		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+		const sandbox = createSandbox();
+		const { cwd } = sandbox;
 		const sessionId = randomUUID();
 		const prompt = "Review @fixture.txt and remember it.";
 		const notices = [];
@@ -101,8 +127,7 @@ describe("syncSharedSession", () => {
 			);
 			assert.deepEqual(notices, []);
 		} finally {
-			deleteSession(sessionId, cwd);
-			rmSync(cwd, { recursive: true, force: true });
+			sandbox.cleanup();
 		}
 	});
 });
