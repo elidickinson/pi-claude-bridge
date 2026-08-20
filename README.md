@@ -49,6 +49,12 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 - **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
 - **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
 
+### Context isolation
+
+AskClaude children do not inherit your `~/.claude` context. `CLAUDE.md` files (the user-level one, ancestor and project copies, and `.claude/rules/`) are excluded, and the child is started with no skills of its own, so it does not see Claude Code's global skill listing. The reasoning is that pi owns the context on this path: a persona written for a different harness should not arrive stamped "these instructions override any default behavior" and outrank pi's own AGENTS.md. Managed policy memory is not excludable and still loads.
+
+Pi's own skills are a separate channel and still reach the child, appended to the system prompt, unless you set `appendSkills: false`. This is worth knowing if you expect a child to follow an instruction that only exists in your global `CLAUDE.md`: it will not. Put it in a pi-side skill or in AGENTS.md instead.
+
 ## Configuration
 
 Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global).
@@ -96,7 +102,12 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 
 `npm run test:unit` for offline tests (`tests/unit-*.mjs`: queue, import, skills). 
 
-`npm test` for the full suite, which adds integration tests that hit APIs (`tests/int-*.{sh,mjs}`: smoke, multi-turn, cache, session-resume, session-rebuild, tool-message). Set `CLAUDE_BRIDGE_TESTING_ALT_MODEL` in `.env.test` for the alt-provider smoke test (e.g. `openrouter/z-ai/glm-4.7-flash`).
+`npm test` for the full suite, which adds integration tests that hit APIs (`tests/int-*.{sh,mjs}`: smoke, multi-turn, cache, session-resume, session-rebuild, tool-message). The alt-provider tests need two variables in `.env.test`, and both are required: `require_env` aborts the run if either is missing.
+
+- `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER` — the pi provider to run the non-claude-bridge side of the test against, e.g. `openrouter`
+- `CLAUDE_BRIDGE_TESTING_ALT_MODEL` — the model ID **without** the provider prefix, e.g. `google/gemini-2.5-flash`
+
+The model must tolerate reasoning being disabled: pi sends reasoning effort `none` when thinking is off, and some OpenRouter endpoints reject that outright.
 
 Integration tests spawn real `pi` and Claude Code subprocesses, so they need write access to `~/.claude` for CC's session state — a sandbox that blocks it makes the next turn's `--resume` fail with `No conversation found with session ID`. The RPC harness probes for this at startup and fails fast.
 
@@ -108,6 +119,11 @@ Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 - **Per-query Claude Code CLI logs** at `~/.pi/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log` — the CC subprocess's own debug stream, one file per `query()` call. Tags are `provider` (main turn) or `askclaude` (sub-delegation). Useful when a resume fails or CC misbehaves internally — shows the CLI's own view of session loading, API requests, and tool calls.
 
 When filing a bug about a session-resume failure (e.g. "No conversation found"), the most useful attachments are the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file for the failing query.
+
+Two other environment variables matter here:
+
+- **`CLAUDE_CONFIG_DIR`** — Claude Code's own variable, honored by the bridge everywhere it opens, creates or deletes a session. It decides which directory the session JSONL files are read from and written to, so it is the first thing to check when resume fails: if the bridge and the `claude` binary disagree about it, the session the bridge wrote is not the one CC looks for. Its current value is included in the session-verify warning and in the debug log, and it appears as `(unset)` when it isn't set.
+- **`CLAUDE_BRIDGE_RECORD_STREAM=<path>`** — appends every SDK message the bridge sees to that path, one JSON object per line. This is the capture mechanism for replay fixtures (`tests/lib/record-sdk-streams.mjs`), so unit tests can assert against message shapes Claude Code really emitted. Not needed for normal debugging.
 
 ## Known issues
 

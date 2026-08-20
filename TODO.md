@@ -290,11 +290,14 @@ in CI; live shadow execution, which recorded-traffic replay subsumes at no API c
   "the cursor/cache path got exercised", so it cannot simply be dropped; making the
   prompt harder to satisfy from context would be the fix.
 
-- **verifyWrittenSession failure paths untested**: The helper throws on
-  missing file / record-count mismatch / malformed JSONL / sessionId drift,
-  but no unit test deliberately induces each failure to confirm the error
-  messages stay useful. Low priority — the logic is simple and visual
-  inspection of the current code is enough for now.
+- **verifyWrittenSession: one failure path untested**: The helper does not
+  throw. It returns an array of warning strings and lets the caller decide how
+  to surface them; the `index.ts` wrapper fans each one out to the debug log, a
+  `piUI.notify` and a `diagDump`. `tests/unit-session-integrity.mjs` now
+  induces and asserts four of the five paths (missing file, record-count
+  mismatch, sessionId drift, malformed JSONL) plus the clean round-trip. The
+  remaining gap is the file-unreadable path, where `statSync` succeeds but
+  `readFileSync` throws. Low priority.
 
 ## Deferred
 
