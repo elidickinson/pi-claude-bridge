@@ -1620,6 +1620,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		cwd,
 		env: childEnv,
 		tools: [],
+		// No allowDangerouslySkipPermissions alongside this, deliberately. The SDK
+		// types document it as "must be set to true when using bypassPermissions",
+		// but nothing enforces it: the two options become independent argv flags
+		// with no validation, and the CLI accepts bypassPermissions on its own.
+		// Verified by execution on 0.2.141 and 0.3.238 — permissions really are
+		// bypassed either way (a Write ran unprompted and the file appeared). The
+		// one path that does enforce the pairing is runtime escalation via
+		// setPermissionMode(), which the bridge never calls. If a future SDK starts
+		// enforcing it here too, this is the note that explains the failure.
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
 		settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
@@ -1856,6 +1865,11 @@ async function promptAndWait(
 			cwd,
 			env: { ...process.env, ...CC_CHILD_ENV },
 			permissionMode: "bypassPermissions",
+			// Without this the SDK emits no stream_event messages at all, so the
+			// stream_event case below never runs and onStreamUpdate never fires
+			// during generation — the answer arrives in one lump via the result
+			// fallback, with no live tool-call progress.
+			includePartialMessages: true,
 			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 			skills: [],
 			...(disallowedTools.length ? { disallowedTools } : {}),
