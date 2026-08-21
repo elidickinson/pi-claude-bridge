@@ -14,7 +14,7 @@ import { deleteSession } from "cc-session-io";
 import { activeQueryContexts, bridgeState, promptCaptures } from "./bridge-state.js";
 import { CC_CHILD_ENV, CLAUDE_MD_EXCLUDES, claudeCodeSettings, markStartupNoticeShown } from "./config.js";
 import { extractUserPrompt, extractUserPromptBlocks } from "./convert.js";
-import { debug, diagDump, makeCliDebugOptions } from "./debug.js";
+import { DEBUG, debug, diagDump, makeCliDebugOptions } from "./debug.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { claudeCodeModelId } from "./models.js";
 import { projectPromptCapture } from "./prompt-capture.js";
@@ -46,8 +46,13 @@ function extractAllToolResults(context: Context): McpResult[] {
 	const { results, stopIdx } = _extractAllToolResults(context.messages as unknown as Array<{ role: string; [key: string]: unknown }>);
 	debug(`extractAllToolResults: ${results.length} results from ${context.messages.length} msgs, stopped at index ${stopIdx}`);
 	debug(`extractAllToolResults: all msg roles:`, context.messages.map((m, i) => `[${i}]${m.role}`).join(" "));
-	for (let r = 0; r < results.length; r++) {
-		debug(`extractAllToolResults: result[${r}] id=${results[r].toolCallId}${results[r].isError ? " ERROR" : ""} preview:`, JSON.stringify(results[r].content).slice(0, 150));
+	// Gated on the flag rather than left for debug() to discard: arguments are
+	// evaluated before the call, so this serialized every tool result in full on
+	// every turn even with logging off — and tool results carry file contents.
+	if (DEBUG) {
+		for (let r = 0; r < results.length; r++) {
+			debug(`extractAllToolResults: result[${r}] id=${results[r].toolCallId}${results[r].isError ? " ERROR" : ""} preview:`, JSON.stringify(results[r].content).slice(0, 150));
+		}
 	}
 	return results;
 }
@@ -473,7 +478,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 					queryCtx.activeQuery = null;
 					activeQueryContexts.delete(queryCtx);
 				}
-				sdkQuery.close();
+				try { sdkQuery.close(); } catch { /* the CLI is already gone; nothing to close */ }
 			});
 	};
 

@@ -158,6 +158,11 @@ async function promptAndWait(
 	// removes the Skill tool and the listing with it — but AskClaude runs on CC's native
 	// tools, so it has to be asked for. Pi-side skills still arrive via skillsBlock below,
 	// which is meant to be the only channel.
+	//
+	// Checked before query(), not after: an already-aborted signal used to spawn a
+	// Claude Code subprocess and then immediately interrupt and close it. The abort
+	// arriving later is still handled below.
+	if (signal?.aborted) throw new Error("Aborted");
 	const sdkQuery = query({
 		prompt,
 		options: {
@@ -198,7 +203,6 @@ async function promptAndWait(
 		wasAborted = true;
 		sdkQuery.interrupt().catch(() => { try { sdkQuery.close(); } catch {} });
 	};
-	if (signal?.aborted) { onAbort(); throw new Error("Aborted"); }
 	signal?.addEventListener("abort", onAbort, { once: true });
 
 	let responseText = "";
@@ -271,7 +275,9 @@ async function promptAndWait(
 		return { responseText, stopReason };
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
-		sdkQuery.close();
+		// Guarded like every other close on this path: a throw here would replace
+		// whatever the try block was returning or raising with a cleanup error.
+		try { sdkQuery.close(); } catch { /* already closed */ }
 	}
 }
 

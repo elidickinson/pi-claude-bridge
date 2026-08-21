@@ -14,7 +14,13 @@ import { dirname, join } from "path";
 
 export const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
 export const DEBUG_LOG_PATH = process.env.CLAUDE_BRIDGE_DEBUG_PATH || join(homedir(), ".pi", "agent", "claude-bridge.log");
-export const DIAG_LOG_PATH = join(homedir(), ".pi", "agent", "claude-bridge-diag.log");
+// Derived from the debug path rather than resolved independently, so that the
+// redirect tests/lib/setup.mjs installs covers this file too. Pinned to its own
+// name so a redirect cannot make the two logs collide. Resolving it from homedir
+// meant a test that hit a diagDump path appended fixture data to the developer's
+// real diagnostic log — the exact failure the redirect exists to prevent, and
+// invisible because diagDump is silent on success.
+export const DIAG_LOG_PATH = join(dirname(DEBUG_LOG_PATH), "claude-bridge-diag.log");
 
 // CLAUDE_BRIDGE_RECORD_STREAM=<path> appends every SDK message consumeQuery sees,
 // one JSON object per line. Used by tests/lib/record-sdk-streams.mjs to capture
@@ -77,6 +83,14 @@ export function makeCliDebugOptions(tag: string): { debug?: boolean; debugFile?:
 export function diagDump(label: string, data: Record<string, unknown>) {
 	const ts = new Date().toISOString();
 	const entry = { ts, moduleInstanceId, label, ...data };
-	appendFileSync(DIAG_LOG_PATH, JSON.stringify(entry) + "\n");
+	// The directory is only pre-created when DEBUG is on, but this dump is
+	// unconditional — and it runs on "should never happen" paths, where throwing
+	// an ENOENT would replace the fault being recorded with one about recording it.
+	try {
+		mkdirSync(dirname(DIAG_LOG_PATH), { recursive: true });
+		appendFileSync(DIAG_LOG_PATH, JSON.stringify(entry) + "\n");
+	} catch {
+		// Losing the dump is strictly better than masking what it was documenting.
+	}
 	debug(`DIAG: ${label} (see ${DIAG_LOG_PATH})`);
 }
