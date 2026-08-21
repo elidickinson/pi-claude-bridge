@@ -2,7 +2,7 @@
 // Extracted so they can be tested without pulling in the full extension runtime.
 
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
-import type { Message as SessionMessage } from "cc-session-io";
+import type { ContentBlock, Message as SessionMessage } from "cc-session-io";
 import { pascalCase } from "change-case";
 import { MCP_TOOL_PREFIX } from "./skills.js";
 
@@ -72,11 +72,11 @@ export function messageContentToText(
 // one keeps the block array shape instead (also what CC writes for screenshots).
 function toolResultContent(
 	content: string | Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
-): string | Array<Record<string, unknown>> {
+): string | ContentBlock[] {
 	if (typeof content === "string" || !Array.isArray(content)) return messageContentToText(content) || "";
 	const images = content.filter((b) => b.type === "image" && b.data && b.mimeType);
 	if (!images.length) return messageContentToText(content) || "";
-	const blocks: Array<Record<string, unknown>> = [];
+	const blocks: ContentBlock[] = [];
 	for (const block of content) {
 		if (block.type === "text" && block.text) blocks.push({ type: "text", text: block.text });
 		else if (block.type === "image" && block.data && block.mimeType) {
@@ -103,7 +103,10 @@ export function convertPiMessages(
 	messages: PiMessage[],
 	customToolNameToSdk?: Map<string, string>,
 ): { anthropicMessages: SessionMessage[]; sanitizedIds: Map<string, string>; dropped: DroppedContent } {
-	const anthropicMessages = [];
+	// Annotated rather than inferred: the evolving-array type settles on the shapes
+	// pushed first, and the tool_result message spliced in at the end of the loop is
+	// not one of them.
+	const anthropicMessages: SessionMessage[] = [];
 	const sanitizedIds = new Map();
 	// What conversion discarded. Nothing downstream can tell: a stripped thinking
 	// block and a message that never carried one convert to the same thing, so
@@ -112,7 +115,7 @@ export function convertPiMessages(
 	// The user message collecting this assistant turn's tool results, if one has
 	// been emitted yet, and the index of the assistant message it belongs to. Both
 	// are cleared at every assistant message — see the toolResult branch.
-	let turnResults: { role: "user"; content: Array<Record<string, unknown>> } | null = null;
+	let turnResults: { role: "user"; content: ContentBlock[] } | null = null;
 	let turnAssistantIdx: number | null = null;
 
 	for (const msg of messages) {
@@ -120,7 +123,7 @@ export function convertPiMessages(
 			if (typeof msg.content === "string") {
 				anthropicMessages.push({ role: "user", content: msg.content || "[empty]" });
 			} else if (Array.isArray(msg.content)) {
-				const parts = [];
+				const parts: ContentBlock[] = [];
 				for (const block of msg.content) {
 					if (block.type === "text" && block.text) parts.push({ type: "text", text: block.text });
 					else if (block.type === "image" && block.data && block.mimeType) {
@@ -133,7 +136,7 @@ export function convertPiMessages(
 			}
 		} else if (msg.role === "assistant") {
 			const content = Array.isArray(msg.content) ? msg.content : [];
-			const blocks = [];
+			const blocks: ContentBlock[] = [];
 			for (const block of content) {
 				if (block.type === "text" && block.text) {
 					blocks.push({ type: "text", text: block.text });
@@ -206,7 +209,7 @@ export function convertPiMessages(
 			// reorderAttachmentsForAPI (claude-code-rip src/utils/messages.ts:1481)
 			// bubbles attachments up to the nearest assistant or tool_result message
 			// and re-inserts them after it. The on-disk form differs, the order does not.
-			const block = { type: "tool_result", tool_use_id: sanitizeToolId(msg.toolCallId, sanitizedIds), content: toolResultContent(msg.content), is_error: msg.isError };
+			const block: ContentBlock = { type: "tool_result", tool_use_id: sanitizeToolId(msg.toolCallId, sanitizedIds), content: toolResultContent(msg.content), is_error: msg.isError };
 			if (turnResults) {
 				turnResults.content.push(block);
 			} else {
