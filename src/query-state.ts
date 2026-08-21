@@ -1,7 +1,7 @@
 // Query state: QueryContext class.
 //
 // All per-query and per-turn mutable state lives here. Reentrant queries
-// (subagents) each get their own QueryContext instance, managed by index.ts.
+// (subagents) each get their own QueryContext instance, managed by provider.ts.
 // Adding a new field = one property on the class.
 //
 // Extracted from index.ts so tests can import without activating the extension.

@@ -45,9 +45,37 @@ export function tryParseJson(path: string): Partial<Config> {
 	}
 }
 
+// Applied to every Claude Code subprocess the bridge spawns — provider, AskClaude
+// and the compact summary. One place, so a guard is added once rather than three
+// times, and so a missing one is visible.
+//
+// - ENABLE_CLAUDEAI_MCP_SERVERS=0: keep the user's claude.ai-connected MCP servers
+//   out of a pi session, which serves its own tools.
+// - DISABLE_AUTO_COMPACT=1: pi owns compaction; CC compacting its own copy would
+//   diverge from pi's history, which is the source of truth for every rebuild.
+export const CC_CHILD_ENV = {
+	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
+	DISABLE_AUTO_COMPACT: "1",
+} as const;
+
 export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMemoryEnabled: boolean } {
 	return { autoMemoryEnabled: provider.autoMemoryEnabled ?? false };
 }
+
+// Pi owns context files on the provider path, so Claude Code must not load its
+// own on top: otherwise a project CLAUDE.md arrives twice, and the user's
+// ~/.claude/CLAUDE.md — a persona written for a harness that is not the one
+// running — arrives at all, stamped "These instructions OVERRIDE any default
+// behavior" and outranking Pi's own AGENTS.md.
+//
+// Excludes rather than settingSources: the source gate that suppresses CLAUDE.md
+// is the same one that reads settings.json, where Bedrock/Vertex users keep
+// `env` and `apiKeyHelper`. Patterns are matched with picomatch against absolute
+// paths; "**/CLAUDE.md" covers the user, ancestor, project and .claude/ copies,
+// while rules need their own. CLAUDE.local.md is a different filename, not a
+// CLAUDE.md that "**/CLAUDE.md" matches, so it needs its own pattern.
+// Managed/policy memory is not excludable by design.
+export const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/CLAUDE.local.md", "**/.claude/rules/**"];
 
 export function globalConfigPath(): string {
 	return join(getAgentDir(), "claude-bridge.json");

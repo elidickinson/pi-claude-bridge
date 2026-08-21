@@ -1,7 +1,7 @@
 /**
  * Unit-suite preload: redirect the bridge's debug log to a throwaway directory.
  *
- * src/index.ts resolves DEBUG_LOG_PATH into a module-level const at import time
+ * src/debug.ts resolves DEBUG_LOG_PATH into a module-level const at import time
  * (and mkdirs it when CLAUDE_BRIDGE_DEBUG=1), so the override has to be in place
  * before any test imports the module. Doing that per test file is easy to forget,
  * and forgetting is invisible: the suite still passes everywhere except on a

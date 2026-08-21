@@ -2,6 +2,8 @@
 // `resolveModel` returns the first partial match, so `opus` resolves to the first-listed opus entry.
 // Extracted from index.ts so tests can import without activating the extension.
 
+import { getModels } from "@earendil-works/pi-ai/compat";
+
 export const MODEL_IDS_IN_ORDER = ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
@@ -21,6 +23,10 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}));
 }
+
+// The bridge's own model list. Registered with pi after applyLongContext, and the
+// list `resolveModel` searches when AskClaude is handed a model name.
+export const MODELS = buildModels(getModels("anthropic"));
 
 export type LongContextSettings = {
 	plan: "pro" | "max";
