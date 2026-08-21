@@ -13,6 +13,18 @@ const toolResultUser = (uuid) => ({
 const attach = (uuid, parentUuid, type, filename) => ({
 	type: "attachment", uuid, parentUuid, attachment: { type, filename },
 });
+// A steer CC drained at a tool boundary: an attachment hanging off the tool_result
+// record, with no companion `type: "user"` record anywhere. See int-tool-message.mjs.
+// `origin` is what marks it as user-side input; real records always carry it.
+const steer = (uuid, parentUuid, prompt) => ({
+	type: "attachment", uuid, parentUuid,
+	attachment: { type: "queued_command", prompt, origin: { kind: "human" } },
+});
+// The other producer of queued_command: CC injects one when a background Task agent
+// reports back. Same attachment type, no `origin`, and pi never sees it.
+const taskNotification = (uuid, parentUuid, prompt) => ({
+	type: "attachment", uuid, parentUuid, attachment: { type: "queued_command", prompt },
+});
 
 describe("collectCarriedAttachments", () => {
 	it("keeps content-bearing kinds and drops the ones CC regenerates", () => {
@@ -100,5 +112,74 @@ describe("attachments chained to other attachments", () => {
 		]);
 		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/a.js"]);
 		assert.equal(carried[0].userOrdinal, 0);
+	});
+});
+
+describe("a mid-turn steer, which CC records with no user record of its own", () => {
+	// CC drains a steer at a tool boundary and writes only a `queued_command`
+	// attachment parented to the tool_result record. pi keeps the steer as an
+	// ordinary user message, so it counts on pi's side and has to count here too —
+	// otherwise every prompt after the first steer is off by one and the text check
+	// silently drops its attachment.
+	const ccRecords = [
+		user("u1", "review @a.js"),
+		attach("a1", "u1", "file", "/a.js"),
+		toolResultUser("u2"),
+		steer("q1", "u2", "actually check the other one too"),
+		user("u3", "review @b.js"),
+		attach("a2", "u3", "file", "/b.js"),
+	];
+	// What the rebuild is about to import: pi holds the steer as a plain user turn.
+	const piMessages = [
+		{ role: "user", content: [{ type: "text", text: "review @a.js" }] },
+		{ role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] },
+		{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+		{ role: "user", content: [{ type: "text", text: "actually check the other one too" }] },
+		{ role: "user", content: [{ type: "text", text: "review @b.js" }] },
+	];
+
+	it("takes an ordinal, so a later prompt's attachment survives placement", () => {
+		const carried = collectCarriedAttachments(ccRecords);
+		const { attachments, skipped } = placeCarriedAttachments(carried, piMessages);
+		assert.deepEqual(skipped, []);
+		assert.deepEqual(attachments.map((a) => a.attachment.filename), ["/a.js", "/b.js"]);
+		assert.deepEqual(attachments.map((a) => a.afterIndex), [0, 4]);
+	});
+
+	it("carries an @file mention made inside the steer itself", () => {
+		const carried = collectCarriedAttachments([
+			user("u1", "start"),
+			toolResultUser("u2"),
+			steer("q1", "u2", "wait, read @c.js"),
+			attach("a1", "q1", "file", "/c.js"),
+		]);
+		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/c.js"]);
+		assert.equal(carried[0].userOrdinal, 1);
+		assert.equal(carried[0].parentText, "wait, read @c.js");
+	});
+
+	// AskClaude's `full` and `read` modes leave the Agent tool enabled, so a
+	// background Task can report back mid-session and CC writes that as a
+	// queued_command too. pi has no message for it, so counting it would shift the
+	// ordinals the opposite way and drop the next prompt's attachment — the same
+	// bug this suite exists to prevent, mirrored.
+	it("ignores a task notification, which shares the record type but not the origin", () => {
+		const carried = collectCarriedAttachments([
+			user("u1", "review @a.js"),
+			attach("a1", "u1", "file", "/a.js"),
+			toolResultUser("u2"),
+			taskNotification("q1", "u2", "<task-notification>agent finished</task-notification>"),
+			user("u3", "review @b.js"),
+			attach("a2", "u3", "file", "/b.js"),
+		]);
+		const piMessages = [
+			{ role: "user", content: [{ type: "text", text: "review @a.js" }] },
+			{ role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+			{ role: "user", content: [{ type: "text", text: "review @b.js" }] },
+		];
+		const { attachments, skipped } = placeCarriedAttachments(carried, piMessages);
+		assert.deepEqual(skipped, []);
+		assert.deepEqual(attachments.map((a) => a.attachment.filename), ["/a.js", "/b.js"]);
 	});
 });

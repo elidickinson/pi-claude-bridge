@@ -75,6 +75,33 @@ export function collectCarriedAttachments(records: readonly JsonlRecord[]): Carr
 			continue;
 		}
 		if (record.type !== "attachment") continue;
+		const attachmentOf = record.attachment as { type: string; [key: string]: unknown } | undefined;
+		// A steer CC drained at a tool boundary. CC records it *only* as this
+		// attachment, parented to the tool_result record, with no companion
+		// `type: "user"` record — so the loop above never counts it, while pi keeps
+		// it as an ordinary user message and `placeCarriedAttachments` does. Left
+		// uncounted, every prompt after the first steer is off by one and the text
+		// check at placement drops its attachment with nothing but a debug line.
+		//
+		// Counted here instead of at the parent guard below, because the parent is a
+		// tool_result record that has no ordinal of its own to inherit. Seeding
+		// `textOf` from the steer's text also lets a run of attachments chain off it,
+		// which is what carries an `@file` written inside the steer.
+		//
+		// `origin` is what separates the two producers of queued_command. CC also
+		// injects one when a background Task agent reports back — machine-generated,
+		// never in pi's message list, so counting it would shift the ordinals the
+		// other way and break exactly what this branch fixes. AskClaude's `full` and
+		// `read` modes leave the Agent tool enabled, so that is reachable here, not
+		// hypothetical. Across 1673 real records the split is total: every user-side
+		// input carries `origin` (kind human, auto-continuation or channel) and no
+		// task notification does. Keyed on the field rather than on the notification's
+		// text envelope, which is CC-internal and free to change.
+		if (attachmentOf?.type === "queued_command" && attachmentOf.origin !== undefined) {
+			ordinalOf.set(record.uuid as string, ordinal++);
+			textOf.set(record.uuid as string, String(attachmentOf.prompt ?? ""));
+			continue;
+		}
 		const parent = record.parentUuid as string | null;
 		// Attachments chain to each other — a run of them hangs off one prompt, and
 		// 63 of 179 in real sessions parent to another attachment rather than to a
@@ -86,9 +113,8 @@ export function collectCarriedAttachments(records: readonly JsonlRecord[]): Carr
 		ordinalOf.set(record.uuid as string, inherited);
 		textOf.set(record.uuid as string, textOf.get(parent)!);
 
-		const attachment = record.attachment as { type: string; [key: string]: unknown } | undefined;
-		if (!attachment || !CONTENT_BEARING.has(attachment.type)) continue;
-		carried.push({ attachment, userOrdinal: inherited, parentText: textOf.get(parent)! });
+		if (!attachmentOf || !CONTENT_BEARING.has(attachmentOf.type)) continue;
+		carried.push({ attachment: attachmentOf, userOrdinal: inherited, parentText: textOf.get(parent)! });
 	}
 	return carried;
 }
