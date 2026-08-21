@@ -636,6 +636,7 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
+	isReentrant: boolean,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
 ): SyncResult {
@@ -667,15 +668,27 @@ function syncSharedSession(
 	// captures is deleted once its query completes (see preserveSharedSession in
 	// the completion handler). Remove this branch and a subagent resumes — then
 	// overwrites — the parent's session. The non-isolated AskClaude path reaches it
-	// the same way.
+	// the same way, and passes isReentrant: true for that reason.
 	//
 	// It is NOT, despite an earlier comment here, the isolated compact-summary
 	// path: runIsolatedSummary never calls syncSharedSession at all.
 	//
+	// Gated on isReentrant, not on the message count alone. A top-level turn with
+	// a shorter context is not a nested query, it is a history rewrite the bridge
+	// did not hear about — a third-party pi extension that prunes pi's messages
+	// array (issue #30). Inferring reentrancy from the count sent those turns to
+	// Claude Code with resume: null and no history at all, and the damage outlived
+	// the turn: with no tool call the cursor update is skipped on the
+	// preserveSharedSession path and stayed stale, so every later turn was
+	// contextless too; with a tool call the tool-result path lowered the cursor to
+	// the pruned length and the next turn REUSEd the never-deleted stale file,
+	// handing back the full un-pruned history. Falling through to REBUILD instead
+	// rewrites the file from the pruned messages and sets the cursor correctly.
+	//
 	// Only reachable when needsRebuild is false — user-facing history rewrites
 	// (/compact, session_tree, /new, fork) always set needsRebuild or clear
 	// sharedSession before the next syncSharedSession call.
-	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
+	if (isReentrant && sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
 		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
 		debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
 		return { sessionId: null, preserveSharedSession: true };
@@ -1538,7 +1551,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	const syncResult = syncSharedSession(context.messages, cwd, isReentrant, customToolNameToSdk, cliModel);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1771,6 +1784,15 @@ async function promptAndWait(
 	// otherwise create one from pi's context.
 	// Note: doesn't update sharedSession.cursor after completion, so the next
 	// provider call will see missed messages and trigger a Case 4 rebuild.
+	// That costs exactly one rebuild, not one per turn: the rebuild sets
+	// cursor = priorMessages.length, and the same turn's tool-result or
+	// query-completion path carries it to the live count, so the turn after
+	// takes REUSE again.
+	// Advancing the cursor here instead would be wrong. CC has appended the
+	// AskClaude exchange as raw user/assistant records while pi represents it
+	// as a toolCall + toolResult, so an advance would make the next turn REUSE
+	// a session file that structurally disagrees with pi's history — the drift
+	// syncSharedSession exists to prevent.
 	let resumeSessionId: string | null = null;
 	if (!options?.isolated && options?.context?.length) {
 		if (sharedSession) {
@@ -1780,7 +1802,10 @@ async function promptAndWait(
 		} else {
 			// No provider session yet — create one from pi's context
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, options.customToolNameToSdk, cliModel);
+			// isReentrant: true unconditionally — a non-isolated AskClaude is by
+			// construction nested inside a pi turn, so it must never take over the
+			// shared session even when its context happens to be the longer one.
+			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, true, options.customToolNameToSdk, cliModel);
 			resumeSessionId = sync.sessionId;
 		}
 	}

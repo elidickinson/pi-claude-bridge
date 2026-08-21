@@ -83,7 +83,7 @@ describe("history/prompt split", () => {
 				{ role: "user", content: "(attachment preview: [#image 1])", timestamp: 4 },
 			];
 
-			const { sessionId } = __test.syncSharedSession(messages, cwd);
+			const { sessionId } = __test.syncSharedSession(messages, cwd, false);
 			// readdir rather than fs.globSync — the latter is Node 22+, and engines allows 20.
 			const projectsDir = join(claudeDir, "projects");
 			const [projectDir] = readdirSync(projectsDir);

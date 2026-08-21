@@ -47,7 +47,7 @@ describe("syncSharedSession", () => {
 	// session is preserved. It was previously described here as the compact-summary
 	// path, which cannot reach syncSharedSession at all, so the branch read as
 	// covered for a case that never happens.
-	it("starts a fresh session for a shorter context and preserves the parent's", () => {
+	it("starts a fresh session for a reentrant shorter context and preserves the parent's", () => {
 		const sandbox = createSandbox();
 		const { cwd } = sandbox;
 		try {
@@ -64,7 +64,7 @@ describe("syncSharedSession", () => {
 					content: "Summarize this conversation.",
 					timestamp: Date.now(),
 				},
-			], cwd);
+			], cwd, true);
 
 			assert.equal(
 				result.sessionId,
@@ -77,6 +77,91 @@ describe("syncSharedSession", () => {
 				"the fresh session must not replace the parent's when it completes",
 			);
 			assert.deepEqual(__test.getSharedSession(), mainSession);
+		} finally {
+			sandbox.cleanup();
+		}
+	});
+
+	// A third-party pi extension that prunes pi's messages array (issue #30) produces
+	// the same shape as a subagent — a context shorter than the cursor — from a
+	// top-level turn. The two are told apart by isReentrant, not by the count: before
+	// that parameter existed, a pruned turn took the preserve branch, so Claude Code
+	// was resumed with nothing (resume: null) and no history at all, and the stale
+	// cursor kept every following turn contextless too.
+	//
+	// Both cases below run the identical pruned input so the only variable is
+	// isReentrant.
+	/** A shared session whose file and cursor hold four pre-prune messages. */
+	function seedPrePruneSession(cwd) {
+		const sessionId = randomUUID();
+		const seeded = createSession({ sessionId, projectPath: cwd });
+		seeded.importMessages([
+			{ role: "user", content: "first question" },
+			{ role: "assistant", content: [{ type: "text", text: "first answer" }] },
+			{ role: "user", content: "second question" },
+			{ role: "assistant", content: [{ type: "text", text: "second answer" }] },
+		]);
+		seeded.save();
+		__test.setSharedSession({ sessionId, cursor: 4, cwd });
+		return sessionId;
+	}
+
+	/** What pi's messages array looks like after the extension pruned the first turn. */
+	const prunedMessages = () => [
+		{ role: "user", content: "second question", timestamp: Date.now() },
+		{ role: "assistant", content: [{ type: "text", text: "second answer" }], timestamp: Date.now() },
+		{ role: "user", content: "third question", timestamp: Date.now() },
+	];
+
+	it("rebuilds from the pruned history when a shorter context is not reentrant", () => {
+		const sandbox = createSandbox();
+		const { cwd } = sandbox;
+		try {
+			const sessionId = seedPrePruneSession(cwd);
+
+			const result = __test.syncSharedSession(prunedMessages(), cwd, false);
+
+			assert.equal(
+				result.sessionId,
+				sessionId,
+				"a pruned top-level turn must resume the rebuilt session, not start Claude Code with no history at all",
+			);
+			assert.notEqual(
+				result.preserveSharedSession,
+				true,
+				"preserving here is what left the stale cursor in place and made every following turn contextless",
+			);
+			assert.equal(
+				__test.getSharedSession().cursor,
+				2,
+				"the cursor must follow the pruned length, or the next turn reuses the stale session file",
+			);
+			const history = JSON.stringify(openSession({ sessionId, projectPath: cwd }).messages);
+			assert.match(history, /second question/, "the surviving turn belongs in the rebuilt session");
+			assert.doesNotMatch(
+				history,
+				/first question/,
+				"the rebuilt session still holds the pruned turn, which hands Claude back what the prune removed",
+			);
+		} finally {
+			sandbox.cleanup();
+		}
+	});
+
+	it("preserves the parent session when the same shorter context is reentrant", () => {
+		const sandbox = createSandbox();
+		const { cwd } = sandbox;
+		try {
+			const sessionId = seedPrePruneSession(cwd);
+			const before = __test.getSharedSession();
+
+			const result = __test.syncSharedSession(prunedMessages(), cwd, true);
+
+			assert.equal(result.sessionId, null, "a nested query must start its own session");
+			assert.equal(result.preserveSharedSession, true, "and must not replace the parent's when it completes");
+			assert.deepEqual(__test.getSharedSession(), before, "the parent's cursor must not move");
+			const history = JSON.stringify(openSession({ sessionId, projectPath: cwd }).messages);
+			assert.match(history, /first question/, "the parent's session file must be left untouched");
 		} finally {
 			sandbox.cleanup();
 		}
@@ -118,7 +203,7 @@ describe("syncSharedSession", () => {
 				{ role: "user", content: prompt, timestamp: Date.now() },
 				{ role: "assistant", content: [{ type: "text", text: "Noted." }], timestamp: Date.now() },
 				{ role: "user", content: "Now what did it say?", timestamp: Date.now() },
-			], cwd);
+			], cwd, false);
 
 			assert.equal(
 				openSession({ sessionId, projectPath: cwd }).attachments.length,
