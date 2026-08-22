@@ -2,6 +2,10 @@
 
 ## UNRELEASED
 
+- **Fix: classify and recover from Claude stream failures (issues #35, #43, #58)** — exhausted subscription limits reach Pi's model fallback, a transient overload before output retries once, and a tool-aware watchdog aborts half-open streams.
+
+- **Fix: the same rate-limit warning notified once per concurrent stream** — every subagent's stream carries its own `rate_limit_event` frames for one account-wide state, and a long stream re-emits them as its headers refresh, so a session with three subagents printed the same "78% used" warning four times. Warnings are now deduped per rate limit type. Utilization is also scaled to a percentage, having displayed as `0% used`.
+
 - **Fix: better isolate AskClaude tool (issue #59)** — AskClaude children no longer inherit the user's `~/.claude` `CLAUDE.md` files or skill listing, and now always get Claude Code's system prompt preset instead of only when pi-side skills exist. Thanks @JAtkinsonKO.
 - **Fix: Bogus debug message about "record count mismatch" after switching providers** — the post-rebuild integrity check did not take `@file` expansion into account when switching providers.
 

@@ -2,7 +2,7 @@ import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessage
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { query, type EffortLevel, type Query as ClaudeQuery, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -26,6 +26,7 @@ import {
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
+import { classifyFailure, decideRetry, stallTimeoutMs, StreamMonitor, TRANSIENT_RETRY_DELAY_MS } from "./stream-resilience.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -445,7 +446,7 @@ async function runIsolatedSummary(
 	options: SimpleStreamOptions | undefined,
 	stream: AssistantMessageEventStream,
 ): Promise<void> {
-	let sdkQuery: ReturnType<typeof query> | undefined;
+	let sdkQuery: ClaudeQuery | undefined;
 	let wasAborted = false;
 	const onAbort = () => {
 		wasAborted = true;
@@ -737,9 +738,13 @@ export const __test = {
 	setPiUI(ui: ExtensionUIContext | null) {
 		piUI = ui;
 	},
+	resetRateLimitNotifyDedupe() {
+		lastNotifiedRateLimitState.clear();
+	},
 	syncSharedSession,
 	extractUserPromptBlocks,
 	consumeQuery,
+	consumeQueryWithRetry,
 	finalizeCurrentStream,
 	resultErrorText,
 	deliverToolResults,
@@ -834,6 +839,17 @@ function showStartupNoticeOnce(): void {
 // Captures of what pi assembled per agent; see src/prompt-capture.ts for why this
 // is keyed rather than held in a single slot.
 const promptCaptures = new PromptCaptures();
+
+// A rate-limit warning is duplicated by two independent sources: N concurrent
+// SDK streams (one per subagent plus the main agent) each get their own
+// `rate_limit_event` frames for the same account-wide state, and a single
+// long-running stream re-emits the event as its headers refresh. Dedup by the
+// fields the rendered message actually carries, not a boolean, so a genuine
+// change (a different percentage, or a status escalation to `rejected`) still
+// reaches `piUI.notify`. Keyed per rate limit type rather than one slot: two
+// buckets near their thresholds alternate across streams, and a single slot
+// would read every alternation as a change and re-spam.
+const lastNotifiedRateLimitState = new Map<string, string>();
 
 /** Whatever a settled session left behind, named in one greppable line.
  *
@@ -1233,7 +1249,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
  *  whichever path handles it first (processStreamEvent or processAssistantMessage),
  *  and the MCP handler blocks the generator until pi delivers the tool result. */
 async function consumeQuery(
-	sdkQuery: ReturnType<typeof query>,
+	sdkQuery: ClaudeQuery,
 	customToolNameToPi: Map<string, string>,
 	model: Model<any>,
 	wasAborted: () => boolean,
@@ -1243,6 +1259,7 @@ async function consumeQuery(
 
 	for await (const message of sdkQuery) {
 		if (RECORD_STREAM_PATH) appendFileSync(RECORD_STREAM_PATH, `${JSON.stringify(message)}\n`);
+		queryCtx.streamMonitor?.onSdkEvent(message.type);
 		if (wasAborted()) break;
 		// Everything below the currentPiStream guard is content, which there is
 		// nowhere to put once a turn has ended on a tool call. These three are not
@@ -1262,21 +1279,33 @@ async function consumeQuery(
 			logServedContextWindow("result", message, model);
 			resultError = resultErrorText(message);
 			if (resultError !== undefined) {
-				debug(`consumeQuery: error result, subtype=${message.subtype}, error=${resultError}`);
+				const classified = classifyFailure(resultError, queryCtx.streamMonitor?.rateLimitRejected ?? false);
+				debug(`consumeQuery: error result classified as ${classified.kind}`);
 				if (queryCtx.turnOutput) {
 					queryCtx.turnOutput.stopReason = "error";
-					queryCtx.turnOutput.errorMessage = resultError;
+					queryCtx.turnOutput.errorMessage = classified.message;
 				}
 			}
 		}
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
+			queryCtx.streamMonitor?.noteRateLimitEvent(info);
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+			const rateLimitType = info?.rateLimitType ?? "";
 			if (info?.status === "rejected") {
 				const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
-				piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+				const state = `rejected:${resetsAt}`;
+				if (state !== lastNotifiedRateLimitState.get(rateLimitType)) {
+					lastNotifiedRateLimitState.set(rateLimitType, state);
+					piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+				}
 			} else if (info?.status === "allowed_warning") {
-				piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
+				const percentUsed = Math.round((info.utilization ?? 0) * 100);
+				const state = `allowed_warning:${percentUsed}`;
+				if (state !== lastNotifiedRateLimitState.get(rateLimitType)) {
+					lastNotifiedRateLimitState.set(rateLimitType, state);
+					piUI?.notify(`Claude rate limit warning: ${percentUsed}% used (${rateLimitType})`, "warning");
+				}
 			}
 			continue;
 		}
@@ -1307,6 +1336,7 @@ async function consumeQuery(
 			case "system":
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
+					queryCtx.capturedSessionId = capturedSessionId;
 				}
 				break;
 			case "user":
@@ -1327,6 +1357,83 @@ async function consumeQuery(
 	debug(`consumeQuery: for-await loop exited, wasAborted=${wasAborted()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
 
 	return { capturedSessionId };
+}
+
+interface QueryAttempt {
+	current: () => ClaudeQuery;
+	restart: () => void;
+	abort: () => void;
+}
+
+async function consumeQueryWithRetry(
+	attempt: QueryAttempt,
+	customToolNameToPi: Map<string, string>,
+	model: Model<any>,
+	wasAborted: () => boolean,
+	queryCtx: QueryContext,
+): Promise<{ capturedSessionId?: string }> {
+	for (let retriesUsed = 0; ; retriesUsed++) {
+		const onStall = (error: Error): void => {
+			// After `result`, only generator shutdown is hung; preserve the recorded
+			// outcome and abort the generator.
+			if (!monitor.resultReceived && queryCtx.turnOutput) {
+				queryCtx.turnOutput.stopReason = "error";
+				queryCtx.turnOutput.errorMessage = error.message;
+			}
+			attempt.abort();
+		};
+		const monitor = new StreamMonitor({
+			idleMs: stallTimeoutMs(),
+			hasPendingWork: () => queryCtx.pendingToolCalls.size > 0,
+			onStall,
+			log: debug,
+		});
+		queryCtx.streamMonitor = monitor;
+
+		let failure: unknown;
+		let outcome: { capturedSessionId?: string } | undefined;
+		try {
+			monitor.arm();
+			outcome = await consumeQuery(attempt.current(), customToolNameToPi, model, wasAborted, queryCtx);
+			if (monitor.stalled) failure = monitor.stallError;
+			else if (queryCtx.turnOutput?.stopReason === "error") failure = new Error(queryCtx.turnOutput.errorMessage);
+			if (!failure) return outcome;
+		} catch (error) {
+			failure = monitor.stalled ? monitor.stallError ?? error : error;
+		} finally {
+			monitor.stop();
+		}
+
+		if (monitor.stalled && monitor.resultReceived) {
+			debug("consumeQueryWithRetry: post-result stall during shutdown, keeping recorded outcome");
+			return { capturedSessionId: outcome?.capturedSessionId ?? queryCtx.capturedSessionId };
+		}
+
+		const outputStarted = queryCtx.turnStarted || queryCtx.turnSawStreamEvent || queryCtx.turnSawToolCall
+			|| (queryCtx.turnOutput?.content.length ?? 0) > 0 || queryCtx.turnToolCallIds.length > 0;
+		const decision = decideRetry({
+			failure,
+			rateLimitRejected: monitor.rateLimitRejected,
+			outputStarted,
+			retriesUsed,
+			aborted: wasAborted(),
+		});
+		debug(`consumeQueryWithRetry: attempt ${retriesUsed + 1} failed (${decision.kind}): ${decision.reason}`);
+
+		if (!decision.retry) {
+			if (queryCtx.turnOutput && decision.kind !== "fatal") {
+				queryCtx.turnOutput.stopReason = "error";
+				queryCtx.turnOutput.errorMessage = decision.message;
+			}
+			if (outcome) return outcome;
+			throw failure;
+		}
+
+		queryCtx.resetTurnState(model);
+		await new Promise<void>((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS));
+		if (wasAborted()) throw failure;
+		attempt.restart();
+	}
 }
 
 /** The trailing user turn as content blocks, or null if there isn't one.
@@ -1521,8 +1628,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
-	const { sessionId: resumeSessionId } = syncResult;
+	let syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	let resumeSessionId = syncResult.sessionId;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
 
@@ -1542,15 +1649,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		promptText = "[continue]";
 	}
 
-	// Always stream the prompt rather than passing a string: a parked input
-	// generator is what lets us write steers to CC's stdin mid-turn. The cost is
-	// that `isSingleUserTurn` is false, so the SDK no longer closes stdin on the
-	// first result — consumeQuery ends the stream explicitly instead, or the
-	// query would never terminate.
-	const promptStream = makePromptStream();
-	void promptStream.push(userMessage(promptBlocks ?? [{ type: "text", text: promptText }]))
-		.catch((error) => debug(`provider: initial prompt push rejected:`, error));
-	queryCtx.promptStream = promptStream;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
@@ -1586,7 +1684,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
 	const childEnv = { ...process.env, ...CC_CHILD_ENV };
-	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+	const makeQueryOptions = (resume: string | null | undefined): NonNullable<Parameters<typeof query>[0]["options"]> => ({
 		cwd,
 		env: childEnv,
 		tools: [],
@@ -1600,10 +1698,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		extraArgs,
 		...(effort ? { effort } : {}),
 		...(mcpServers ? { mcpServers } : {}),
-		...(resumeSessionId ? { resume: resumeSessionId } : {}),
+		...(resume ? { resume } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 		...makeCliDebugOptions("provider"),
-	};
+	});
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -1611,10 +1709,32 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
-	// 3. Start SDK query and claim it for this context
+	// Keep handles mutable so abort and cleanup target the current attempt.
 	let wasAborted = false;
-	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
-	queryCtx.activeQuery = sdkQuery;
+	let promptStream!: PromptStream;
+	let sdkQuery!: ClaudeQuery;
+	const startAttempt = (retry = false) => {
+		if (retry) {
+			if (syncResult.preserveSharedSession) {
+				resumeSessionId = null;
+			} else {
+				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
+				syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+				resumeSessionId = syncResult.sessionId;
+			}
+		}
+		promptStream?.fail(new Error("query restarted after a transient failure"));
+		try { sdkQuery?.close(); } catch {}
+		queryCtx.capturedSessionId = undefined;
+		// Retry attempts need a fresh prompt stream; image streams are single-use.
+		promptStream = makePromptStream();
+		void promptStream.push(userMessage(promptBlocks ?? [{ type: "text", text: promptText }]))
+			.catch((error) => debug(`provider: initial prompt push rejected:`, error));
+		queryCtx.promptStream = promptStream;
+		sdkQuery = query({ prompt: promptStream.stream, options: makeQueryOptions(resumeSessionId) });
+		queryCtx.activeQuery = sdkQuery;
+	};
+	startAttempt();
 	activeQueryContexts.add(queryCtx);
 
 	// 4. Capture context for abort handling
@@ -1637,7 +1757,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	}
 
 	// Background consumer — runs until query ends
-	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx)
+	consumeQueryWithRetry(
+		{ current: () => sdkQuery, restart: () => startAttempt(true), abort: requestAbort },
+		customToolNameToPi,
+		model,
+		() => wasAborted,
+		queryCtx,
+	)
 		.then(async ({ capturedSessionId }) => {
 			debug(`provider: consumeQuery completed, stopReason=${queryCtx.turnOutput?.stopReason}, error=${queryCtx.turnOutput?.errorMessage}, aborted=${wasAborted}`);
 
@@ -1946,6 +2072,7 @@ export default function (pi: ExtensionAPI) {
 	const clearSession = (event: string) => {
 		debug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
 		sharedSession = null;
+		lastNotifiedRateLimitState.clear();
 
 		// Clear the global streamSimple if this instance registered it.
 		// This allows /reload to work — the old instance clears the flag so

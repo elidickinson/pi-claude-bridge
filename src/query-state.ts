@@ -9,6 +9,7 @@
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
+import type { StreamMonitor } from "./stream-resilience.js";
 
 export interface PendingToolCall {
 	toolName: string;
@@ -20,12 +21,16 @@ export class QueryContext {
 	activeQuery: unknown | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
 	latestCursor = 0;
+	streamMonitor: StreamMonitor | null = null;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();
 	/** tool_use ids emitted this turn. Sole purpose is routing a delivered result
 	 *  to the owning query when several queries are in flight — pairing a result
 	 *  to its call is done by id from Claude's tools/call _meta, not from here. */
 	turnToolCallIds: string[] = [];
+	/** Session id from the active attempt, retained through an aborted generator
+	 *  shutdown so provider finalization can still record it. */
+	capturedSessionId: string | undefined;
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
 
