@@ -738,6 +738,9 @@ export const __test = {
 	setPiUI(ui: ExtensionUIContext | null) {
 		piUI = ui;
 	},
+	resetRateLimitNotifyDedupe() {
+		lastNotifiedRateLimitState.clear();
+	},
 	syncSharedSession,
 	extractUserPromptBlocks,
 	consumeQuery,
@@ -836,6 +839,17 @@ function showStartupNoticeOnce(): void {
 // Captures of what pi assembled per agent; see src/prompt-capture.ts for why this
 // is keyed rather than held in a single slot.
 const promptCaptures = new PromptCaptures();
+
+// A rate-limit warning is duplicated by two independent sources: N concurrent
+// SDK streams (one per subagent plus the main agent) each get their own
+// `rate_limit_event` frames for the same account-wide state, and a single
+// long-running stream re-emits the event as its headers refresh. Dedup by the
+// fields the rendered message actually carries, not a boolean, so a genuine
+// change (a different percentage, or a status escalation to `rejected`) still
+// reaches `piUI.notify`. Keyed per rate limit type rather than one slot: two
+// buckets near their thresholds alternate across streams, and a single slot
+// would read every alternation as a change and re-spam.
+const lastNotifiedRateLimitState = new Map<string, string>();
 
 /** Whatever a settled session left behind, named in one greppable line.
  *
@@ -1277,11 +1291,21 @@ async function consumeQuery(
 			const info = (message as any).rate_limit_info;
 			queryCtx.streamMonitor?.noteRateLimitEvent(info);
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+			const rateLimitType = info?.rateLimitType ?? "";
 			if (info?.status === "rejected") {
 				const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
-				piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+				const state = `rejected:${resetsAt}`;
+				if (state !== lastNotifiedRateLimitState.get(rateLimitType)) {
+					lastNotifiedRateLimitState.set(rateLimitType, state);
+					piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+				}
 			} else if (info?.status === "allowed_warning") {
-				piUI?.notify(`Claude rate limit warning: ${Math.round((info.utilization ?? 0) * 100)}% used (${info.rateLimitType ?? ""})`, "warning");
+				const percentUsed = Math.round((info.utilization ?? 0) * 100);
+				const state = `allowed_warning:${percentUsed}`;
+				if (state !== lastNotifiedRateLimitState.get(rateLimitType)) {
+					lastNotifiedRateLimitState.set(rateLimitType, state);
+					piUI?.notify(`Claude rate limit warning: ${percentUsed}% used (${rateLimitType})`, "warning");
+				}
 			}
 			continue;
 		}
@@ -2048,6 +2072,7 @@ export default function (pi: ExtensionAPI) {
 	const clearSession = (event: string) => {
 		debug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
 		sharedSession = null;
+		lastNotifiedRateLimitState.clear();
 
 		// Clear the global streamSimple if this instance registered it.
 		// This allows /reload to work — the old instance clears the flag so
