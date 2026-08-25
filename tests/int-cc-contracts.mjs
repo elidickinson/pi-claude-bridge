@@ -28,14 +28,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "node:http";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createSession, openSession, repairToolPairing } from "cc-session-io";
 
 const CWD = process.cwd();
-const MODEL = "claude-haiku-4-5";
-// Claude Code's own extension to the MCP tools/call params, not part of the MCP
+const MODEL = "claude-haiku-4-5";// Claude Code's own extension to the MCP tools/call params, not part of the MCP
 // spec. Set in claude-code-rip src/services/mcp/client.ts. src/mcp-server.ts
 // throws when it is absent, so this key is load-bearing for every tool call.
 const TOOL_USE_ID_META = "claudecode/toolUseId";
@@ -474,4 +476,96 @@ test("--thinking-display summarized is still an accepted flag value", { timeout:
 		options: providerOptions({ effort: "medium", maxTurns: 1, persistSession: false, extraArgs: { "strict-mcp-config": null, "thinking-display": "summarized" } }),
 	}));
 	assert.equal(result?.subtype, "success", `CC rejected --thinking-display summarized: ${JSON.stringify(result)}`);
+});
+
+// --- The preset system prompt ---
+
+/** The system prompt CC actually sent, captured by pointing ANTHROPIC_BASE_URL
+ *  at a local server that answers every request with a minimal SSE message.
+ *  The request body is not observable through the SDK, and the git-status
+ *  snapshot never reaches the transcript — this is the only way to see it.
+ *  Still the installed CC building and sending the request. */
+async function captureSystemPrompt(options) {
+	const bodies = [];
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (chunk) => (body += chunk));
+		req.on("end", () => {
+			if (body) bodies.push(JSON.parse(body));
+			if (req.url?.includes("count_tokens")) {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ input_tokens: 10 }));
+				return;
+			}
+			const parsed = bodies.at(-1) ?? {};
+			if (!parsed.stream) {
+				// CC also fires non-streaming calls (e.g. its post-turn ping); those
+				// expect a complete Message, not an event stream.
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ id: `msg_${bodies.length}`, type: "message", role: "assistant", model: MODEL, content: [{ type: "text", text: "OK" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
+				return;
+			}
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+			send({ type: "message_start", message: { id: `msg_${bodies.length}`, type: "message", role: "assistant", model: MODEL, content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+			send({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+			send({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } });
+			send({ type: "content_block_stop", index: 0 });
+			send({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } });
+			send({ type: "message_stop" });
+			res.end();
+		});
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	try {
+		await collect(query({
+			prompt: "Reply with just: OK",
+			options: { ...options, env: { ...options.env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}` } },
+		}));
+	} finally {
+		server.close();
+	}
+	const last = bodies.at(-1);
+	return (last?.system ?? []).map((block) => block.text ?? JSON.stringify(block)).join("\n");
+}
+
+test("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1 omits the git-status snapshot from the preset system prompt", { timeout: 120_000 }, async (t) => {
+	// The bridge spawns a fresh CC subprocess per query, so without this gate CC
+	// recomputed the git snapshot on every spawn and any working-tree change
+	// between turns invalidated the whole cached prefix (src/index.ts
+	// CC_CHILD_ENV). Pinned in a scratch repo whose status is guaranteed
+	// non-empty via an untracked file — in a clean tree even the ungated run
+	// emits nothing, which would make the test vacuous.
+	const { mkdtempSync, writeFileSync } = await import("node:fs");
+	const { execFileSync } = await import("node:child_process");
+	const repo = mkdtempSync(join(tmpdir(), "cc-git-probe-"));
+	const git = (...args) => execFileSync("git", args, { cwd: repo });
+	git("init", "-q");
+	git("-c", "user.email=probe@test", "-c", "user.name=probe", "commit", "--allow-empty", "-q", "-m", "init");
+	writeFileSync(join(repo, "untracked.txt"), "dirty\n");
+
+	const base = {
+		cwd: repo,
+		model: MODEL,
+		tools: [],
+		permissionMode: "bypassPermissions",
+		maxTurns: 1,
+		persistSession: false,
+		// Headless CC defaults to a bare system prompt with no dynamic sections;
+		// the snapshot only exists inside the claude_code preset, which is what
+		// the bridge sends.
+		systemPrompt: { type: "preset", preset: "claude_code" },
+		extraArgs: { "strict-mcp-config": null },
+		env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
+	};
+
+	const withSnapshot = await captureSystemPrompt(base);
+	if (!withSnapshot.includes("gitStatus")) {
+		t.skip("CC emitted no git snapshot even without the gate — behavior changed upstream, re-pin this test");
+		return;
+	}
+
+	const withoutSnapshot = await captureSystemPrompt({ ...base, env: { ...base.env, CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: "1" } });
+	assert.ok(!withoutSnapshot.includes("gitStatus"),
+		"git-status snapshot survived CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1");
 });
