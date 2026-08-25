@@ -55,9 +55,19 @@ const RECORD_STREAM_PATH = process.env.CLAUDE_BRIDGE_RECORD_STREAM;
 //   out of a pi session, which serves its own tools.
 // - DISABLE_AUTO_COMPACT=1: pi owns compaction; CC compacting its own copy would
 //   diverge from pi's history, which is the source of truth for every rebuild.
+// - CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1: gates CC's git-status snapshot (and
+//   built-in commit/PR workflow instructions) out of the system prompt. The bridge
+//   spawns a fresh CC subprocess per query, and CC recomputes the snapshot each
+//   time — any working-tree change between turns silently invalidated the entire
+//   cached prefix. Pinned against SDK 0.2.141 / CLI 2.1.141: with this set the
+//   system prompt is byte-identical across processes. excludeDynamicSections is
+//   NOT equivalent: it relocates the snapshot into a <system-reminder> on the
+//   first user message, which is still restamped per process (plus currentDate,
+//   which breaks the cache daily).
 const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
+	CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: "1",
 } as const;
 
 // Pi owns context files on the provider path, so Claude Code must not load its
@@ -1595,6 +1605,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
+			// Strips CC's dynamic sections (cwd, git status) from the preset and
+			// makes CC re-inject them as a <system-reminder> on the first user
+			// message. This does NOT help prompt caching under the bridge: the
+			// reminder is rebuilt by every fresh subprocess (plus currentDate,
+			// which breaks the cache daily). Useful only for deployments that need
+			// a fully static system prefix. The snapshot itself is suppressed for
+			// every child via CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS in CC_CHILD_ENV.
+			...(providerSettings.excludeDynamicSections ? { excludeDynamicSections: true } : {}),
 			append: systemPromptAppend ? systemPromptAppend : undefined,
 		},
 		extraArgs,

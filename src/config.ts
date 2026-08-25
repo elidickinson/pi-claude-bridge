@@ -32,6 +32,12 @@ export interface Config {
 		// Anthropic billing). Enables Sonnet 4.6 [1m] on every plan and Opus 4.6
 		// [1m] on Pro.
 		longContextExtraUsage?: boolean;
+		// Strip per-session dynamic sections (working directory, git status) from
+		// CC's preset system prompt; CC re-injects them into the first user message.
+		// Off by default. Note: this does NOT improve cache behavior under the
+		// bridge — the re-injected reminder is restamped by every fresh subprocess.
+		// Use only if a fully static system prefix is needed regardless.
+		excludeDynamicSections?: boolean;
 	};
 }
 
