@@ -1525,6 +1525,30 @@ function drainForAbort(c: QueryContext, promptStream: PromptStream): void {
  * self-contained Claude Code session: no prompt capture, no shared session, and
  * the session it captures is deleted when it ends.
  */
+/**
+ * Provider entry for callers that obtained our streamSimple handle from pi's
+ * model runtime (ctx.modelRegistry.getRegisteredProviderConfig) — e.g. a
+ * permission reviewer or judge extension. A single-user-message context whose
+ * system prompt was never captured from pi's own assembly is not a
+ * conversation turn; serve it as a side request instead of letting the main
+ * lane fail on prompt-capture resolution.
+ */
+function streamProviderEntry(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	const lastRole = context.messages[context.messages.length - 1]?.role;
+	if (!!context.systemPrompt && context.messages.length === 1 && lastRole === "user") {
+		// Use the same discriminator the main lane lives by: a conversation turn's
+		// prompt resolves (or derives) against pi's captured assembly; a foreign
+		// one-shot prompt — a judge or summarizer's own rubric — does not.
+		try {
+			promptCaptures.resolveOrDerive(context.systemPrompt);
+		} catch {
+			debug(`provider: single-message context with unresolvable ${context.systemPrompt.length}-char system prompt -> side request`);
+			return streamSideRequest(model, context, options);
+		}
+	}
+	return streamClaudeAgentSdk(model, context, options);
+}
+
 function streamSideRequest(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	try {
 		return streamClaudeAgentSdk(model, context, options, true);
@@ -2126,7 +2150,7 @@ export default function (pi: ExtensionAPI) {
 		// This allows /reload to work — the old instance clears the flag so
 		// the new instance can register fresh without wrapping stale state.
 		const g = globalThis as Record<symbol, any>;
-		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
+		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamProviderEntry) {
 			debug(`${event}: clearing ACTIVE_STREAM_SIMPLE_KEY`);
 			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
 		}
@@ -2254,14 +2278,14 @@ export default function (pi: ExtensionAPI) {
 	const g = globalThis as Record<symbol, any>;
 	if (!g[ACTIVE_STREAM_SIMPLE_KEY]) {
 		// First instance: store our streamSimple and register.
-		g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
+		g[ACTIVE_STREAM_SIMPLE_KEY] = streamProviderEntry;
 		pi.registerProvider(PROVIDER_ID, {
 			baseUrl: "claude-bridge",
 			apiKey: "not-used",
 			api: "claude-bridge",
 			models: registeredModels,
 			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
-			streamSimple: streamClaudeAgentSdk as any,
+			streamSimple: streamProviderEntry as any,
 		});
 	} else {
 		// Subsequent instance (subagent session): skip registration entirely.
