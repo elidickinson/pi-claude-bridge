@@ -41,10 +41,24 @@ describe("MODELS projection", () => {
 		assert.deepEqual(models.map((m) => m.id), MODEL_IDS_IN_ORDER);
 	});
 
-	it("silently drops IDs missing from pi-ai (no fallback)", () => {
-		// Only haiku present — opus/sonnet vanish from picker.
+	it("silently drops IDs missing from pi-ai unless an explicit successor fallback exists", () => {
+		// Only haiku present — fable/opus/sonnet vanish from picker.
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(models.map((m) => m.id), ["claude-haiku-4-5"]);
+	});
+
+	it("registers Fable 5.1 from Fable 5 metadata before pi-ai catches up", () => {
+		const models = buildModels([mockPiAiModel("claude-fable-5")]);
+		assert.deepEqual(models.map((m) => m.id), ["claude-fable-5-1", "claude-fable-5"]);
+		assert.equal(find(models, "claude-fable-5-1").name, "Claude Fable 5.1");
+		assert.equal(find(models, "claude-fable-5-1").maxTokens, 64000);
+	});
+
+	it("prefers native Fable 5.1 metadata when pi-ai provides it", () => {
+		const native = { ...mockPiAiModel("claude-fable-5-1"), name: "Native Fable 5.1", maxTokens: 12345 };
+		const models = buildModels([native, mockPiAiModel("claude-fable-5")]);
+		assert.equal(find(models, "claude-fable-5-1").name, "Native Fable 5.1");
+		assert.equal(find(models, "claude-fable-5-1").maxTokens, 12345);
 	});
 
 	it("zeros out cost regardless of pi-ai pricing", () => {
@@ -74,6 +88,7 @@ describe("MODELS projection", () => {
 
 describe("Claude Code runtime model policy", () => {
 	it("uses measured Pro defaults", () => {
+		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-fable-5-1", PRO), { cliModelId: "claude-fable-5-1", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-5", PRO), { cliModelId: "claude-opus-5[1m]", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-8", PRO), { cliModelId: "claude-opus-4-8[1m]", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-7", PRO), { cliModelId: "claude-opus-4-7", contextWindow: 1000000 });
@@ -105,6 +120,7 @@ describe("claudeCodeModelId", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(oneM));
 
 	it("returns the measured SDK request id", () => {
+		assert.equal(claudeCodeModelId(find(models, "claude-fable-5-1"), PRO), "claude-fable-5-1");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-5"), PRO), "claude-opus-5[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-8"), PRO), "claude-opus-4-8[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-7"), PRO), "claude-opus-4-7");
@@ -160,6 +176,10 @@ describe("applyLongContext", () => {
 
 describe("resolveModel", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+
+	it("fable shortcut resolves to Fable 5.1 (first fable in order)", () => {
+		assert.equal(resolveModel(models, "fable")?.id, "claude-fable-5-1");
+	});
 
 	it("opus shortcut resolves to claude-opus-5 (first opus in order)", () => {
 		assert.equal(resolveModel(models, "opus")?.id, "claude-opus-5");

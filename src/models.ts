@@ -2,14 +2,29 @@
 // `resolveModel` returns the first partial match, so `opus` resolves to the first-listed opus entry.
 // Extracted from index.ts so tests can import without activating the extension.
 
-export const MODEL_IDS_IN_ORDER = ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+export const MODEL_IDS_IN_ORDER = ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+
+function modelFromCatalog<T extends { id: string; name: string; [key: string]: any }>(piAiModels: T[], id: string): T | undefined {
+	const model = piAiModels.find((candidate) => candidate.id === id);
+	if (model) return model;
+
+	// The Agent SDK can expose a model before pi-ai publishes matching metadata.
+	// Fable 5.1 inherits Fable 5's input and reasoning capabilities. A live SDK
+	// response reports its distinct 64K output limit, so keep that explicit.
+	if (id === "claude-fable-5-1") {
+		const fable5 = piAiModels.find((candidate) => candidate.id === "claude-fable-5");
+		if (fable5) return { ...fable5, id, name: "Claude Fable 5.1", maxTokens: 64_000 };
+	}
+	return undefined;
+}
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
-// and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai are silently dropped.
+// and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai are silently dropped,
+// except for explicit capability-equivalent successors handled above.
 // Context-dependent display labels are applied after plan/long-context config is known.
-export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]) {
+export function buildModels<T extends { id: string; name: string; [key: string]: any }>(piAiModels: T[]) {
 	return MODEL_IDS_IN_ORDER
-		.map((id) => piAiModels.find((m) => m.id === id))
+		.map((id) => modelFromCatalog(piAiModels, id))
 		.filter((m) => m != null)
 		// Forward thinkingLevelMap so pi-ai's per-model overrides (e.g. opus-4-8
 		// mapping xhigh→xhigh and max→max) are visible to the effort lookup.
@@ -53,6 +68,8 @@ export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongCon
 				contextWindow: useOneM ? ONE_M_CONTEXT : TWO_HUNDRED_K_CONTEXT,
 			};
 		}
+		case "claude-fable-5-1":
+			return { cliModelId: "claude-fable-5-1", contextWindow: ONE_M_CONTEXT };
 		case "claude-fable-5":
 			return { cliModelId: "claude-fable-5[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-sonnet-5":

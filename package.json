@@ -33,10 +33,12 @@
   },
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.141",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.257",
+    "@anthropic-ai/sdk": "^0.123.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "cc-session-io": "^0.4.0",
-    "change-case": "^5.4.4"
+    "change-case": "^5.4.4",
+    "zod": "^4.5.4"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.82.1",
@@ -45,7 +47,6 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.73.0",
     "@earendil-works/pi-ai": "^0.83.0",
     "@earendil-works/pi-coding-agent": "^0.83.0",
     "@earendil-works/pi-tui": "^0.83.0",
