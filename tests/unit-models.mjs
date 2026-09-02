@@ -80,6 +80,8 @@ describe("Claude Code runtime model policy", () => {
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-6", PRO), { cliModelId: "claude-opus-4-6", contextWindow: 200000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-sonnet-4-6", PRO), { cliModelId: "claude-sonnet-4-6", contextWindow: 200000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-haiku-4-5", PRO), { cliModelId: "claude-haiku-4-5", contextWindow: 200000 });
+		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-fable-5", PRO), { cliModelId: "fable", contextWindow: 1000000 });
+		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-fable-5-1", PRO), { cliModelId: "fable", contextWindow: 1000000 });
 	});
 
 	it("plan max only changes Opus 4.6", () => {
@@ -163,6 +165,10 @@ describe("resolveModel", () => {
 
 	it("opus shortcut resolves to claude-opus-5 (first opus in order)", () => {
 		assert.equal(resolveModel(models, "opus")?.id, "claude-opus-5");
+	});
+
+	it("fable shortcut resolves to claude-fable-5 (first fable in order)", () => {
+		assert.equal(resolveModel(models, "fable")?.id, "claude-fable-5");
 	});
 
 	it("haiku shortcut resolves to claude-haiku-4-5", () => {
