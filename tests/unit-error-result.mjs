@@ -59,6 +59,48 @@ describe("resultErrorText", () => {
 	});
 });
 
+// pi carries a failure only as errorMessage text, so every consumer that reacts to a rate
+// limit pattern-matches it. These mirror pi-subagents' gate (model-fallback.ts): one pattern
+// from its retryable list, and the tool-failure shape it refuses to retry.
+const RETRYABLE = /rate\s*limit/i;
+const TOOL_FAILURE_PREFIX = /^[\w.:@/-]+ failed (?:(?:\(exit \d+\):)|(?:with exit code \d+))(?:\s|$)/i;
+
+describe("a rate-limited failure", () => {
+	// Claude Code words a subscription limit with none of the vocabulary anyone matches on,
+	// and sends the rejection as its own message just before the failure it caused.
+	const rejection = {
+		type: "rate_limit_event",
+		rate_limit_info: { status: "rejected", resetsAt: 1786141800, rateLimitType: "five_hour" },
+	};
+	const limitResult = {
+		type: "result", subtype: "success", is_error: true,
+		result: "You're out of extra usage \u00b7 resets 6:30pm (America/New_York)",
+	};
+
+	it("is named as a rate limit so fallback chains fire", async () => {
+		const c = makeCtx();
+		await consume(c, [rejection, limitResult]);
+
+		assert.match(c.turnOutput.errorMessage, RETRYABLE);
+		assert.doesNotMatch(c.turnOutput.errorMessage, TOOL_FAILURE_PREFIX);
+		assert.ok(c.turnOutput.errorMessage.includes(limitResult.result), "keeps Claude Code's own wording");
+		assert.ok(c.turnOutput.errorMessage.includes("five_hour"));
+	});
+
+	it("labels only the failure it caused, not a later one", async () => {
+		const c = makeCtx();
+		await consume(c, [rejection, limitResult, errorResult]);
+
+		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
+	});
+
+	it("leaves an unrelated failure alone", async () => {
+		const c = makeCtx();
+		await consume(c, [errorResult]);
+		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
+	});
+});
+
 describe("error results", () => {
 	it("marks the turn errored and finalizes with an error event", async () => {
 		const c = makeCtx();
