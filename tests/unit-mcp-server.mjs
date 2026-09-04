@@ -44,10 +44,14 @@ const NESTED_TOOL_SCHEMA = {
 // requests into transport.onmessage, read replies out of transport.send.
 async function connectClient(server) {
 	const pending = new Map();
+	const notifications = [];
 	const transport = {
 		start: async () => {},
 		close: async () => {},
-		send: async (msg) => pending.get(msg.id)?.(msg),
+		send: async (msg) => {
+			if (msg.method === "notifications/tools/list_changed") notifications.push(msg);
+			else pending.get(msg.id)?.(msg);
+		},
 	};
 	await server.instance.connect(transport);
 
@@ -69,11 +73,11 @@ async function connectClient(server) {
 
 	await request("initialize", {
 		protocolVersion: "2025-06-18",
-		capabilities: {},
+		capabilities: { tools: { listChanged: true } },
 		clientInfo: { name: "test", version: "1.0.0" },
 	});
 	transport.onmessage({ jsonrpc: "2.0", method: "notifications/initialized" });
-	return { request, callTool };
+	return { request, callTool, notifications };
 }
 
 describe("MCP tool schema advertisement", () => {
@@ -127,6 +131,36 @@ describe("MCP tool schema advertisement", () => {
 
 	it("preserves anyOf branches", () => {
 		assert.deepStrictEqual(listed.properties.either.anyOf, [{ type: "string" }, { type: "number" }]);
+	});
+});
+
+describe("MCP tool list updates", () => {
+	it("advertises and serves a tool added after the client connects", async () => {
+		const tools = () => [
+			{
+				name: "lazy_tool_search",
+				description: "Load a tool",
+				inputSchema: { type: "object", properties: {} },
+				handler: async () => ({ content: [{ type: "text", text: "loaded" }] }),
+			},
+			{
+				name: "ctx_execute",
+				description: "Execute code",
+				inputSchema: { type: "object", properties: {} },
+				handler: async (toolCallId) => ({ content: [{ type: "text", text: toolCallId }] }),
+			},
+		];
+		const server = createToolServer("custom-tools", [tools()[0]]);
+		const { request, callTool, notifications } = await connectClient(server);
+
+		await server.updateTools(tools());
+		const listed = await request("tools/list", {});
+		assert.deepStrictEqual(listed.result.tools.map((tool) => tool.name), ["lazy_tool_search", "ctx_execute"]);
+		assert.strictEqual(notifications.length, 1);
+		await server.updateTools(tools());
+		assert.strictEqual(notifications.length, 1);
+		const result = await callTool("ctx_execute", "toolu_dynamic");
+		assert.strictEqual(result.result.content[0].text, "toolu_dynamic");
 	});
 });
 

@@ -56,18 +56,24 @@ function assertObjectSchema(tool: McpToolDef): void {
 	}
 }
 
-export function createToolServer(name: string, tools: McpToolDef[]) {
-	const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
-	const byName = new Map(tools.map((tool) => [tool.name, tool]));
+export function createToolServer(name: string, initialTools: McpToolDef[]) {
+	const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+	let tools = initialTools;
+	let byName = new Map(tools.map((tool) => [tool.name, tool]));
 	for (const tool of tools) assertObjectSchema(tool);
 
-	server.server.setRequestHandler(ListToolsRequestSchema, () => ({
-		tools: tools.map((tool) => ({
-			name: tool.name,
-			description: tool.description,
-			inputSchema: tool.inputSchema as Record<string, unknown>,
-		})),
+	const toolList = () => tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		inputSchema: tool.inputSchema as Record<string, unknown>,
 	}));
+	const hasSameTools = (next: McpToolDef[]) => JSON.stringify(toolList()) === JSON.stringify(next.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		inputSchema: tool.inputSchema,
+	})));
+
+	server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: toolList() }));
 
 	server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		const tool = byName.get(request.params.name);
@@ -82,5 +88,16 @@ export function createToolServer(name: string, tools: McpToolDef[]) {
 		return { content, isError };
 	});
 
-	return { type: "sdk" as const, name, instance: server };
+	return {
+		type: "sdk" as const,
+		name,
+		instance: server,
+		async updateTools(nextTools: McpToolDef[]): Promise<void> {
+			for (const tool of nextTools) assertObjectSchema(tool);
+			if (hasSameTools(nextTools)) return;
+			tools = nextTools;
+			byName = new Map(tools.map((tool) => [tool.name, tool]));
+			await server.sendToolListChanged();
+		},
+	};
 }
