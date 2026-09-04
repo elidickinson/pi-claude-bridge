@@ -765,6 +765,9 @@ export const __test = {
 	CC_CHILD_ENV,
 	buildMcpServers,
 	branchSummaryOutcome,
+	get promptCaptures() {
+		return promptCaptures;
+	},
 };
 
 // --- Provider helpers: tool name mapping ---
@@ -2034,15 +2037,42 @@ export default function (pi: ExtensionAPI) {
 	// `--system-prompt` replaces pi's default rather than adding to it, but Claude
 	// Code's preset carries its own tool and permission guidance that the bridge
 	// still depends on, so both flags are forwarded as an append.
-	pi.on("before_agent_start", (event) => {
-		const options = event.systemPromptOptions;
+	//
+	// The options (custom/append/contextFiles/skills) are pi config, stable across a
+	// turn; only the auto-generated tool list in the rendered prompt varies. Stash them
+	// at before_agent_start so the agent_start recording below can reuse them.
+	let lastSystemPromptOptions: typeof undefined | NonNullable<Parameters<typeof recordSystemPrompt>[1]>;
+	function recordSystemPrompt(systemPrompt: string | undefined, options: {
+		customPrompt?: string;
+		appendSystemPrompt?: string;
+		contextFiles?: { path: string; content: string }[];
+		skills?: Parameters<typeof promptCaptures.record>[1]["skills"];
+		selectedTools?: string[];
+	} | undefined) {
+		if (!systemPrompt) return;
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
-		promptCaptures.record(event.systemPrompt, {
+		promptCaptures.record(systemPrompt, {
 			custom: options?.customPrompt,
 			append: options?.appendSystemPrompt,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 		});
+	}
+	pi.on("before_agent_start", (event) => {
+		lastSystemPromptOptions = event.systemPromptOptions;
+		recordSystemPrompt(event.systemPrompt, event.systemPromptOptions);
+	});
+	// The prompt the provider actually queries with is the fully-widened one: MCP tool
+	// descriptions merge into the system prompt only after their servers connect, which
+	// is after before_agent_start. ctx.getSystemPrompt() returns that widened prompt by
+	// agent_start (verified: before_agent_start=10,988 chars vs agent_start/query=23,479).
+	// A subagent embeds the widened parent prompt verbatim (pi-subagents reads
+	// ctx.getSystemPrompt() at dispatch), so unless the widened prompt is a capture key
+	// too, the child's turn resolves against nothing, falls to a verbatim side request,
+	// and ships pi's harness — tripping the server's third-party plan-eligibility check
+	// ("out of extra usage"). Recording it here, before the query, restores the match.
+	pi.on("agent_start", (_event, ctx) => {
+		recordSystemPrompt(ctx.getSystemPrompt(), lastSystemPromptOptions);
 	});
 	pi.on("session_shutdown", () => {
 		reportLeaks("session_shutdown");
