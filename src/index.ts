@@ -21,6 +21,7 @@ import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } f
 import {
 	collectPromptSkills,
 	projectPromptCapture,
+	PromptCaptureLifecycle,
 	PromptCaptures,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
@@ -765,6 +766,9 @@ export const __test = {
 	CC_CHILD_ENV,
 	buildMcpServers,
 	branchSummaryOutcome,
+	resolvePromptCapture(systemPrompt: string) {
+		return promptCaptures.resolve(systemPrompt);
+	},
 };
 
 // --- Provider helpers: tool name mapping ---
@@ -1992,6 +1996,10 @@ const PREVIEW_MAX_LINES = 6;
 let askClaudeToolName = "AskClaude";
 
 export default function (pi: ExtensionAPI) {
+	// Structured prompt inputs are available in `before_agent_start`, while the
+	// finalized prompt is only available after every handler in that chain ran.
+	const promptCaptureLifecycle = new PromptCaptureLifecycle(promptCaptures);
+
 	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
@@ -2027,6 +2035,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
+		promptCaptureLifecycle.clear();
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
@@ -2034,17 +2043,24 @@ export default function (pi: ExtensionAPI) {
 	// `--system-prompt` replaces pi's default rather than adding to it, but Claude
 	// Code's preset carries its own tool and permission guidance that the bridge
 	// still depends on, so both flags are forwarded as an append.
+	//
+	// Capture the structured inputs here, but wait until `agent_start` to key them:
+	// later `before_agent_start` handlers may still rewrite the assembled prompt.
 	pi.on("before_agent_start", (event) => {
 		const options = event.systemPromptOptions;
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
-		promptCaptures.record(event.systemPrompt, {
+		promptCaptureLifecycle.prepare({
 			custom: options?.customPrompt,
 			append: options?.appendSystemPrompt,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 		});
 	});
+	pi.on("agent_start", (_event, ctx) => {
+		promptCaptureLifecycle.recordFinal(ctx.getSystemPrompt());
+	});
 	pi.on("session_shutdown", () => {
+		promptCaptureLifecycle.clear();
 		reportLeaks("session_shutdown");
 		clearSession("session_shutdown");
 	});

@@ -232,6 +232,39 @@ export class PromptCaptures {
 	}
 }
 
+/**
+ * Carries structured prompt inputs from `before_agent_start` to `agent_start`.
+ *
+ * Pi chains `before_agent_start` handlers in extension order, so the prompt seen
+ * by the bridge may still be rewritten by a later extension. `agent_start`
+ * runs after that chain and exposes the finalized prompt through
+ * `ctx.getSystemPrompt()`. Keeping the inputs pending until then makes the
+ * capture independent of extension load order.
+ */
+export class PromptCaptureLifecycle {
+	private pending: PromptCaptureInput | undefined;
+
+	constructor(private readonly captures: PromptCaptures) {}
+
+	prepare(input: PromptCaptureInput): void {
+		this.pending = {
+			...input,
+			contextFiles: input.contextFiles.map((file) => ({ ...file })),
+			skills: [...input.skills],
+		};
+	}
+
+	recordFinal(systemPrompt: string): void {
+		const input = this.pending;
+		this.pending = undefined;
+		if (input) this.captures.record(systemPrompt, input);
+	}
+
+	clear(): void {
+		this.pending = undefined;
+	}
+}
+
 export function projectPromptCapture(
 	capture: PromptCapture,
 	options: { skillReadTool: SkillReadTool },
