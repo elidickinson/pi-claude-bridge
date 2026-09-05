@@ -27,7 +27,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -474,4 +478,100 @@ test("--thinking-display summarized is still an accepted flag value", { timeout:
 		options: providerOptions({ effort: "medium", maxTurns: 1, persistSession: false, extraArgs: { "strict-mcp-config": null, "thinking-display": "summarized" } }),
 	}));
 	assert.equal(result?.subtype, "success", `CC rejected --thinking-display summarized: ${JSON.stringify(result)}`);
+});
+
+// --- The gitStatus cache pinning ---
+
+/** One-turn stub API: records every /v1/messages body, answers a canned "OK" SSE.
+ *  Lets a contract assert on the exact request CC builds, at zero API cost. */
+function stubApi(requests) {
+	const server = createServer((req, res) => {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			if (req.method === "POST" && req.url.startsWith("/v1/messages")) {
+				const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+				requests.push(body);
+				const event = (name, obj) => `event: ${name}\ndata: ${JSON.stringify(obj)}\n\n`;
+				res.writeHead(200, { "content-type": "text/event-stream" });
+				res.end(
+					event("message_start", { type: "message_start", message: { id: `msg_stub_${requests.length}`, type: "message", role: "assistant", content: [], model: body.model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } })
+					+ event("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+					+ event("ping", { type: "ping" })
+					+ event("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } })
+					+ event("content_block_stop", { type: "content_block_stop", index: 0 })
+					+ event("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } })
+					+ event("message_stop", { type: "message_stop" }));
+			} else {
+				res.writeHead(404).end();
+			}
+		});
+	});
+	return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({
+		url: `http://127.0.0.1:${server.address().port}`,
+		close: () => server.close(),
+	})));
+}
+
+test("includeGitInstructions:false strips gitStatus and keeps the preset static across git transitions", { timeout: 180_000 }, async () => {
+	// The claude_code preset embeds a gitStatus snapshot (git status --short +
+	// log -n 5) as the trailing suffix of the cached system block, and the
+	// bridge re-invokes CC every turn — so a git transition rewrites it and
+	// busts the prompt cache for the whole conversation from the system prompt
+	// onward (diag/probe-git-cache.mjs). The provider path sets
+	// includeGitInstructions:false for this reason; pin both sides: without it
+	// the block is present AND a git transition moves it (the break itself),
+	// with it the block is gone and the system prompt is byte-identical
+	// across a transition. This pins CC's behavior, not the bridge's call
+	// site — src/index.ts's provider options are the consumer.
+	const requests = [];
+	const api = await stubApi(requests);
+	const repo = mkdtempSync(join(tmpdir(), "cc-gitpin-"));
+	const gitIn = (...args) => execFileSync("git", args, { cwd: repo, env: { ...process.env, GIT_AUTHOR_NAME: "probe", GIT_AUTHOR_EMAIL: "p@x", GIT_COMMITTER_NAME: "probe", GIT_COMMITTER_EMAIL: "p@x" } });
+	const env = { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
+
+	try {
+		gitIn("init", "-q");
+		gitIn("commit", "--allow-empty", "-qm", "init");
+		const opts = (settings, resume) => providerOptions({
+			cwd: repo, maxTurns: 1, settings, env,
+			systemPrompt: { type: "preset", preset: "claude_code" },
+			...(resume ? { resume } : {}),
+		});
+		const sysText = (body) => (body.system ?? []).map((b) => b.text ?? "").join("\n");
+		// Filter to our own requests by a preset anchor: if CC ever adds
+		// background side requests, slicing the last two off the raw log could
+		// compare those and pass for the wrong reason.
+		const presetReqs = () => requests.filter((b) => sysText(b).includes("You are an interactive agent"));
+
+		// Control: default preset carries the block, and a git transition moves
+		// it — the very break this test's positive side pins away.
+		const ctrl = await collect(query({ prompt: "Reply OK.", options: opts({}) }));
+		assert.ok(sysText(requests.at(-1)).includes("gitStatus:"),
+			"the preset no longer carries a gitStatus block — this test's negative side is obsolete");
+		writeFileSync(join(repo, "ctrl-new.txt"), "x\n");
+		await collect(query({ prompt: "Reply OK.", options: opts({}, ctrl.result?.session_id) }));
+		assert.notDeepEqual(presetReqs().at(-2).system.slice(1), presetReqs().at(-1).system.slice(1),
+			"a git transition did not move the system prompt without the setting — the break this test guards no longer exists");
+
+		// With the setting: baseline, then a git transition, then resume.
+		const base = await collect(query({ prompt: "Reply OK.", options: opts({ includeGitInstructions: false }) }));
+		assert.equal(base.result?.subtype, "success");
+		writeFileSync(join(repo, "untracked.txt"), "x\n");
+		await collect(query({ prompt: "Reply OK.", options: opts({ includeGitInstructions: false }, base.result?.session_id) }));
+
+		const [turn1, turn2] = presetReqs().slice(-2);
+		for (const body of [turn1, turn2]) {
+			assert.ok(!JSON.stringify({ system: body.system, messages: body.messages }).includes("gitStatus:"),
+				"a gitStatus block survived includeGitInstructions:false");
+		}
+		// Block 0 is the per-request billing header (cch hex), ignored by the
+		// cache key; everything after it must be byte-identical across the
+		// transition for the cache to hold.
+		assert.deepEqual(turn1.system.slice(1), turn2.system.slice(1),
+			"system prompt changed across a git transition despite includeGitInstructions:false");
+	} finally {
+		api.close();
+		rmSync(repo, { recursive: true, force: true });
+	}
 });

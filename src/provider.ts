@@ -329,7 +329,20 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		// enforcing it here too, this is the note that explains the failure.
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
-		settings: { ...claudeCodeSettings(bridgeState.providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
+		// includeGitInstructions:false drops the gitStatus block from the preset.
+		// That block is the trailing suffix of the cached system block, and a
+		// git-state transition (new file, staging, commit) rewrites it — busting
+		// the prompt cache for the whole conversation from there on (see
+		// diag/probe-git-cache.mjs). The bridge re-invokes CC per turn, so this
+		// hit on every transition. Cost here is nil: the setting also strips
+		// CC's git-workflow guidance from its Bash tool prompt, but the provider
+		// path runs CC with `tools: []`, so those definitions never ship.
+		// AskClaude keeps CC's native tools and its guidance — unaffected.
+		settings: {
+			...claudeCodeSettings(bridgeState.providerSettings),
+			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
+			includeGitInstructions: false,
+		},
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend ? systemPromptAppend : undefined,

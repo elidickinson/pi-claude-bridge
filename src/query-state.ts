@@ -28,6 +28,12 @@ export class QueryContext {
 	turnToolCallIds: string[] = [];
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
+	/** Last rate-limit rejection seen on this query. Claude Code sends it just before the
+	 *  failure it caused, which is the only thing tying the two together. */
+	rateLimitRejection: { rateLimitType?: string; resetsAt?: number } | null = null;
+	/** Highest 5% utilization bucket we notified for, so repeat rate_limit_event spam is suppressed. */
+	lastRateLimitWarnStep: number | null = null;
+	lastRateLimitWarnThreshold: number | undefined;
 
 	// Per-turn (reset together)
 	turnOutput: AssistantMessage | null = null;

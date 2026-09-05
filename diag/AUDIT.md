@@ -215,7 +215,9 @@ Classified out as benign: idle > 5 min (88), effort changed (30), model change
 
 ### Finding: ~25% of `--resume` boundaries re-send the whole conversation
 
-The one finding here that neither known bug explains.
+The one finding here that neither known bug explains. Superseded in part: most of
+these are system-prompt changes, not conversation re-sends — see "Git-status
+transitions" below.
 
 Confirmed independently of the pair math, by bucketing the first `usage:` line
 after every `provider: fresh query … resume=<id>`:
@@ -245,11 +247,25 @@ re-cached 150 s after the previous turn, `path=reuse` (the bridge did not rewrit
 the session at all).
 
 Localization: among the 169 sub-5-minute failures, 43% have `cacheRead` exactly
-equal to that pi process's *first*-request `cacheRead` — the system+tools preamble
-(commonly 6,599 tokens) survives and divergence begins at the first conversation
-message. A further 39% cache nothing at all (`cacheRead=0`), implicating the
-preamble too. Break rate is flat across prefix sizes (<20k through >200k) and
-across models, so it is not a large-context or model-specific effect.
+equal to that pi process's *first*-request `cacheRead` (commonly 6,599 tokens).
+A further 39% cache nothing at all (`cacheRead=0`). Break rate is flat across
+prefix sizes (<20k through >200k) and across models, so it is not a large-context
+or model-specific effect.
+
+**Corrected reading of that 43%.** It was first read as "the system+tools preamble
+survives, so divergence begins at the first conversation message", which pointed
+away from the system prompt. That is backwards. The prefix is ordered
+`tools → system[0..2] → messages`, and the constant is the **tools** prefix alone,
+so `cacheRead == constant` means the tool schemas survived and **the system prompt
+changed**. The 39% `cacheRead=0` bucket is the one that does not implicate the
+system prompt — it is a tool-set change or a total eviction.
+
+Two independent confirmations. Clean starts (`resume=none msgs=1`, where there is
+no conversation to read back) land on exactly the same constants — 6,599 / 7,314 /
+7,315 / 7,336 at `tools=11`, 7,976 at `tools=15` — and the constant does not move
+while the prompt grows from 145k to 445k tokens. And `diag/probe-git-cache.mjs`
+reproduces the truncation live: on a bridge-shaped request a git-status change
+drops `cacheRead` from 26,941 to 11,754, the tools prefix, rather than to zero.
 
 #### Withdrawn: the correlation with CC's appended-record count
 
@@ -263,8 +279,12 @@ scratch rather than adjusting the old figures, which are in git history.
 The hypothesis itself is untouched and still worth testing: every bridge turn
 crosses a `--resume` boundary, CC appends its own records during the previous query
 (one per content block, one per tool result), and if that disk round-trip is not
-byte-faithful the prefix diverges exactly where the conversation starts — the
-`cacheRead == preamble` signature above.
+byte-faithful the prefix diverges exactly where the conversation starts. Note that
+its signature is `cacheRead == tools + system`, not the tools-only constant, which
+belongs to the system prompt. Calibrating the tools prefix per module from its
+commit-spanning breaks (24 modules, 268 boundaries), 83 breaks land exactly on it
+and 15 land elsewhere, so re-serialization can account for at most ~15% of
+residual boundary breaks.
 
 **Thinking blocks are untested, not exonerated.** The obvious log-side proxy does
 not exist: `reasoning=` appears in **0** of 14,994 `usage:` lines, so the SDK never
@@ -431,6 +451,81 @@ Evidence needed to make that case, and where it now stands:
 
 The one upstream report that *is* ready is unrelated to caching: the reordering of
 same-millisecond parallel `tool_result` blocks on resume.
+
+### Finding: git-status transitions change the system prompt and truncate the read
+
+CC's `claude_code` preset ends with a `gitStatus:` block (`git status --short`
+plus `git log --oneline -n 5`) inside `system[2]`, which carries `cache_control
+ephemeral 1h`. Native CC computes it once per process; the bridge re-invokes CC
+per turn, so it is recomputed every turn and tracks the current working tree.
+
+`diag/probe-git-cache.mjs` pins the mechanism live against CC 2.1.141 / SDK
+0.2.141. Editing a file already listed dirty leaves `system[2]` byte-identical and
+hits fully; a status *transition* diverges inside the git block and truncates the
+read to the tools prefix. Confirmed for a new untracked path, `git add`
+(`' M'` → `'M '`), and a new commit. `system[0]` carries a per-request
+`x-anthropic-billing-header` with no `cache_control` and is ignored by the cache
+key — exclude it when diffing, or every pair looks divergent.
+
+#### Rate and cost
+
+Denominator is `--resume` boundary pairs after the standard exclusions (idle >5
+min, model change, effort change, tool-set change, compaction/reset, clean start,
+rebuild):
+
+```
+boundary pairs (strict)              1025
+system-prompt breaks                  173    16.9%
+in-query control (same rule)     43/12844     0.3%   <- system prompt is fixed for a query's lifetime
+```
+
+173 breaks re-cached **25.6M tokens** over 2026-04-09 → 2026-08-24; median 118k
+per event, p90 330k, max 516k. On the 631 boundaries where the working directory
+is recoverable the rate is 24.2%.
+
+#### The commit-spanning test
+
+Commits are the one transition with an independently recorded timestamp, so they
+can be joined against the log. A boundary "spans a commit" when the previous
+query's window contains a commit in that session's repo:
+
+```
+             sys-break   clean
+spans commit      52       14     78.8%
+no commit        101      464     17.9%
+odds ratio 17.1     Fisher two-tailed p = 2.5e-23
+```
+
+Controls: a placebo window shifted −24 h gives OR 2.9, so activity clustering is
+real but an order of magnitude smaller. The effect holds in every previous-query
+duration bin (`<60s` 50% vs 3.4% through `>10m` 85.7% vs 46.7%) and every prefix
+size bin (`<50k` 44% vs 9% through `>250k` 91% vs 25%). Single-repo natural
+experiment, one pi process `ya6eny` on 2026-08-12: 16 of 18 commit-spanning
+boundaries dropped to exactly 7,976, 0 of 54 non-spanning ones did, and every
+non-spanning boundary read 98–100%.
+
+Attributable to commits alone (excess over the non-spanning baseline): 40 events,
+**8.7M tokens**. A floor, since `git add`, new untracked files and branch switches
+are equally fatal and leave no recoverable timestamp.
+
+#### Caveats
+
+- **Whether this predates July 2026 is undetermined.** Monthly rate: Apr 6.4%
+  (n=157), May 10.4% (48), Jun 6.5% (46), Jul 24.3% (259), Aug 17.9% (515). Only
+  2 commit-spanning boundaries with a resolved repo exist before July, so the jump
+  could be a CC version change, a usage-pattern change, or improving cwd coverage.
+- `500eea19` does **not** split the corpus; it changed the AskClaude path only.
+  The provider path has passed `preset: "claude_code"` since 2026-04-02, before
+  the log opens (`git log -S`).
+- The non-commit portion is not decomposable: the 15.4% non-spanning on-prefix
+  break rate mixes untracked files, staging, branch switches, date rollover,
+  CLAUDE.md edits, and commits the scan missed. The commit test isolates git for
+  at least 26% of system-prompt breaks; the rest is unattributed.
+- cwd is unrecoverable for 38% of boundaries (394/1025), mostly early sessions
+  that never logged a rebuild.
+- `git log --all` may count commits on non-HEAD branches or rebase-rewritten
+  dates as spanning, which biases toward the null — the true effect is if
+  anything stronger.
 
 ---
 

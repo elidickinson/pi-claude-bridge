@@ -13,6 +13,7 @@
 
 import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { Config } from "./config.js";
+import { debug } from "./debug.js";
 import type { LongContextSettings } from "./models.js";
 import { PromptCaptures } from "./prompt-capture.js";
 import type { QueryContext } from "./query-state.js";
@@ -43,7 +44,17 @@ export const activeQueryContexts = new Set<QueryContext>();
 
 // Captures of what pi assembled per agent; see src/prompt-capture.ts for why this
 // is keyed rather than held in a single slot.
-export const promptCaptures = new PromptCaptures();
+export const promptCaptures = new PromptCaptures(256, (diagnostic) => {
+	const first = diagnostic.matches[0];
+	debug(
+		`prompt-capture: no match for ${diagnostic.systemPrompt.length}-char system prompt. `
+		+ (first
+			? `closest known (${first.key.length}-char) shares its first ${first.firstDivergent} chars and diverges at offset ${first.firstDivergent}: `
+			  + JSON.stringify(diagnostic.systemPrompt.slice(first.firstDivergent - 40, first.firstDivergent + 60))
+			: "no known captures to compare against."
+		) + ` known keys=${diagnostic.matches.length}`,
+	);
+});
 
 // --- Reassigned: properties on the shared object ---
 

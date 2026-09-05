@@ -33,8 +33,28 @@ export type PromptCapture = PromptCaptureInput & {
  * without recognizing pi prose or sub-agent markers. If pi later exposes an
  * inherited-system-prompt field, it should replace this inference.
  */
+export type PromptCaptureDiagnostic = {
+	/** The prompt that matched nothing: the full system prompt is too big to log
+	 *  inline, so a fingerprint plus the closest match's first divergent offset
+	 *  are enough to recognize the pump.
+	 *
+	 *  Closest is by shared prefix — the case that matters here is pi itself
+	 *  rebuilding the prompt outside `before_agent_start` (a changed tool list or
+	 *  fresh resource discovery), which edits near the boundary, and a prefix key
+	 *  gets us to within a handful of characters of where. */
+	systemPrompt: string;
+	matches: { key: string; firstDivergent: number }[];
+};
+
 export class PromptCaptures {
 	private readonly captures = new Map<string, PromptCapture>();
+	/** Invoked with everything that would otherwise be lost when resolution throws,
+	 *  so the bridge can write it to its debug log. Kept off the throw path itself:
+	 *  the resolver is hot and the caller may own a faster sink than string-building.
+	 *
+	 *  Set by the bridge on the shared instance; tests that want the diagnostic can
+	 *  pass one per instance. */
+	private readonly onDiagnose: (diagnostic: PromptCaptureDiagnostic) => void;
 
 	/** Pi rebuilds prompts when tools change, so retain only recent lookup keys.
 	 *  Inheritance edges hold direct references and survive key eviction.
@@ -45,7 +65,9 @@ export class PromptCaptures {
 	 *  own next turn would be evicted despite being in use. The bound exists only to
 	 *  cap an extension that rebuilds the prompt every turn, which would otherwise
 	 *  grow keys without limit. */
-	constructor(private readonly limit = 256) {}
+	constructor(private readonly limit = 256, onDiagnose?: (diagnostic: PromptCaptureDiagnostic) => void) {
+		this.onDiagnose = onDiagnose ?? (() => {});
+	}
 
 	record(systemPrompt: string, input: PromptCaptureInput): void {
 		const existing = this.captures.get(systemPrompt);
@@ -132,11 +154,15 @@ export class PromptCaptures {
 
 		const embedded = this.findInheritedPrompts(systemPrompt, systemPrompt);
 		if (embedded.length === 0) {
+			const matches = this.closestKnown(systemPrompt);
+			this.onDiagnose({ systemPrompt, matches });
 			throw new Error(
 				`prompt-capture: no capture for this ${systemPrompt.length}-char system prompt, and it embeds none of the ${this.captures.size} known. `
+				+ `Closest known match diverges at offset ${matches[0]?.firstDivergent ?? "?"} (${matches.length ? matches[0].key.length : 0}-char key). `
 				+ `Claude Code would receive none of this turn's context files, skills or custom instructions. `
 				+ `The usual cause is an extension loaded after claude-bridge that rewrites the system prompt from before_agent_start — `
-				+ `one that wraps it is fine, one that rebuilds or strips it leaves nothing to match.`,
+				+ `one that wraps it is fine, one that rebuilds or strips it leaves nothing to match. `
+				+ `(Also possible: pi rebuilt the prompt outside before_agent_start — a late-registered tool or fresh resource discovery.)`,
 			);
 		}
 
@@ -148,6 +174,25 @@ export class PromptCaptures {
 
 	get size(): number {
 		return this.captures.size;
+	}
+
+	/** Longest shared-prefix matches, best first, for the throw diagnostic. */
+	private closestKnown(systemPrompt: string): { key: string; firstDivergent: number }[] {
+		let shared = 0;
+		const matches: { key: string; firstDivergent: number }[] = [];
+		for (const key of this.captures.keys()) {
+			const limit = Math.min(key.length, systemPrompt.length);
+			let i = 0;
+			while (i < limit && key.charCodeAt(i) === systemPrompt.charCodeAt(i)) i++;
+			if (i >= shared) {
+				if (i > shared) {
+					shared = i;
+					matches.length = 0;
+				}
+				matches.push({ key, firstDivergent: i });
+			}
+		}
+		return matches;
 	}
 
 	private findInheritedPrompts(systemPrompt: string, custom?: string): InheritedPrompt[] {

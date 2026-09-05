@@ -114,6 +114,24 @@ describe("PromptCaptures", () => {
 		assert.equal(captures.resolveOrDerive(undefined), undefined);
 	});
 
+	it("reports the closest known capture when a prompt matches nothing", () => {
+		const diagnostics = [];
+		const captures = new PromptCaptures(64, (d) => diagnostics.push(d));
+		captures.record("prefix-common-THE-REST", capture());
+
+		let error;
+		try {
+			captures.resolveOrDerive("prefix-common-WHO-ARE-YOU");
+		} catch (e) {
+			error = e;
+		}
+
+		assert.match(String(error?.message), /diverges at offset 14 \(22-char key\)/);
+		assert.equal(diagnostics.length, 1);
+		assert.equal(diagnostics[0].matches[0].key, "prefix-common-THE-REST");
+		assert.equal(diagnostics[0].matches[0].firstDivergent, 14);
+	});
+
 	it("recursively projects an inherited prompt without Pi's harness", () => {
 		const browser = skill("browser");
 		const captures = new PromptCaptures();

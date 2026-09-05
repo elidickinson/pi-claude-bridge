@@ -37,6 +37,24 @@ export function resultErrorText(message: SDKMessage): string | undefined {
 	return `Claude Code failed: ${result.subtype ?? "unknown result"}`;
 }
 
+/** Name a failure as a rate limit when a rejection preceded it.
+ *
+ *  pi has no typed rate-limit error — `stopReason` is only ever `"error"` and the sole carrier
+ *  is `errorMessage` — so everything that reacts to a rate limit pattern-matches that string:
+ *  pi-subagents gates `fallbackModels` on a 35-pattern list, and key-rotating extensions use
+ *  their own. Claude Code words a subscription limit as "You're out of extra usage · resets
+ *  6:30pm", which matches none of them, so an exhausted quota reads as a fatal error and the
+ *  fallback chain never runs (issue #58).
+ *
+ *  Leading with "Claude rate limit" rather than appending keeps the phrase in any truncated
+ *  render, and avoids the `<tool> failed (exit N):` shape that pi-subagents treats as a tool
+ *  failure and refuses to retry. */
+export function describeRateLimitFailure(rejection: { rateLimitType?: string; resetsAt?: number }, failure: string): string {
+	const kind = rejection.rateLimitType ? ` (${rejection.rateLimitType})` : "";
+	const resets = rejection.resetsAt ? ` — resets ${new Date(rejection.resetsAt * 1000).toLocaleTimeString()}` : "";
+	return `Claude rate limit${kind}${resets}: ${failure}`;
+}
+
 // --- Usage helpers ---
 
 export function updateUsage(output: AssistantMessage, usage: Record<string, number | undefined>, model: Model<any>): void {
@@ -357,6 +375,12 @@ export async function consumeQuery(
 			logServedContextWindow("result", message, model);
 			resultError = resultErrorText(message);
 			if (resultError !== undefined) {
+				// Consume the rejection alongside the failure it caused, so a later
+				// unrelated failure on this query doesn't inherit the label.
+				if (queryCtx.rateLimitRejection) {
+					resultError = describeRateLimitFailure(queryCtx.rateLimitRejection, resultError);
+					queryCtx.rateLimitRejection = null;
+				}
 				debug(`consumeQuery: error result, subtype=${message.subtype}, error=${resultError}`);
 				if (queryCtx.turnOutput) {
 					queryCtx.turnOutput.stopReason = "error";
@@ -368,10 +392,31 @@ export async function consumeQuery(
 			const info = (message as any).rate_limit_info;
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
 			if (info?.status === "rejected") {
-				const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
+				// Held so the failure Claude Code sends next can be named as a rate limit.
+				queryCtx.rateLimitRejection = info;
+				// The "rate limited" notice below supersedes warnings; re-arm so the next
+				// window's warnings fire even if it opens straight into allowed_warning.
+				queryCtx.lastRateLimitWarnStep = null;
+				queryCtx.lastRateLimitWarnThreshold = undefined;
+				// resetsAt is Unix seconds, not milliseconds.
+				const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString() : "unknown";
 				bridgeState.piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+			} else if (info?.status === "allowed") {
+				// Back under the threshold (window reset) — re-arm the warning dedupe.
+				queryCtx.lastRateLimitWarnStep = null;
+				queryCtx.lastRateLimitWarnThreshold = undefined;
 			} else if (info?.status === "allowed_warning") {
-				bridgeState.piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
+				// utilization is a fraction (0..1); allowed_warning fires once it crosses surpassedThreshold.
+				const percent = Math.round((info.utilization ?? 0) * 100);
+				// The SDK emits one event per request, so only re-notify when the level
+				// rises past a new 5% step or the threshold changes.
+				const step = Math.floor(percent / 5);
+				const rose = queryCtx.lastRateLimitWarnStep === null || step > queryCtx.lastRateLimitWarnStep;
+				if (rose || info.surpassedThreshold !== queryCtx.lastRateLimitWarnThreshold) {
+					queryCtx.lastRateLimitWarnStep = step;
+					queryCtx.lastRateLimitWarnThreshold = info.surpassedThreshold;
+					bridgeState.piUI?.notify(`Claude rate limit warning: ${percent}% used (${info.rateLimitType ?? ""})`, "warning");
+				}
 			}
 			continue;
 		}

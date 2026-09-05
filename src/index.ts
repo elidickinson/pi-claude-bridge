@@ -10,7 +10,7 @@ import { MODELS, applyLongContext } from "./models.js";
 import { setRunQuery, streamClaudeAgentSdk } from "./provider.js";
 import { deliverToolResults, drainForAbort } from "./tool-delivery.js";
 import { syncSharedSession } from "./session-sync.js";
-import { consumeQuery, finalizeCurrentStream, resultErrorText } from "./stream-consumer.js";
+import { consumeQuery, describeRateLimitFailure, finalizeCurrentStream, resultErrorText } from "./stream-consumer.js";
 import { buildMcpServers } from "./tools.js";
 
 // --- Constants ---
@@ -56,6 +56,7 @@ export const __test = {
 	consumeQuery,
 	finalizeCurrentStream,
 	resultErrorText,
+	describeRateLimitFailure,
 	deliverToolResults,
 	drainForAbort,
 	CC_CHILD_ENV,
