@@ -1677,9 +1677,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
 		`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
-		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
-
-	// 3. Start SDK query and claim it for this context
+		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
 	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
 	queryCtx.activeQuery = sdkQuery;
@@ -2040,6 +2038,7 @@ export default function (pi: ExtensionAPI) {
 		promptCaptures.record(event.systemPrompt, {
 			custom: options?.customPrompt,
 			append: options?.appendSystemPrompt,
+			cwd: options?.cwd,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 		});

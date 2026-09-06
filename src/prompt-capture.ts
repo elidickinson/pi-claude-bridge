@@ -8,6 +8,8 @@ import { renderSkillsBlock, type SkillReadTool } from "./skills.js";
 export type PromptCaptureInput = {
 	custom?: string;
 	append?: string;
+	/** Session cwd, as pi wrote it into the prompt's `Current working directory:` footer. */
+	cwd?: string;
 	contextFiles: { path: string; content: string }[];
 	skills: Skill[];
 };
@@ -20,6 +22,14 @@ type InheritedPrompt = {
 
 export type PromptCapture = PromptCaptureInput & {
 	assembledPrompt: string;
+	/** The assembled prompt minus pi's per-session tail (skills catalogue, cwd
+	 *  footer) — the form pi-subagents' `inheritedIdentity` embeds in a child.
+	 *  Recorded so `findInheritedPrompts` can match children that carry the
+	 *  parent prompt stripped, which the full key never can: the stripping
+	 *  happens before embedding, so an exact substring search for the full
+	 *  prompt returns -1 and the whole base is forwarded. Undefined when the
+	 *  prompt has no tail to strip. */
+	tailStrippedPrompt?: string;
 	/** Exact previously assembled prompts embedded in `custom`. */
 	inherited: InheritedPrompt[];
 };
@@ -82,6 +92,8 @@ export class PromptCaptures {
 
 		capture.custom = input.custom;
 		capture.append = input.append;
+		capture.cwd = input.cwd;
+		capture.tailStrippedPrompt = stripSessionTail(systemPrompt, input.cwd);
 		capture.contextFiles = input.contextFiles.map((file) => ({ ...file }));
 		capture.skills = [...input.skills];
 		if (!existing || customChanged) {
@@ -200,10 +212,14 @@ export class PromptCaptures {
 
 		const candidates: Array<InheritedPrompt & { length: number }> = [];
 		for (const parent of this.reachableCaptures()) {
-			const key = parent.assembledPrompt;
-			if (key === systemPrompt || key.length === 0) continue;
-			for (let start = custom.indexOf(key); start !== -1; start = custom.indexOf(key, start + key.length)) {
-				candidates.push({ start, end: start + key.length, length: key.length, parent });
+			// Full key first, then the tail-stripped form pi-subagents embeds. Both
+			// are exact substring searches, so a match under either key is a real
+			// inheritance edge, and the edge covers precisely the matched span.
+			for (const key of [parent.assembledPrompt, parent.tailStrippedPrompt]) {
+				if (!key || key === systemPrompt || key.length === 0) continue;
+				for (let start = custom.indexOf(key); start !== -1; start = custom.indexOf(key, start + key.length)) {
+					candidates.push({ start, end: start + key.length, length: key.length, parent });
+				}
 			}
 		}
 
@@ -312,4 +328,46 @@ function projectCustom(
 		cursor = edge.end;
 	}
 	return result + capture.custom.slice(cursor);
+}
+
+/** First line of the section Pi writes above the `<available_skills>` catalogue. */
+const SKILLS_SECTION_HEADING =
+	"The following skills provide specialized instructions for specific tasks.";
+
+/** Closing tag of that catalogue. */
+const SKILLS_CATALOGUE_CLOSE = "</available_skills>";
+
+/**
+ * The prompt minus everything from pi's per-session tail onward, or undefined
+ * when no tail is present.
+ *
+ * Mirrors the cut pi-subagents' `inheritedIdentity` makes before embedding a
+ * parent prompt in a child (ADR 0006 there): everything from the skills
+ * catalogue onward — catalogue, cwd footer, extension-appended blocks — is
+ * resolved per session, so it is dropped rather than inherited. Both sides
+ * derive the markers from pi's `buildSystemPrompt`, which writes exactly one
+ * catalogue and one footer, the footer unconditionally last of its own
+ * sections; anchoring on the footer and walking back to the catalogue's
+ * closing tag keeps a catalogue quoted in a context file from displacing the
+ * cut (#801 there). A prompt carrying neither layer is not one
+ * `buildSystemPrompt` assembled, and is left alone.
+ */
+function stripSessionTail(prompt: string, cwd?: string): string | undefined {
+	const lines = prompt.split("\n");
+	const footerAt = cwd
+		? lines.lastIndexOf(`Current working directory: ${cwd.replaceAll("\\", "/")}`)
+		: -1;
+	const catalogueEnd =
+		footerAt === -1
+			? lines.lastIndexOf(SKILLS_CATALOGUE_CLOSE)
+			: lines[footerAt - 1] === SKILLS_CATALOGUE_CLOSE
+				? footerAt - 1
+				: -1;
+	const cut =
+		catalogueEnd === -1
+			? footerAt
+			: lines.lastIndexOf(SKILLS_SECTION_HEADING, catalogueEnd);
+	if (cut === -1) return undefined;
+	const stripped = lines.slice(0, cut).join("\n").trimEnd();
+	return stripped && stripped !== prompt ? stripped : undefined;
 }
