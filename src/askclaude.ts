@@ -201,7 +201,8 @@ async function promptAndWait(
 	let wasAborted = false;
 	const onAbort = () => {
 		wasAborted = true;
-		sdkQuery.interrupt().catch(() => { try { sdkQuery.close(); } catch {} });
+		void sdkQuery.interrupt().catch(() => {});
+		try { sdkQuery.close(); } catch {}
 	};
 	signal?.addEventListener("abort", onAbort, { once: true });
 

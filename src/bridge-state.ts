@@ -46,13 +46,14 @@ export const activeQueryContexts = new Set<QueryContext>();
 // is keyed rather than held in a single slot.
 export const promptCaptures = new PromptCaptures(256, (diagnostic) => {
 	const first = diagnostic.matches[0];
+	const sliceStart = first ? Math.max(0, first.firstDivergent - 40) : 0;
 	debug(
 		`prompt-capture: no match for ${diagnostic.systemPrompt.length}-char system prompt. `
 		+ (first
 			? `closest known (${first.key.length}-char) shares its first ${first.firstDivergent} chars and diverges at offset ${first.firstDivergent}: `
-			  + JSON.stringify(diagnostic.systemPrompt.slice(first.firstDivergent - 40, first.firstDivergent + 60))
+			  + JSON.stringify(diagnostic.systemPrompt.slice(sliceStart, first.firstDivergent + 60))
 			: "no known captures to compare against."
-		) + ` known keys=${diagnostic.matches.length}`,
+		) + ` prefix-matched keys=${diagnostic.matches.length}`,
 	);
 });
 

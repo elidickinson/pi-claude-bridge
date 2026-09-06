@@ -195,7 +195,7 @@ export function syncSharedSession(
 	// pi-side history rewrites such as /compact and session_tree: without it,
 	// missed = [].slice(cursor) can falsely hit REUSE and resume an unrelated
 	// longer CC session. See issue #25.
-	if (bridgeState.sharedSession && !bridgeState.sharedSession.needsRebuild && priorMessages.length >= bridgeState.sharedSession.cursor) {
+	if (bridgeState.sharedSession && !bridgeState.sharedSession.needsRebuild && bridgeState.sharedSession.cwd === cwd && priorMessages.length >= bridgeState.sharedSession.cursor) {
 		const missed = priorMessages.slice(bridgeState.sharedSession.cursor);
 		const trailingAssistantOnly =
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";

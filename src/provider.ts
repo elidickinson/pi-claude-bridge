@@ -242,6 +242,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	// contextForToolResults — which now means pushing its steer into this
 	// query's stdin, not just mismatching a map.
 	queryCtx.turnToolCallIds = [];
+	queryCtx.rateLimitRejection = null;
 	queryCtx.resetTurnState(model);
 	queryCtx.latestCursor = 0;
 
@@ -381,6 +382,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		const requestAbort = () => {
 			// interrupt() asks the CLI to stop gracefully; close() kills it immediately.
 			// Both are needed — interrupt alone lets the current API call finish.
+			abortCtx.rateLimitRejection = null;
 			void sdkQuery.interrupt().catch(() => {});
 			try { sdkQuery.close(); } catch {}
 		};

@@ -386,10 +386,12 @@ export async function consumeQuery(
 					queryCtx.turnOutput.stopReason = "error";
 					queryCtx.turnOutput.errorMessage = resultError;
 				}
+			} else {
+				queryCtx.rateLimitRejection = null;
 			}
 		}
 		if (message.type === "rate_limit_event") {
-			const info = (message as any).rate_limit_info;
+			const info = message.rate_limit_info;
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
 			if (info?.status === "rejected") {
 				// Held so the failure Claude Code sends next can be named as a rate limit.

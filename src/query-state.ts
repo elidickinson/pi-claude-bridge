@@ -15,6 +15,8 @@ export interface PendingToolCall {
 	resolve: (result: McpResult) => void;
 }
 
+export type StreamBlock = (AssistantMessage["content"][number]) & { index?: number; partialJson?: string };
+
 export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: unknown | null = null;
@@ -41,9 +43,9 @@ export class QueryContext {
 	turnSawStreamEvent = false;
 	turnSawToolCall = false;
 
-	get turnBlocks(): Array<any> {
+	get turnBlocks(): StreamBlock[] {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
-		return this.turnOutput.content;
+		return this.turnOutput.content as StreamBlock[];
 	}
 
 	/** Answer every parked MCP handler with `reason` and forget the turn's queued

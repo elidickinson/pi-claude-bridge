@@ -10,7 +10,7 @@ import type { Context } from "@earendil-works/pi-ai";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { activeQueryContexts, bridgeState } from "./bridge-state.js";
 import { extractUserPrompt, extractUserPromptBlocks } from "./convert.js";
-import { debug } from "./debug.js";
+import { debug, DEBUG } from "./debug.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { userMessage, type PromptStream } from "./prompt-stream.js";
 import { QueryContext } from "./query-state.js";
@@ -92,7 +92,7 @@ export async function deliverToolResults(
 		if (id && c.pendingToolCalls.has(id)) {
 			const pending = c.pendingToolCalls.get(id)!;
 			c.pendingToolCalls.delete(id);
-			debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
+			if (DEBUG) debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
 			pending.resolve(result);
 		} else if (id) {
 			c.pendingResults.set(id, result);
@@ -106,7 +106,7 @@ export async function deliverToolResults(
 	}
 	if (c.pendingToolCalls.size > 0) {
 		debug(`WARNING: ${c.pendingToolCalls.size} MCP handlers still waiting after delivering ${results.length} results`);
-		bridgeState.piUI?.notify(`Claude bridge: ${c.pendingToolCalls.size} tool handler(s) still waiting — provider may be stuck`, "warning");
+		bridgeState.piUI?.notify(`Claude bridge: ${c.pendingToolCalls.size} tool handler(s) still waiting (provider may be stuck)`, "warning");
 	}
 }
 
