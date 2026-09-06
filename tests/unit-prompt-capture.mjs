@@ -2,7 +2,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { collectPromptSkills, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import {
+	collectPromptSkills,
+	projectPromptCapture,
+	PromptCaptures,
+	sharedPromptCaptures,
+} from "../src/prompt-capture.js";
 
 const PI_HARNESS = "You are an expert coding assistant operating inside pi. Pi documentation: pi packages (docs/packages.md).";
 const PARENT_KEY = `${PI_HARNESS}\n\n<project_context>raw parent context</project_context>\nCurrent working directory: /parent`;
@@ -245,6 +250,25 @@ describe("PromptCaptures", () => {
 		assert.equal(occurrences(project(captures, CHILD_KEY), "/skills/browser/SKILL.md"), 1);
 	});
 
+	it("matches tail-stripped parent prompt embedded by subagents", () => {
+		const captures = new PromptCaptures();
+		const SKILLS_SECTION = "The following skills provide specialized instructions for specific tasks.\n<available_skills>\n</available_skills>\nCurrent working directory: /parent";
+		const parentFull = `${PARENT_KEY}\n\n${SKILLS_SECTION}`;
+		captures.record(parentFull, capture({
+			cwd: "/parent",
+			contextFiles: [{ path: "/AGENTS.md", content: "parent rules" }],
+		}));
+
+		// A subagent embedding the parent prompt minus skills/cwd tail
+		const childCustom = `${PARENT_KEY}\n\nchild instructions`;
+		const childKey = `${childCustom}\nCurrent working directory: /child`;
+		captures.record(childKey, capture({ custom: childCustom }));
+
+		const childCapture = captures.resolve(childKey);
+		assert.equal(childCapture?.inherited.length, 1);
+		assert.equal(childCapture?.inherited[0].parent.contextFiles[0].content, "parent rules");
+	});
+
 	it("is bounded and evicts the least-recently-recorded key", () => {
 		const captures = new PromptCaptures(3);
 		captures.record("a", capture());
@@ -257,5 +281,20 @@ describe("PromptCaptures", () => {
 		assert.equal(captures.resolve("b"), undefined);
 		assert.equal(captures.resolve("a").custom, "refreshed");
 		assert.ok(captures.resolve("c") && captures.resolve("d"));
+	});
+
+	it("shares isolated-agent captures across module instances", async () => {
+		const childModule = await import("../src/prompt-capture.js?instance=isolated-child");
+		assert.notEqual(childModule.PromptCaptures, PromptCaptures);
+		const isolatedPrompt = "You are an isolated smoke-test agent.";
+
+		childModule.sharedPromptCaptures().record(isolatedPrompt, capture({
+			custom: isolatedPrompt,
+			contextFiles: [{ path: "/AGENTS.md", content: "isolated rules" }],
+		}));
+
+		const resolved = sharedPromptCaptures().resolveOrDerive(isolatedPrompt);
+		assert.equal(resolved?.assembledPrompt, isolatedPrompt);
+		assert.equal(resolved?.contextFiles[0].content, "isolated rules");
 	});
 });

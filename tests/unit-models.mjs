@@ -173,6 +173,13 @@ describe("resolveModel", () => {
 		assert.equal(resolveModel(models, "claude-opus-4-6")?.id, "claude-opus-4-6");
 	});
 
+	it("an exact id wins over an earlier id that contains it", () => {
+		const successorFirst = [{ id: "claude-fable-5-1" }, { id: "claude-fable-5" }];
+		assert.equal(resolveModel(successorFirst, "claude-fable-5")?.id, "claude-fable-5");
+		assert.equal(resolveModel(successorFirst, "claude-fable-5-1")?.id, "claude-fable-5-1");
+		assert.equal(resolveModel(successorFirst, "fable")?.id, "claude-fable-5-1");
+	});
+
 	it("returns undefined when no match", () => {
 		assert.equal(resolveModel(models, "gpt-9"), undefined);
 	});

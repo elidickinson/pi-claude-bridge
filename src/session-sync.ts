@@ -68,6 +68,7 @@ function convertAndImportMessages(
 		const droppedParts = [
 			dropped.thinking ? `${dropped.thinking} thinking (${[...dropped.providers].sort().join(", ")})` : "",
 			dropped.abortedTurns ? `${dropped.abortedTurns} aborted turn(s)` : "",
+			dropped.unreplayableLatest ? `${dropped.unreplayableLatest} unreplayable latest turn(s)` : "",
 			...[...dropped.other].map(([type, n]) => `${n} ${type}`),
 		].filter(Boolean);
 		if (droppedParts.length > 0) {

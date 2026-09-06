@@ -118,6 +118,7 @@ export default function (pi: ExtensionAPI) {
 	};
 	const registeredModels = applyLongContext(MODELS, bridgeState.longContextSettings);
 
+	bridgeState.pendingNotices = [];
 	if (!config.startupNoticeShown) {
 		if (config.provider?.plan === undefined) bridgeState.pendingNotices.push('Are you using a Max plan? You need to set provider.plan to "max" to unlock 1M context in Opus.');
 		if (config.askClaude?.enabled === undefined) bridgeState.pendingNotices.push("The AskClaude tool is opt-in only. Set askClaude.enabled to use it.");
@@ -155,6 +156,7 @@ export default function (pi: ExtensionAPI) {
 		promptCaptures.record(event.systemPrompt, {
 			custom: options?.customPrompt,
 			append: options?.appendSystemPrompt,
+			cwd: options?.cwd,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 		});

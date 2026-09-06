@@ -15,7 +15,7 @@ import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-co
 import type { Config } from "./config.js";
 import { debug } from "./debug.js";
 import type { LongContextSettings } from "./models.js";
-import { PromptCaptures } from "./prompt-capture.js";
+import { sharedPromptCaptures } from "./prompt-capture.js";
 import type { QueryContext } from "./query-state.js";
 
 export interface SessionState {
@@ -43,8 +43,9 @@ export interface SessionState {
 export const activeQueryContexts = new Set<QueryContext>();
 
 // Captures of what pi assembled per agent; see src/prompt-capture.ts for why this
-// is keyed rather than held in a single slot.
-export const promptCaptures = new PromptCaptures(256, (diagnostic) => {
+// is keyed rather than held in a single slot. Process-wide state via sharedPromptCaptures
+// ensures isolated subagent module instances share captures with the parent.
+export const promptCaptures = sharedPromptCaptures(256, (diagnostic) => {
 	const first = diagnostic.matches[0];
 	const sliceStart = first ? Math.max(0, first.firstDivergent - 40) : 0;
 	debug(
