@@ -23,7 +23,8 @@
     "src",
     "README.md",
     "LICENSE",
-    "assets"
+    "assets",
+    "docs"
   ],
   "scripts": {
     "test:unit": "node --import tsx --import ./tests/lib/setup.mjs --test tests/unit-*.mjs",
