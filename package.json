@@ -17,7 +17,7 @@
     "url": "git+https://github.com/elidickinson/pi-claude-bridge.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "files": [
     "src",

@@ -12,8 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 is the engines floor; 24 is what most contributors run.
-        node: ["20", "24"]
+        # 22 is the Active LTS floor required by dependencies (undici >=22.19); 24 is Current.
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
