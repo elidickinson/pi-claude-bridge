@@ -2072,6 +2072,7 @@ export default function (pi: ExtensionAPI) {
 	function recordSystemPrompt(source: string, systemPrompt: string | undefined, options: {
 		customPrompt?: string;
 		appendSystemPrompt?: string;
+		cwd?: string;
 		contextFiles?: { path: string; content: string }[];
 		skills?: Parameters<typeof promptCaptures.record>[1]["skills"];
 		selectedTools?: string[];
@@ -2081,6 +2082,7 @@ export default function (pi: ExtensionAPI) {
 		promptCaptures.record(systemPrompt, {
 			custom: options?.customPrompt,
 			append: options?.appendSystemPrompt,
+			cwd: options?.cwd,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 		}, source);

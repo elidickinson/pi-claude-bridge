@@ -5,17 +5,15 @@
  *
  * The agent_start record keys the prompt pi renders from the final before_agent_start
  * options (ctx.getSystemPrompt()), carrying the stashed portable parts. That fixes the
- * widened-dispatch case (see unit-agent-start-capture.mjs). The reported failure shapes
- * that still fall outside it:
+ * widened-dispatch case (see unit-agent-start-capture.mjs), and tail-stripped inheritance
+ * (issue #88) is fixed by matching children that embed a stripped parent — see
+ * unit-tail-stripped-inheritance.mjs. The reported failure shapes that still fall
+ * outside it:
  *
- * 1. Tail-stripped inheritance (issue #88): a child embedding its parent prompt minus
- *    pi's per-session tail (skills catalogue, cwd footer) matches no full-prompt key.
- *    (gotgenes/pi-subagents strips the tail; elidickinson/pi-subagents embeds verbatim
- *    and is covered by the agent_start record.)
- * 2. A prompt composed entirely outside pi's before_agent_start pipeline (issue #102's
+ * 1. A prompt composed entirely outside pi's before_agent_start pipeline (issue #102's
  *    pi-web-ui shape) is neither a rendered-options key, a handler-returned force
  *    (which agent_start does capture — see the force test below), nor an embedding.
- * 3. A prompt that changes AFTER turn_start (issue #91's remaining shape): turn_start
+ * 2. A prompt that changes AFTER turn_start (issue #91's remaining shape): turn_start
  *    re-keys every turn (first included), but a prompt rewritten between turn_start and
  *    the stream call — an extension context-event handler or a forced-prompt projection
  *    on newer pi — is seen by no boundary.
@@ -54,22 +52,6 @@ describe("agent_start capture — documented gaps", () => {
 			"the shared registry the pinned stream resolves against resolves the child's prompt",
 		);
 		assert.equal(freshTest.promptCaptures, __test.promptCaptures, "both instances share one capture registry");
-	});
-
-	it("does not match a child embedding a tail-stripped parent prompt (#88)", () => {
-		const handlers = activateWithMockPi();
-		const parentTail = "\n\nThe following skills provide specialized instructions.\n<available_skills>...</available_skills>\n\nCurrent working directory: /parent";
-		const parent = "You are pi.\n# Tools\n- read: Read a file" + parentTail;
-		handlers.get("before_agent_start")({ systemPrompt: parent, systemPromptOptions: {} });
-		handlers.get("agent_start")({}, { getSystemPrompt: () => parent });
-
-		// gotgenes/pi-subagents inheritedIdentity embeds the parent minus the per-session tail.
-		const strippedChild = `You are pi.\n# Tools\n- read: Read a file\n\n<sub_agent_context>child rules</sub_agent_context>`;
-		assert.throws(
-			() => __test.promptCaptures.resolveOrDerive(strippedChild),
-			/no capture/,
-			"the full assembled prompt is not a substring of its tail-stripped embedding",
-		);
 	});
 
 	it("does capture a handler-returned wholesale replacement: it resolves via the agent_start key", () => {

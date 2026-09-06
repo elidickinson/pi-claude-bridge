@@ -8,6 +8,8 @@ import { renderSkillsBlock, type SkillReadTool } from "./skills.js";
 export type PromptCaptureInput = {
 	custom?: string;
 	append?: string;
+	/** Session cwd, as pi wrote it into the prompt's `Current working directory:` footer. */
+	cwd?: string;
 	contextFiles: { path: string; content: string }[];
 	skills: Skill[];
 };
@@ -22,6 +24,21 @@ export type PromptCapture = PromptCaptureInput & {
 	assembledPrompt: string;
 	/** Which bridge boundary last recorded this key (before_agent_start | agent_start | turn_start). */
 	source?: string;
+	/** The assembled prompt minus pi's per-session tail (skills catalogue, cwd
+	 *  footer) — the form pi-subagents' `inheritedIdentity` embeds in a child
+	 *  whose workspace is the parent's. Recorded so `findInheritedPrompts` can
+	 *  match children that carry the parent prompt stripped, which the full key
+	 *  never can: the stripping happens before embedding, so an exact substring
+	 *  search for the full prompt returns -1 and the whole base is forwarded.
+	 *  Undefined when the prompt has no tail to strip. */
+	tailStrippedPrompt?: string;
+	/** The assembled prompt also minus the `<project_context>` block — the form
+	 *  pi-subagents embeds for a child whose workspace is NOT the parent's
+	 *  (#918 there): the inherited block names the parent's files by absolute
+	 *  path, so a relocated child's cut starts one layer earlier. Matching under
+	 *  both keys lets the existing longest-match selection pick the right span
+	 *  per child shape. Undefined when neither layer is present. */
+	projectContextStrippedPrompt?: string;
 	/** Exact previously assembled prompts embedded in `custom`. */
 	inherited: InheritedPrompt[];
 };
@@ -84,6 +101,10 @@ export class PromptCaptures {
 
 		capture.custom = input.custom;
 		capture.append = input.append;
+		capture.cwd = input.cwd;
+		const stripped = stripSessionLayers(systemPrompt, input.cwd);
+		capture.tailStrippedPrompt = stripped.tail;
+		capture.projectContextStrippedPrompt = stripped.projectContext;
 		capture.contextFiles = input.contextFiles.map((file) => ({ ...file }));
 		capture.skills = [...input.skills];
 		capture.source = source;
@@ -212,10 +233,16 @@ export class PromptCaptures {
 
 		const candidates: Array<InheritedPrompt & { length: number }> = [];
 		for (const parent of this.reachableCaptures()) {
-			const key = parent.assembledPrompt;
-			if (key === systemPrompt || key.length === 0) continue;
-			for (let start = custom.indexOf(key); start !== -1; start = custom.indexOf(key, start + key.length)) {
-				candidates.push({ start, end: start + key.length, length: key.length, parent });
+			// Full key first, then the two stripped forms pi-subagents embeds —
+			// tail-cut for a same-workspace child, project-context-cut for a
+			// relocated one. All are exact substring searches, so a match under
+			// any key is a real inheritance edge, and the longest-match selection
+			// below picks the right span when a child carries several.
+			for (const key of [parent.assembledPrompt, parent.tailStrippedPrompt, parent.projectContextStrippedPrompt]) {
+				if (!key || key === systemPrompt || key.length === 0) continue;
+				for (let start = custom.indexOf(key); start !== -1; start = custom.indexOf(key, start + key.length)) {
+					candidates.push({ start, end: start + key.length, length: key.length, parent });
+				}
 			}
 		}
 
@@ -335,4 +362,124 @@ function projectCustom(
 		cursor = edge.end;
 	}
 	return result + capture.custom.slice(cursor);
+}
+
+/** First line of the section Pi writes above the `<available_skills>` catalogue. */
+const SKILLS_SECTION_HEADING =
+	"The following skills provide specialized instructions for specific tasks.";
+
+/** Closing tag of that catalogue. */
+const SKILLS_CATALOGUE_CLOSE = "</available_skills>";
+
+/** Opening tag of the block Pi renders the session's context files into. */
+const PROJECT_CONTEXT_OPEN = "<project_context>";
+
+/** Closing tag of that block. */
+const PROJECT_CONTEXT_CLOSE = "</project_context>";
+
+/** The sentence Pi writes two lines below the opening tag. */
+const PROJECT_CONTEXT_LEAD_IN = "Project-specific instructions and guidelines:";
+
+/** Both cut forms of one prompt: `tail` is the per-session-tail cut
+ *  pi-subagents embeds for a same-workspace child, `projectContext` the
+ *  one-layer-earlier cut it embeds for a relocated one (#918 there). */
+type StrippedPromptKeys = { tail?: string; projectContext?: string };
+
+/**
+ * Both stripped forms of a parent prompt, or the empty object when neither
+ * layer is present.
+ *
+ * Mirrors line for line the cut pi-subagents' `inheritedIdentity` makes before
+ * embedding a parent prompt in a child (ADR 0006 and #918 there): everything
+ * from the first session-resolved layer onward — the `<project_context>` block
+ * for a relocated child, else the skills catalogue, cwd footer, and any
+ * extension-appended blocks — is resolved per session and dropped rather than
+ * inherited. The two implementations MUST stay in lockstep: the capture side
+ * can only recognize what the embedding side cuts, so when that side's anchors
+ * move (a pi `buildSystemPrompt` change, a new layer), these must move with it.
+ *
+ * Anchoring on the cwd footer and walking back to the catalogue's closing tag
+ * keeps a catalogue quoted in a context file from displacing the cut (#801
+ * there); the project-context opening accepts only a block carrying the
+ * lead-in sentence two lines below it, for the same reason. A prompt carrying
+ * none of these layers is not one `buildSystemPrompt` assembled, and is left
+ * alone.
+ */
+function stripSessionLayers(prompt: string, cwd?: string): StrippedPromptKeys {
+	const lines = prompt.split("\n");
+	const footerAt = cwd
+		? lines.lastIndexOf(`Current working directory: ${cwd.replaceAll("\\", "/")}`)
+		: -1;
+	const catalogueAt = skillsSectionStart(lines, footerAt);
+	const tailAt = catalogueAt === -1 ? footerAt : catalogueAt;
+	if (tailAt === -1) return {};
+	return {
+		tail: cutAt(lines, tailAt, prompt),
+		projectContext: cutAt(lines, projectContextStart(lines, tailAt), prompt),
+	};
+}
+
+/** The prompt cut at `cut`, or undefined when there is nothing to cut. */
+function cutAt(lines: readonly string[], cut: number, prompt: string): string | undefined {
+	if (cut === -1) return undefined;
+	const stripped = lines.slice(0, cut).join("\n").trimEnd();
+	return stripped && stripped !== prompt ? stripped : undefined;
+}
+
+/**
+ * Line index of the skills section's heading, or -1 when the section is absent.
+ *
+ * The heading is located by searching back from the catalogue's closing tag, so
+ * prose quoting Pi's heading ahead of the section is not mistaken for it.
+ */
+function skillsSectionStart(lines: readonly string[], footerAt: number): number {
+	const catalogueEnd = catalogueCloseBefore(lines, footerAt);
+	return catalogueEnd === -1
+		? -1
+		: lines.lastIndexOf(SKILLS_SECTION_HEADING, catalogueEnd);
+}
+
+/**
+ * Line index of Pi's own catalogue closing tag, or -1 when it wrote none.
+ *
+ * `buildSystemPrompt` writes the cwd footer immediately after the catalogue, in
+ * both of its branches and unconditionally, so the tag on the line before the
+ * footer is Pi's own. Identifying it by that position rather than by document
+ * order keeps a catalogue quoted elsewhere — in a project-context file, or in a
+ * block an extension appended after the footer — from being taken for the
+ * section, in either direction.
+ *
+ * Without a footer to anchor on, something downstream has rewritten Pi's
+ * output; the last closing tag is the best remaining guess.
+ */
+function catalogueCloseBefore(lines: readonly string[], footerAt: number): number {
+	if (footerAt === -1) {
+		return lines.lastIndexOf(SKILLS_CATALOGUE_CLOSE);
+	}
+	return lines[footerAt - 1] === SKILLS_CATALOGUE_CLOSE ? footerAt - 1 : -1;
+}
+
+/**
+ * Line index of the project-context block's opening tag, or -1 when the parent
+ * session resolved no context files.
+ *
+ * Located by the same positional discipline as the catalogue: Pi writes the
+ * block immediately before whichever session-resolved layer follows, so its
+ * closing tag is the last non-blank line above the already-anchored tail. The
+ * opening is then the nearest one above that tag carrying Pi's lead-in sentence
+ * two lines below it, which keeps a context file quoting the opening — later in
+ * the document than the real one — from being taken for it.
+ */
+function projectContextStart(lines: readonly string[], tailAt: number): number {
+	let closeAt = tailAt - 1;
+	while (closeAt >= 0 && lines[closeAt] === "") closeAt--;
+	if (closeAt < 0 || lines[closeAt] !== PROJECT_CONTEXT_CLOSE) return -1;
+	for (
+		let openAt = lines.lastIndexOf(PROJECT_CONTEXT_OPEN, closeAt);
+		openAt !== -1;
+		openAt = lines.lastIndexOf(PROJECT_CONTEXT_OPEN, openAt - 1)
+	) {
+		if (lines[openAt + 2] === PROJECT_CONTEXT_LEAD_IN) return openAt;
+	}
+	return -1;
 }
