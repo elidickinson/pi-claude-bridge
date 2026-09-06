@@ -74,7 +74,7 @@ export function createToolServer(name: string, tools: McpToolDef[]) {
 		if (!tool) throw new Error(`Unknown tool: ${request.params.name}`);
 		const toolCallId = request.params._meta?.[TOOL_USE_ID_META];
 		if (typeof toolCallId !== "string") {
-			throw new Error(`${tool.name}: tools/call is missing _meta["${TOOL_USE_ID_META}"] — cannot pair the result with its tool call`);
+			throw new Error(`${tool.name}: tools/call is missing _meta["${TOOL_USE_ID_META}"]: cannot pair the result with its tool call`);
 		}
 		// Narrowed deliberately: McpResult also carries `toolCallId`, which is our
 		// own bookkeeping for pairing and not part of MCP's CallToolResult.

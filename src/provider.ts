@@ -34,7 +34,7 @@ function showStartupNoticeOnce(): void {
 	const path = markStartupNoticeShown();
 	// pi wraps the whole notify string in the theme's dim foreground; the inner reset
 	// drops back to the terminal default rather than dim, which is fine here.
-	const title = `\x1b[33mWelcome to pi-claude-bridge\x1b[39m — settings live in ${path}`;
+	const title = `\x1b[33mWelcome to pi-claude-bridge\x1b[39m (settings live in ${path})`;
 	const bullets = [...notices, "This message only appears once. See README.md for more."].map((n) => `• ${n}`);
 	bridgeState.piUI?.notify([title, ...bullets, "─".repeat(64)].join("\n"), "info");
 }
@@ -45,11 +45,11 @@ function showStartupNoticeOnce(): void {
 function extractAllToolResults(context: Context): McpResult[] {
 	const { results, stopIdx } = _extractAllToolResults(context.messages as unknown as Array<{ role: string; [key: string]: unknown }>);
 	debug(`extractAllToolResults: ${results.length} results from ${context.messages.length} msgs, stopped at index ${stopIdx}`);
-	debug(`extractAllToolResults: all msg roles:`, context.messages.map((m, i) => `[${i}]${m.role}`).join(" "));
 	// Gated on the flag rather than left for debug() to discard: arguments are
 	// evaluated before the call, so this serialized every tool result in full on
 	// every turn even with logging off — and tool results carry file contents.
 	if (DEBUG) {
+		debug(`extractAllToolResults: all msg roles:`, context.messages.map((m, i) => `[${i}]${m.role}`).join(" "));
 		for (let r = 0; r < results.length; r++) {
 			debug(`extractAllToolResults: result[${r}] id=${results[r].toolCallId}${results[r].isError ? " ERROR" : ""} preview:`, JSON.stringify(results[r].content).slice(0, 150));
 		}
@@ -203,7 +203,7 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 		const c = new QueryContext();
 		c.resetTurnState(model);
 		queueMicrotask(() => {
-			stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			stream.push({ type: "done", reason: "stop", message: c.turnOutput! });
 			markStreamComplete(stream);
 			stream.end();
 		});
@@ -439,9 +439,16 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 					}
 					debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
 				} else if (sessionId) {
-					const cursor = Math.max(context.messages.length, queryCtx.latestCursor, bridgeState.sharedSession?.cursor ?? 0);
-					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-					bridgeState.sharedSession = { sessionId, cursor, cwd };
+					if (queryCtx.turnOutput?.stopReason === "error") {
+						debug(`provider: query ended with error, marking session ${sessionId.slice(0, 8)} for rebuild`);
+						if (bridgeState.sharedSession) {
+							bridgeState.sharedSession = { ...bridgeState.sharedSession, needsRebuild: true };
+						}
+					} else {
+						const cursor = Math.max(context.messages.length, queryCtx.latestCursor, bridgeState.sharedSession?.cursor ?? 0);
+						debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
+						bridgeState.sharedSession = { sessionId, cursor, cwd };
+					}
 				}
 
 				if (!isReentrant && queryCtx.activeQuery === sdkQuery) {

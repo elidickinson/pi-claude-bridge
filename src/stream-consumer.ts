@@ -51,7 +51,7 @@ export function resultErrorText(message: SDKMessage): string | undefined {
  *  failure and refuses to retry. */
 export function describeRateLimitFailure(rejection: { rateLimitType?: string; resetsAt?: number }, failure: string): string {
 	const kind = rejection.rateLimitType ? ` (${rejection.rateLimitType})` : "";
-	const resets = rejection.resetsAt ? ` — resets ${new Date(rejection.resetsAt * 1000).toLocaleTimeString()}` : "";
+	const resets = rejection.resetsAt ? `, resets ${new Date(rejection.resetsAt * 1000).toLocaleTimeString()}` : "";
 	return `Claude rate limit${kind}${resets}: ${failure}`;
 }
 
@@ -219,7 +219,7 @@ export function processStreamEvent(
 			block.thinking += event.delta.thinking;
 			c.currentPiStream!.push({ type: "thinking_delta", contentIndex: index, delta: event.delta.thinking, partial: c.turnOutput });
 		} else if (event.delta?.type === "input_json_delta" && block.type === "toolCall") {
-			block.partialJson += event.delta.partial_json;
+			block.partialJson = (block.partialJson ?? "") + event.delta.partial_json;
 			block.arguments = parsePartialJson(block.partialJson, block.arguments);
 			c.currentPiStream!.push({ type: "toolcall_delta", contentIndex: index, delta: event.delta.partial_json, partial: c.turnOutput });
 		} else if (event.delta?.type === "signature_delta" && block.type === "thinking") {
@@ -242,7 +242,7 @@ export function processStreamEvent(
 		} else if (block.type === "toolCall") {
 			c.turnSawToolCall = true;
 			block.arguments = mapToolArgs(
-				block.name, parsePartialJson(block.partialJson, block.arguments),
+				block.name, parsePartialJson(block.partialJson ?? "", block.arguments),
 			);
 			delete block.partialJson;
 			c.currentPiStream!.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: c.turnOutput });
@@ -285,7 +285,7 @@ export function processStreamEvent(
 // the same stream lifecycle as processStreamEvent — including ending the stream on
 // tool_use to prevent deadlock with the MCP handler.
 export function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext): void {
-	if (c.turnSawStreamEvent) return;
+	if (c.turnSawStreamEvent || !c.currentPiStream || !c.turnOutput) return;
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
 	c.turnToolCallIds = [];
@@ -402,7 +402,7 @@ export async function consumeQuery(
 				queryCtx.lastRateLimitWarnThreshold = undefined;
 				// resetsAt is Unix seconds, not milliseconds.
 				const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString() : "unknown";
-				bridgeState.piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+				bridgeState.piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}, resets at ${resetsAt})`, "warning");
 			} else if (info?.status === "allowed") {
 				// Back under the threshold (window reset) — re-arm the warning dedupe.
 				queryCtx.lastRateLimitWarnStep = null;

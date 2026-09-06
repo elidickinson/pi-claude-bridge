@@ -60,8 +60,8 @@ const MODE_DISALLOWED_TOOLS: Record<string, string[]> = {
 	],
 };
 
-const DEFAULT_TOOL_DESCRIPTION_FULL = "Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself.";
-const DEFAULT_TOOL_DESCRIPTION = "Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories). Read-only — Claude Code can explore the codebase but not make changes. Prefer to handle straightforward tasks yourself.";
+const DEFAULT_TOOL_DESCRIPTION_FULL = "Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode (use full mode when the user wants to delegate a task that requires changes). Prefer to handle straightforward tasks yourself.";
+const DEFAULT_TOOL_DESCRIPTION = "Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories). Read-only (Claude Code can explore the codebase but not make changes). Prefer to handle straightforward tasks yourself.";
 
 const PREVIEW_MAX_CHARS = 1000;
 const PREVIEW_MAX_LINES = 6;
@@ -292,7 +292,7 @@ export function registerAskClaudeTool(pi: ExtensionAPI, config: Config): void {
 	bridgeState.askClaudeToolName = askConf?.name ?? "AskClaude";
 
 	const modeValues = allowFull ? ["read", "full", "none"] as const : ["read", "none"] as const;
-	let modeDesc = `"read" (default): questions about the codebase — review, analysis, explain. "none": general knowledge only (no file access).`;
+	let modeDesc = `"read" (default): questions about the codebase (review, analysis, explain). "none": general knowledge only (no file access).`;
 	if (allowFull) modeDesc += ` "full": allows writing and bash execution (careful: runs without feedback to pi).`;
 
 	if (askConf?.enabled) {
@@ -358,7 +358,7 @@ export function registerAskClaudeTool(pi: ExtensionAPI, config: Config): void {
 				if (ctx.model?.baseUrl === "claude-bridge") {
 					debug("askClaude: blocked circular delegation (active provider is claude-bridge)");
 					return {
-						content: [{ type: "text" as const, text: "Error: AskClaude cannot be used when the active provider is claude-bridge — you're already running through Claude Code." }],
+						content: [{ type: "text" as const, text: "Error: AskClaude cannot be used when the active provider is claude-bridge (you're already running through Claude Code)." }],
 						details: { error: true },
 					};
 				}
@@ -371,7 +371,7 @@ export function registerAskClaudeTool(pi: ExtensionAPI, config: Config): void {
 				const progressInterval = setInterval(() => {
 					const elapsed = ((Date.now() - start) / 1000).toFixed(0);
 					const summary = buildActionSummary(toolCalls);
-					const status = summary ? `${elapsed}s — ${summary}` : `${elapsed}s — working...`;
+					const status = summary ? `${elapsed}s: ${summary}` : `${elapsed}s: working...`;
 					onUpdate?.({
 						content: [{ type: "text", text: status }],
 						details: { prompt: params.prompt, executionTime: Date.now() - start },

@@ -49,7 +49,7 @@ export function mapPiToolNameToSdk(name: string, customToolNameToSdk?: Map<strin
 	// feeding already-converted names back through the conversion, and prefixing
 	// twice invents a tool nobody serves.
 	if (normalized.startsWith(MCP_TOOL_PREFIX)) {
-		throw new Error(`mapPiToolNameToSdk: "${name}" is already an SDK tool name — pi history holds pi tool names`);
+		throw new Error(`mapPiToolNameToSdk: "${name}" is already an SDK tool name: pi history holds pi tool names`);
 	}
 	if (!customToolNameToSdk) return PI_TO_SDK_TOOL_NAME[normalized] ?? pascalCase(name);
 	return customToolNameToSdk.get(name) ?? customToolNameToSdk.get(normalized) ?? `${MCP_TOOL_PREFIX}${name}`;
@@ -270,7 +270,7 @@ export function extractUserPromptBlocks(messages: Context["messages"]): ContentB
 		// extension appending a malformed message, not this file.
 		if (!Array.isArray(content)) {
 			throw new Error(
-				`extractUserPromptBlocks: user message content must be a string or block array, got ${typeof content} — likely a malformed message from another extension`,
+				`extractUserPromptBlocks: user message content must be a string or block array, got ${typeof content} (likely a malformed message from another extension)`,
 			);
 		}
 		for (const block of content) {

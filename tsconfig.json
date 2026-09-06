@@ -1,27 +1,10 @@
 {
-  // strict: false, but only on strictNullChecks' account. Measured one flag at a
-  // time rather than waived as a group: strictFunctionTypes, strictBindCallApply,
-  // alwaysStrict, noImplicitThis and useUnknownInCatchVariables each cost nothing,
-  // and noImplicitAny cost two errors in convert.ts that were real — the block
-  // arrays were inferred from whatever was pushed first, so nothing checked that a
-  // tool_result message matched the Message shape the function claims to return.
-  // strictNullChecks is the one that does not pay: 27 errors, and the bulk of them
-  // are a single invariant TS cannot see — `partial: c.turnOutput` in
-  // processAssistantMessage, nullable at the type level and non-null at handler call
-  // time — so it would buy `!` noise rather than safety. strictPropertyInitialization
-  // cannot be set without it.
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "types": ["node"],
-    "strict": false,
-    "noImplicitAny": true,
-    "strictFunctionTypes": true,
-    "strictBindCallApply": true,
-    "alwaysStrict": true,
-    "noImplicitThis": true,
-    "useUnknownInCatchVariables": true,
+    "strict": true,
     "skipLibCheck": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,

@@ -78,7 +78,7 @@ function reportLeaks(label: string): void {
 	const liveStreams = [...activeQueryContexts].filter((c) => c.promptStream !== null).length;
 	if (activeQueryContexts.size === 0 && pendingCalls === 0 && liveStreams === 0) return;
 	debug(
-		`WARNING: ${label} left state behind — contexts=${activeQueryContexts.size} `
+		`WARNING: ${label} left state behind: contexts=${activeQueryContexts.size} `
 		+ `pendingToolCalls=${pendingCalls} promptStreams=${liveStreams}`,
 	);
 }
@@ -127,6 +127,8 @@ export default function (pi: ExtensionAPI) {
 	const clearSession = (event: string) => {
 		debug(`${event}: clearing session ${bridgeState.sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
 		bridgeState.sharedSession = null;
+		bridgeState.piUI = null;
+		bridgeState.piMode = null;
 
 		// Clear the global streamSimple if this instance registered it.
 		// This allows /reload to work — the old instance clears the flag so
@@ -160,6 +162,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => {
 		reportLeaks("session_shutdown");
 		clearSession("session_shutdown");
+		activeQueryContexts.clear();
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
