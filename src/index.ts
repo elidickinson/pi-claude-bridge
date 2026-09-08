@@ -2005,6 +2005,11 @@ export default function (pi: ExtensionAPI) {
 	};
 	const registeredModels = applyLongContext(MODELS, longContextSettings);
 
+	// Rebuilt, not appended to: pi caches the loaded factory and calls it again on
+	// this same module instance whenever another session in the process loads the
+	// extension set (only /reload evicts the cache), so appending showed each line
+	// once per factory run.
+	pendingNotices = [];
 	if (!config.startupNoticeShown) {
 		if (config.provider?.plan === undefined) pendingNotices.push('Are you using a Max plan? You need to set provider.plan to "max" to unlock 1M context in Opus.');
 		if (config.askClaude?.enabled === undefined) pendingNotices.push("The AskClaude tool is opt-in only. Set askClaude.enabled to use it.");
