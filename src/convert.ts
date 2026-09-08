@@ -94,6 +94,7 @@ function toolResultContent(
 export type DroppedContent = {
 	thinking: number;
 	abortedTurns: number;
+	unreplayableLatest: number;
 	providers: Set<string>;
 	other: Map<string, number>;
 };
@@ -108,14 +109,18 @@ export function convertPiMessages(
 	// What conversion discarded. Nothing downstream can tell: a stripped thinking
 	// block and a message that never carried one convert to the same thing, so
 	// without this the loss is invisible in the log and in a captured request.
-	const dropped: DroppedContent = { thinking: 0, abortedTurns: 0, providers: new Set(), other: new Map() };
+	const dropped: DroppedContent = { thinking: 0, abortedTurns: 0, unreplayableLatest: 0, providers: new Set(), other: new Map() };
+	let lastAssistantIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "assistant") { lastAssistantIdx = i; break; }
+	}
 	// The user message collecting this assistant turn's tool results, if one has
 	// been emitted yet, and the index of the assistant message it belongs to. Both
 	// are cleared at every assistant message — see the toolResult branch.
 	let turnResults: { role: "user"; content: Array<Record<string, unknown>> } | null = null;
 	let turnAssistantIdx: number | null = null;
 
-	for (const msg of messages) {
+	for (const [msgIdx, msg] of messages.entries()) {
 		if (msg.role === "user") {
 			if (typeof msg.content === "string") {
 				anthropicMessages.push({ role: "user", content: msg.content || "[empty]" });
@@ -133,6 +138,11 @@ export function convertPiMessages(
 			}
 		} else if (msg.role === "assistant") {
 			const content = Array.isArray(msg.content) ? msg.content : [];
+			if (msgIdx === lastAssistantIdx && content.some((block) =>
+				block.type === "thinking" && !(msg.provider === PROVIDER_ID && block.thinkingSignature))) {
+				dropped.unreplayableLatest++;
+				continue;
+			}
 			const blocks = [];
 			for (const block of content) {
 				if (block.type === "text" && block.text) {
