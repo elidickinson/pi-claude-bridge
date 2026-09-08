@@ -2,7 +2,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { collectPromptSkills, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { collectPromptSkills, projectPromptCapture, PromptCaptureLifecycle, PromptCaptures } from "../src/prompt-capture.js";
 
 const PI_HARNESS = "You are an expert coding assistant operating inside pi. Pi documentation: pi packages (docs/packages.md).";
 const PARENT_KEY = `${PI_HARNESS}\n\n<project_context>raw parent context</project_context>\nCurrent working directory: /parent`;
@@ -33,6 +33,37 @@ function project(captures, key, skillReadTool = "mcp") {
 function occurrences(text, needle) {
 	return text.split(needle).length - 1;
 }
+
+describe("PromptCaptureLifecycle", () => {
+	it("keys structured inputs by the finalized system prompt", () => {
+		const captures = new PromptCaptures();
+		const lifecycle = new PromptCaptureLifecycle(captures);
+		const contextFiles = [{ path: "/AGENTS.md", content: "parent rules" }];
+
+		lifecycle.prepare(capture({ contextFiles }));
+		assert.equal(captures.size, 0, "preparing inputs must not choose a lookup key");
+		contextFiles[0].content = "mutated after before_agent_start";
+		lifecycle.recordFinal("prompt rewritten by a later extension");
+
+		assert.equal(captures.resolve(PARENT_KEY), undefined, "only the finalized prompt may become a lookup key");
+		assert.equal(captures.resolve("prompt rewritten by a later extension").contextFiles[0].content, "parent rules");
+	});
+
+	it("consumes or clears pending inputs exactly once", () => {
+		const captures = new PromptCaptures();
+		const lifecycle = new PromptCaptureLifecycle(captures);
+
+		lifecycle.prepare(capture({ custom: "first" }));
+		lifecycle.recordFinal("first prompt");
+		lifecycle.recordFinal("unrelated agent start");
+		assert.equal(captures.resolve("unrelated agent start"), undefined);
+
+		lifecycle.prepare(capture({ custom: "stale" }));
+		lifecycle.clear();
+		lifecycle.recordFinal("later prompt");
+		assert.equal(captures.resolve("later prompt"), undefined);
+	});
+});
 
 describe("PromptCaptures", () => {
 	it("keeps parent and child captures isolated", () => {

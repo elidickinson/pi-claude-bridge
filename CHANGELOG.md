@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: prompt capture no longer depends on extension load order** — structured prompt inputs are collected in `before_agent_start`, but are now keyed in `agent_start` using Pi's finalized system prompt. Extensions that rewrite the prompt after the bridge no longer cause capture lookup failures or require wrapper-level ordering workarounds.
 - **Fix: git-status changes no longer bust the prompt cache (issue #73)** — the `claude_code` preset embeds a git-status snapshot in the cached system block, so any git transition (new file, staging, commit) rewrote the whole conversation prefix at cache-write rates. The provider path now sets `includeGitInstructions: false`, stripping the block with no other cost.
 - **Fix: rate-limit warning showed 1% and repeated every request** — the SDK reports `utilization` as a fraction (0.98), but the notification rounded it directly, printing "1% used" at 98% of the window. It now shows true percentages and only re-notifies when usage rises past a new 5% step or the threshold changes, instead of once per request while over the threshold.
 - **Fix: an exhausted Claude subscription never triggered fallback models (issue #58)** — Claude Code words a spent quota as "You're out of extra usage · resets 6:30pm", which names no recognizable symptom, so pi-subagents' `fallbackModels` and similar retry logic read it as a fatal error. A failure preceded by a rate-limit rejection is now labelled as one, with its limit type and reset time. Also fixes the rate-limit notification showing a 1970 reset time.
