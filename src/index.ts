@@ -21,7 +21,7 @@ import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } f
 import {
 	collectPromptSkills,
 	projectPromptCapture,
-	PromptCaptures,
+	sharedPromptCaptures,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
@@ -850,16 +850,17 @@ function showStartupNoticeOnce(): void {
 }
 
 // Captures of what pi assembled per agent; see src/prompt-capture.ts for why this
-// is keyed rather than held in a single slot.
-const promptCaptures = new PromptCaptures(256, (diagnostic) => {
+// is keyed rather than held in a single slot. Shared across isolated extension
+// instances so a parent can resolve a subagent's captured prompt (issue #64).
+const promptCaptures = sharedPromptCaptures((diagnostic) => {
 	const first = diagnostic.matches[0];
 	debug(
 		`prompt-capture: no match for ${diagnostic.systemPrompt.length}-char system prompt. `
 		+ (first
 			? `closest known (${first.key.length}-char) shares its first ${first.firstDivergent} chars and diverges at offset ${first.firstDivergent}: `
 			  + JSON.stringify(diagnostic.systemPrompt.slice(first.firstDivergent - 40, first.firstDivergent + 60))
-			: "no known captures to compare against."
-		) + ` known keys=${diagnostic.matches.length}`,
+			: "no known captures to compare against.")
+		+ ` known keys=${diagnostic.matches.length}`,
 	);
 });
 

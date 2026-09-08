@@ -2,7 +2,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { collectPromptSkills, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import {
+	collectPromptSkills,
+	projectPromptCapture,
+	PromptCaptures,
+	sharedPromptCaptures,
+} from "../src/prompt-capture.js";
 
 const PI_HARNESS = "You are an expert coding assistant operating inside pi. Pi documentation: pi packages (docs/packages.md).";
 const PARENT_KEY = `${PI_HARNESS}\n\n<project_context>raw parent context</project_context>\nCurrent working directory: /parent`;
@@ -257,5 +262,56 @@ describe("PromptCaptures", () => {
 		assert.equal(captures.resolve("b"), undefined);
 		assert.equal(captures.resolve("a").custom, "refreshed");
 		assert.ok(captures.resolve("c") && captures.resolve("d"));
+	});
+
+	it("shares isolated-agent captures across module instances", async () => {
+		const childModule = await import("../src/prompt-capture.js?instance=isolated-child");
+		assert.notEqual(childModule.PromptCaptures, PromptCaptures);
+		const isolatedPrompt = "You are an isolated smoke-test agent.";
+
+		childModule.sharedPromptCaptures().record(isolatedPrompt, capture({
+			custom: isolatedPrompt,
+			contextFiles: [{ path: "/AGENTS.md", content: "isolated rules" }],
+		}));
+
+		const resolved = sharedPromptCaptures().resolveOrDerive(isolatedPrompt);
+		assert.equal(resolved?.assembledPrompt, isolatedPrompt);
+		assert.equal(resolved?.contextFiles[0].content, "isolated rules");
+	});
+
+	it("adopts a capture whose portable parts survive a tool-list re-assembly", () => {
+		const captures = new PromptCaptures();
+		const recorded = `${PI_HARNESS}\n\n<tools>read, bash, ask_user_question</tools>\n\n<project_context>rules</project_context>\nBe terse.`;
+		captures.record(recorded, capture({
+			custom: "Be terse.",
+			contextFiles: [{ path: "/AGENTS.md", content: "rules" }],
+		}));
+
+		const reassembled = recorded.replace(", ask_user_question", "");
+		const resolved = captures.resolveOrDerive(reassembled);
+		assert.equal(resolved?.assembledPrompt, reassembled);
+		assert.equal(resolved?.custom, "Be terse.");
+		assert.equal(resolved?.contextFiles[0].content, "rules");
+		// Adopted under the new key: the next turn is an exact hit.
+		assert.equal(captures.resolve(reassembled), resolved);
+	});
+
+	it("still refuses a prompt that shares nothing portable with any capture", () => {
+		const captures = new PromptCaptures();
+		captures.record("recorded prompt", capture({ custom: "specific instructions" }));
+		assert.throws(() => captures.resolveOrDerive("an unrelated prompt"), /no capture/);
+	});
+
+	it("never matches a capture with nothing portable", () => {
+		const captures = new PromptCaptures();
+		captures.record("bare prompt", capture());
+		assert.throws(() => captures.resolveOrDerive("anything else"), /no capture/);
+	});
+
+	it("bounds the capture registry", () => {
+		const captures = new PromptCaptures();
+		for (let i = 0; i < 400; i++) captures.record(`session-key-${i}`, capture());
+		assert.ok(captures.size <= 256);
+		assert.ok(captures.resolve("session-key-399"));
 	});
 });
