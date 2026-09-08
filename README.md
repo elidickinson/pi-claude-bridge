@@ -66,6 +66,12 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
     "longContextExtraUsage": false,
     "strictMcpConfig": true,
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
+  },
+  "compaction": {
+    "takeover": true
+  },
+  "branchSummary": {
+    "takeover": true
   }
 }
 ```
@@ -86,6 +92,18 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
+
+`compaction`:
+- `takeover` (default `true`) — answer `session_before_compact` and run pi's `compact()` through an isolated Claude Code subprocess (no tools, no skills, single turn, `persistSession: false`). This only changes the *transport* of the summarization call: the preparation, prompt and summary format are pi's own.
+
+  Set to `false` if you use a context-management extension that owns compaction itself (for example one that maintains its own memory ledger). With `takeover: true`, the bridge runs first and produces a summary that the other extension then overwrites, so you pay for a summarization that gets discarded — and if the bridge's call fails it returns `cancel`, which aborts compaction before the other extension's handler ever runs.
+
+  With `takeover: false` the bridge still re-injects cumulative file operations from the previous compaction entry, since pi's native extraction skips `details` on hook-authored entries.
+
+`branchSummary`:
+- `takeover` (default `true`) — the same thing for `session_before_tree`, the summary pi generates when you rewind or fork-at-point with "summarize".
+
+  Set to `false` only when another extension answers that event. Unlike `compaction.takeover`, falling through to pi's own path does **not** work on a bridge model: branch summaries run through the agent's stream function, so pi's internal branch-summary prompt reaches this provider having never been recorded by `before_agent_start`, and `resolveOrDerive` throws rather than silently sending Claude Code no context files, skills or instructions. Turn this off when something else owns branch summaries, not to get pi's native behaviour back.
 
 
 **Startup notice:** the first interactive session to reach Claude Code lists whichever of `provider.plan` and `askClaude.enabled` you have left unset, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
