@@ -26,6 +26,7 @@ import {
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
+import { makeGuardedSpawn } from "./spawn.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -98,29 +99,44 @@ function debug(...args: unknown[]) {
 	appendFileSync(DEBUG_LOG_PATH, `[${ts}] [${moduleInstanceId}] ${msg}\n`);
 }
 
-// Per-query CLI debug capture. When CLAUDE_BRIDGE_DEBUG=1, ask the Claude Code
-// CLI subprocess to write its own debug log to a file we choose, and also
-// forward its stderr into our debug stream. Drops straight into the real SDK's
-// Options — see @anthropic-ai/claude-agent-sdk sdk.d.ts:1245 (debug, debugFile,
-// stderr). Without this, CC's internal view of the world is invisible to us
-// and "No conversation found" / empty-error reports are unactionable.
+// Per-query CLI process options. Always installs a spawnClaudeCodeProcess that
+// absorbs stdin write errors (the ^0.2.141 SDK's ProcessTransport attaches no
+// `error` listener to child.stdin, so a CLI that exits before reading stdin
+// crashed pi with an uncaught EPIPE; see src/spawn.ts). When CLAUDE_BRIDGE_DEBUG=1, also
+// ask the Claude Code CLI subprocess to write its own debug log to a file we
+// choose, and forward its stderr into our debug stream. Drops straight into
+// the real SDK's Options — see @anthropic-ai/claude-agent-sdk sdk.d.ts
+// (debug, debugFile, stderr, spawnClaudeCodeProcess). Without the debug
+// fields, CC's internal view of the world is invisible to us and
+// "No conversation found" / empty-error reports are unactionable.
 let nextCliDebugSeq = 1;
-function makeCliDebugOptions(tag: string): { debug?: boolean; debugFile?: string; stderr?: (data: string) => void } {
-	if (!DEBUG) return {};
-	const seq = nextCliDebugSeq++;
-	const ts = new Date().toISOString().replace(/[:.]/g, "-");
-	const logDir = join(dirname(DEBUG_LOG_PATH), "cc-cli-logs");
-	try { mkdirSync(logDir, { recursive: true }); } catch { /* ignore */ }
-	const debugFile = join(logDir, `${ts}-${tag}-${seq}.log`);
-	debug(`cli-debug: ${tag} #${seq} → ${debugFile}`);
-	return {
-		debug: true,
-		debugFile,
-		stderr: (data: string) => {
+function makeCliProcessOptions(tag: string): {
+	debug?: boolean;
+	debugFile?: string;
+	stderr?: (data: string) => void;
+	spawnClaudeCodeProcess: ReturnType<typeof makeGuardedSpawn>;
+} {
+	let stderr: ((data: string) => void) | undefined;
+	const debugFields: { debug?: boolean; debugFile?: string; stderr?: (data: string) => void } = {};
+	if (DEBUG) {
+		const seq = nextCliDebugSeq++;
+		const ts = new Date().toISOString().replace(/[:.]/g, "-");
+		const logDir = join(dirname(DEBUG_LOG_PATH), "cc-cli-logs");
+		try { mkdirSync(logDir, { recursive: true }); } catch { /* ignore */ }
+		const debugFile = join(logDir, `${ts}-${tag}-${seq}.log`);
+		debug(`cli-debug: ${tag} #${seq} → ${debugFile}`);
+		stderr = (data: string) => {
 			for (const line of data.split(/\r?\n/)) {
 				if (line) debug(`[cli-stderr ${tag}#${seq}] ${line}`);
 			}
-		},
+		};
+		debugFields.debug = true;
+		debugFields.debugFile = debugFile;
+		debugFields.stderr = stderr;
+	}
+	return {
+		...debugFields,
+		spawnClaudeCodeProcess: makeGuardedSpawn({ tag, stderr, log: debug }),
 	};
 }
 
@@ -494,7 +510,7 @@ async function runIsolatedSummary(
 				model: cliModel,
 				maxTurns: 1,
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-				...makeCliDebugOptions("compact-summary"),
+				...makeCliProcessOptions("compact-summary"),
 			},
 		});
 
@@ -1670,7 +1686,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-		...makeCliDebugOptions("provider"),
+		...makeCliProcessOptions("provider"),
 	};
 
 	debug("provider: fresh query",
@@ -1894,7 +1910,7 @@ async function promptAndWait(
 			...(resumeSessionId ? { resume: resumeSessionId } : {}),
 			...(options?.isolated ? { persistSession: false } : {}),
 			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-			...makeCliDebugOptions("askclaude"),
+			...makeCliProcessOptions("askclaude"),
 		},
 	});
 
