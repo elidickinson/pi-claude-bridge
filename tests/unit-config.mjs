@@ -77,6 +77,35 @@ describe("loadConfig", () => {
 		}
 	}));
 
+	it("profiles are global-only: a project-level list is dropped, a global one survives the merge", () => withTempHome(() => {
+		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		try {
+			const globalDir = getAgentDir();
+			const projectDir = join(cwd, CONFIG_DIR_NAME);
+			mkdirSync(globalDir, { recursive: true });
+			mkdirSync(projectDir, { recursive: true });
+			const globalProfiles = [{ slug: "work", configDir: "~/.claude-work" }];
+			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
+				provider: { profiles: globalProfiles },
+			}));
+			// Providers register once per process, so a project override would give
+			// co-hosted sessions mismatched provider sets — it must be ignored.
+			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
+				provider: { plan: "max", profiles: [{ slug: "evil", configDir: "/tmp/x" }] },
+			}));
+
+			const merged = loadConfig(cwd);
+			assert.deepEqual(merged.provider.profiles, globalProfiles);
+			assert.equal(merged.provider.plan, "max");
+
+			// And with no global list, the project list must not sneak in.
+			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({ provider: { plan: "pro" } }));
+			assert.equal(loadConfig(cwd).provider.profiles, undefined);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
 	it("markStartupNoticeShown records today's date without dropping existing settings", () => withTempHome(() => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
 		try {
