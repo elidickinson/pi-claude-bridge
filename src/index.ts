@@ -1,6 +1,6 @@
 import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
-import { getModels } from "@earendil-works/pi-ai/compat";
+import { getApiProvider, getModels, registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
@@ -149,6 +149,12 @@ function diagDump(label: string, data: Record<string, unknown>) {
 // On session_shutdown (including /reload), clearSession() resets this so a fresh
 // registration can occur for the next session.
 const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
+
+// Ours among pi-ai's api-provider registrations, so shutdown removes only the one
+// this module instance made. Per instance, not per package: a subagent instance
+// that skipped registration must not be able to unregister the parent's.
+const API_PROVIDER_SOURCE_ID = `claude-bridge:${moduleInstanceId}`;
+let registeredApiProvider = false;
 
 // Claude Code's own builtin tools, for the AskClaude path where CC really runs
 // them. The provider path never sees these — it starts CC with `tools: []`.
@@ -741,6 +747,32 @@ function syncSharedSession(
 	return { sessionId: session.sessionId };
 }
 
+/**
+ * A throwaway Claude Code session holding a side request's own prior messages.
+ *
+ * Deliberately not `syncSharedSession`: that function is about keeping one
+ * long-lived session aligned with pi's history, and every one of its paths reads
+ * or writes `sharedSession`. A side request's history belongs to its caller, so it
+ * gets a session of its own, rebuilt per call and deleted when the query ends.
+ */
+function buildSideRequestSession(
+	priorMessages: Context["messages"],
+	cwd: string,
+	customToolNameToSdk?: Map<string, string>,
+	modelId?: string,
+): string {
+	const session = createSession({
+		projectPath: cwd,
+		claudeDir: process.env.CLAUDE_CONFIG_DIR,
+		...(modelId ? { model: modelId } : {}),
+	});
+	convertAndImportMessages(session, priorMessages, customToolNameToSdk, []);
+	session.save();
+	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
+	debug(`side request: built session ${session.sessionId.slice(0, 8)} from ${priorMessages.length} prior messages, ${session.records.length} records`);
+	return session.sessionId;
+}
+
 // @internal
 export const __test = {
 	resetSharedSession() {
@@ -756,6 +788,7 @@ export const __test = {
 		piUI = ui;
 	},
 	syncSharedSession,
+	buildSideRequestSession,
 	extractUserPromptBlocks,
 	consumeQuery,
 	finalizeCurrentStream,
@@ -1476,13 +1509,76 @@ function drainForAbort(c: QueryContext, promptStream: PromptStream): void {
 
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
-function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-	showStartupNoticeOnce();
+/**
+ * A request that is not part of pi's conversation.
+ *
+ * Extensions that drive their own `agentLoop` get pi-ai's default stream
+ * function, which resolves the api id in pi-ai's own registry rather than in
+ * pi's model runtime — so such a call never reaches the provider registered
+ * with `pi.registerProvider`. An unresolved api id there does not merely fail
+ * the call: `agentLoop` starts the run with `void runAgentLoop(...).then(...)`
+ * and no `catch`, so the rejection escapes as an unhandled one and takes pi's
+ * process down.
+ *
+ * Such a request carries its own system prompt, its own tools and a
+ * conversation of its own that pi never recorded, so it is served as a
+ * self-contained Claude Code session: no prompt capture, no shared session, and
+ * the session it captures is deleted when it ends.
+ */
+/**
+ * Provider entry for callers that obtained our streamSimple handle from pi's
+ * model runtime (ctx.modelRegistry.getRegisteredProviderConfig) — e.g. a
+ * permission reviewer or judge extension. A single-user-message context whose
+ * system prompt was never captured from pi's own assembly is not a
+ * conversation turn; serve it as a side request instead of letting the main
+ * lane fail on prompt-capture resolution.
+ */
+function streamProviderEntry(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	const lastRole = context.messages[context.messages.length - 1]?.role;
+	if (!!context.systemPrompt && context.messages.length === 1 && lastRole === "user") {
+		// Use the same discriminator the main lane lives by: a conversation turn's
+		// prompt resolves (or derives) against pi's captured assembly; a foreign
+		// one-shot prompt — a judge or summarizer's own rubric — does not.
+		try {
+			promptCaptures.resolveOrDerive(context.systemPrompt);
+		} catch {
+			debug(`provider: single-message context with unresolvable ${context.systemPrompt.length}-char system prompt -> side request`);
+			return streamSideRequest(model, context, options);
+		}
+	}
+	return streamClaudeAgentSdk(model, context, options);
+}
+
+function streamSideRequest(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	try {
+		return streamClaudeAgentSdk(model, context, options, true);
+	} catch (err) {
+		// Setup failures are reported on the stream rather than thrown, because a throw
+		// reaches a caller that cannot handle one: `agentLoop` awaits the stream inside
+		// a promise it never catches. An `error` event resolves `result()` with a failed
+		// message instead, which the loop ends the turn on.
+		debug("side request: setup failed", err);
+		const stream = newAssistantMessageEventStream();
+		const failed = new QueryContext();
+		failed.resetTurnState(model);
+		failed.turnOutput!.stopReason = "error";
+		failed.turnOutput!.errorMessage = errorMessage(err);
+		queueMicrotask(() => {
+			stream.push({ type: "error", reason: "error", error: failed.turnOutput! });
+			markStreamComplete(stream);
+			stream.end();
+		});
+		return stream;
+	}
+}
+
+function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions, side = false): AssistantMessageEventStream {
+	if (!side) showStartupNoticeOnce();
 	const stream = newAssistantMessageEventStream();
 
 	// DEBUG: trace followUp message triggering
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
-	debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}, isReentrant=${ctx().activeQuery !== null}`);
+	debug(`provider: streamClaudeAgentSdk called, side=${side}, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}`);
 
 	const activeQuery = ctx().activeQuery !== null;
 	const allResults = activeQueryContexts.size > 0 ? extractAllToolResults(context) : [];
@@ -1540,8 +1636,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// --- Fresh query ---
 
 	// 1. Determine reentrancy. Reentrant queries get their own QueryContext so
-	//    background subagents can run concurrently with the parent query.
-	const isReentrant = activeQuery;
+	//    background subagents can run concurrently with the parent query. A side
+	//    request is always its own: it runs alongside pi's conversation, so taking
+	//    the shared context would strand whatever that context is mid-turn.
+	const isReentrant = side || activeQuery;
 	const queryCtx = isReentrant ? new QueryContext() : ctx();
 	debug(`provider: fresh query setup, isReentrant=${isReentrant}, activeContexts=${activeQueryContexts.size}`);
 
@@ -1553,7 +1651,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// `--no-skills` reach Claude Code by leaving nothing to forward. A sub-agent's
 	// custom override embeds its parent's assembled Pi prompt; recursive projection
 	// replaces that exact inherited prompt with its already-safe portable parts.
-	const promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
+	//
+	// A side request is exempt: its prompt is its own, assembled by whichever
+	// extension is calling and never seen by `before_agent_start`, so there is
+	// nothing to resolve it to and nothing of pi's to forward. It is sent to Claude
+	// Code verbatim instead.
+	const promptCapture = side ? undefined : promptCaptures.resolveOrDerive(context.systemPrompt);
 	const systemPromptAppend = promptCapture
 		? projectPromptCapture(promptCapture, {
 			skillReadTool: mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none",
@@ -1576,7 +1679,19 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	// A side request neither reads the shared session nor adopts one: its history is
+	// not pi's, so resuming pi's session would prepend a conversation the caller
+	// never sent. `preserveSharedSession` is what makes the completion handler treat
+	// the session Claude Code creates for it as ephemeral and delete it.
+	const sidePriorMessages = side ? context.messages.slice(0, turnStart(context.messages)) : [];
+	const syncResult: SyncResult = side
+		? {
+			sessionId: sidePriorMessages.length > 0
+				? buildSideRequestSession(sidePriorMessages, cwd, customToolNameToSdk, cliModel)
+				: null,
+			preserveSharedSession: true,
+		}
+		: syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1661,19 +1776,24 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
 			includeGitInstructions: false,
 		},
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
+		// A side request's prompt replaces Claude Code's preset rather than appending to
+		// it: the caller wrote a complete prompt for a single narrow job, and the coding
+		// agent preset would talk it into being a coding agent.
+		systemPrompt: side
+			? context.systemPrompt
+			: {
+				type: "preset", preset: "claude_code",
+				append: systemPromptAppend ? systemPromptAppend : undefined,
+			},
 		extraArgs,
 		...(effort ? { effort } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-		...makeCliDebugOptions("provider"),
+		...makeCliDebugOptions(side ? "side-request" : "provider"),
 	};
 
-	debug("provider: fresh query",
+	debug(side ? "provider: fresh side request" : "provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
 		`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
@@ -1711,8 +1831,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
-				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
-				debug(`provider: abort detected, marked sharedSession needsRebuild + forceRotate`);
+				// A side request runs in its own Claude Code session, so aborting it says
+				// nothing about whether pi's session still matches pi's history.
+				if (sharedSession && !side) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
+				debug(`provider: abort detected, sharedSession needsRebuild + forceRotate=${!side}`);
 				if (queryCtx.turnOutput) {
 					queryCtx.turnOutput.stopReason = "aborted";
 					queryCtx.turnOutput.errorMessage = "Operation aborted";
@@ -1747,10 +1869,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		})
 		.catch((error) => {
 			debug(`provider: query error, model=${cliModel}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
-			if ((wasAborted || options?.signal?.aborted) && sharedSession) {
-				sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
-			} else {
-				sharedSession = null;
+			// Not for a side request: it owns no part of the shared session, and
+			// discarding pi's on its behalf would cost the next real turn a full rebuild
+			// over a failure that had nothing to do with it.
+			if (!side) {
+				if ((wasAborted || options?.signal?.aborted) && sharedSession) {
+					sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
+				} else {
+					sharedSession = null;
+				}
 			}
 			promptStream.fail(error instanceof Error ? error : new Error(String(error)));
 			if (queryCtx.turnOutput) {
@@ -1776,6 +1903,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// nothing will resume it. Clear the handle only if a later query
 			// hasn't already claimed the shared context.
 			promptStream.fail(new Error("query ended"));
+			// The session built for a side request is scoped to that request, however it
+			// ended. When Claude Code kept the id we resumed, the completion handler above
+			// has already deleted it and this is a no-op.
+			if (side && syncResult.sessionId) deleteSession(syncResult.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
 			if (queryCtx.promptStream === promptStream) queryCtx.promptStream = null;
 			// A later query claiming this context sets activeQuery to its own handle;
 			// null means the .then/.catch above cleared ours and nothing replaced it.
@@ -2019,7 +2150,7 @@ export default function (pi: ExtensionAPI) {
 		// This allows /reload to work — the old instance clears the flag so
 		// the new instance can register fresh without wrapping stale state.
 		const g = globalThis as Record<symbol, any>;
-		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
+		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamProviderEntry) {
 			debug(`${event}: clearing ACTIVE_STREAM_SIMPLE_KEY`);
 			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
 		}
@@ -2047,6 +2178,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => {
 		reportLeaks("session_shutdown");
 		clearSession("session_shutdown");
+		// Not in clearSession: that also runs on session_start, and a live session
+		// still needs to be able to serve side requests.
+		if (registeredApiProvider) {
+			unregisterApiProviders(API_PROVIDER_SOURCE_ID);
+			registeredApiProvider = false;
+			debug("side request: unregistered api provider");
+		}
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
@@ -2140,14 +2278,14 @@ export default function (pi: ExtensionAPI) {
 	const g = globalThis as Record<symbol, any>;
 	if (!g[ACTIVE_STREAM_SIMPLE_KEY]) {
 		// First instance: store our streamSimple and register.
-		g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
+		g[ACTIVE_STREAM_SIMPLE_KEY] = streamProviderEntry;
 		pi.registerProvider(PROVIDER_ID, {
 			baseUrl: "claude-bridge",
 			apiKey: "not-used",
 			api: "claude-bridge",
 			models: registeredModels,
 			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
-			streamSimple: streamClaudeAgentSdk as any,
+			streamSimple: streamProviderEntry as any,
 		});
 	} else {
 		// Subsequent instance (subagent session): skip registration entirely.
@@ -2155,6 +2293,28 @@ export default function (pi: ExtensionAPI) {
 		// ModelRegistry from the parent's registration. Calls to those models
 		// route through the parent's streamSimple via reentrant QueryContexts.
 		debug(`provider: skipping re-registration, parent instance active (module=${moduleInstanceId})`);
+	}
+
+	// pi's model runtime is not the only route to a bridge model. An extension that
+	// drives its own agentLoop is served by pi-ai's default stream function, which
+	// resolves the api id against pi-ai's own registry and never sees what
+	// pi.registerProvider registered. So register there too, or such a call throws
+	// where nothing catches it.
+	//
+	// First instance wins, as above: an in-flight side request delivers its tool
+	// results back through the module instance that started it. /reload needs no
+	// coordination — pi calls resetApiProviders() between shutdown and reactivation.
+	if (!getApiProvider(PROVIDER_ID)) {
+		registerApiProvider({
+			api: PROVIDER_ID,
+			// Cast: both entry points take SimpleStreamOptions, and a side request has no
+			// use for the rich `stream` contract — pi's own provider composer likewise
+			// routes `stream` to an extension's streamSimple.
+			stream: streamSideRequest as any,
+			streamSimple: streamSideRequest as any,
+		}, API_PROVIDER_SOURCE_ID);
+		registeredApiProvider = true;
+		debug(`side request: registered api provider (module=${moduleInstanceId})`);
 	}
 
 	// --- AskClaude tool ---
