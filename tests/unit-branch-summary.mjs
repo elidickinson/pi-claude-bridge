@@ -20,7 +20,11 @@ const { default: activate, __test } = await import("../src/index.js");
 
 function activateWithMockPi() {
 	const handlers = new Map();
-	activate({ on: (event, handler) => handlers.set(event, handler), registerProvider: () => {} });
+	// registerTool is stubbed too: activate() calls pi.registerTool when the loaded
+	// config enables AskClaude (e.g. a developer's global ~/.pi/agent/claude-bridge.json),
+	// so a mock missing it throws before any handler is registered. CI has no such
+	// config, which is why this only surfaced locally.
+	activate({ on: (event, handler) => handlers.set(event, handler), registerProvider: () => {}, registerTool: () => {} });
 	return handlers;
 }
 
