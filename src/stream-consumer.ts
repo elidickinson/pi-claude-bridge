@@ -238,6 +238,9 @@ export function processStreamEvent(
 		if (block.type === "text") {
 			c.currentPiStream!.push({ type: "text_end", contentIndex: index, content: block.text, partial: c.turnOutput });
 		} else if (block.type === "thinking") {
+			if (!block.thinkingSignature) {
+				debug(`WARNING: thinking block completed without signature (stream_event, length=${block.thinking.length})`);
+			}
 			c.currentPiStream!.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: c.turnOutput });
 		} else if (block.type === "toolCall") {
 			c.turnSawToolCall = true;
@@ -299,6 +302,9 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 			c.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: c.turnOutput });
 			c.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: block.text, partial: c.turnOutput });
 		} else if (block.type === "thinking") {
+			if (!block.signature) {
+				debug(`WARNING: thinking block completed without signature (assistant message, length=${(block.thinking ?? "").length})`);
+			}
 			ensureTurnStarted(c);
 			c.turnBlocks.push({ type: "thinking", thinking: block.thinking ?? "", thinkingSignature: block.signature ?? "" });
 			const idx = c.turnBlocks.length - 1;

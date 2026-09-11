@@ -152,8 +152,14 @@ export function convertPiMessages(
 			}
 		} else if (msg.role === "assistant") {
 			const content = Array.isArray(msg.content) ? msg.content : [];
-			if (msgIdx === lastSurvivingAssistantIdx && content.some((block) =>
-				block.type === "thinking" && !(msg.provider === PROVIDER_ID && block.thinkingSignature))) {
+			const hasToolCalls = content.some((block) => block.type === "toolCall");
+			const hasFollowingToolResults = messages.slice(msgIdx + 1).some((m) => m.role === "toolResult");
+			if (
+				msgIdx === lastSurvivingAssistantIdx &&
+				!hasToolCalls &&
+				!hasFollowingToolResults &&
+				content.some((block) => block.type === "thinking" && !(msg.provider === PROVIDER_ID && block.thinkingSignature))
+			) {
 				dropped.unreplayableLatest++;
 				continue;
 			}
