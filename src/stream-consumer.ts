@@ -2,7 +2,7 @@
 //
 // One SDK turn arrives twice over: as `stream_event` deltas and again as a
 // completed `assistant` message. Both have to drive the same pi stream through
-// the same lifecycle — start, blocks, and a terminal event that ends it — and on
+// the same lifecycle (start, blocks, and a terminal event that ends it), and on
 // a tool call both have to end that stream so pi can run the tool while the MCP
 // handler holds the generator. Keeping the two paths, the stream lifecycle and
 // the loop that feeds them in one file is what keeps them answering the same way.
@@ -39,8 +39,8 @@ export function resultErrorText(message: SDKMessage): string | undefined {
 
 /** Name a failure as a rate limit when a rejection preceded it.
  *
- *  pi has no typed rate-limit error — `stopReason` is only ever `"error"` and the sole carrier
- *  is `errorMessage` — so everything that reacts to a rate limit pattern-matches that string:
+ *  pi has no typed rate-limit error (`stopReason` is only ever `"error"` and the sole carrier
+ *  is `errorMessage`), so everything that reacts to a rate limit pattern-matches that string:
  *  pi-subagents gates `fallbackModels` on a 35-pattern list, and key-rotating extensions use
  *  their own. Claude Code words a subscription limit as "You're out of extra usage · resets
  *  6:30pm", which matches none of them, so an exhausted quota reads as a fatal error and the
@@ -76,7 +76,7 @@ export function updateUsage(output: AssistantMessage, usage: Record<string, numb
 // Log the *served* context window reported by an SDK result message
 // (modelUsage[id].contextWindow), which can differ from the window pi
 // registered (model.contextWindow) when the runtime entitlement doesn't
-// match the docs — e.g. bare Opus served 200K on Pro, or [1m] not honored.
+// match the docs (e.g. bare Opus served 200K on Pro, or [1m] not honored).
 // The result message's modelUsage is otherwise discarded; this makes the
 // gap observable. See issue #18.
 export function logServedContextWindow(label: string, message: SDKMessage, model: Model<any>): void {
@@ -116,9 +116,9 @@ export function parsePartialJson(input: string, fallback: Record<string, unknown
 // 1. streamSimple starts a query() and kicks off consumeQuery() in background
 // 2. consumeQuery() iterates the SDK generator, pushing events to currentPiStream
 // 3. On tool_use: ends the current pi stream, nulls it out. The MCP handler
-//    blocks the generator naturally — no events arrive until resolved.
+//    blocks the generator naturally: no events arrive until resolved.
 // 4. Pi executes the tool, calls streamSimple again. We swap in the new stream,
-//    resolve the MCP handler, and the generator unblocks — events flow to new stream.
+//    resolve the MCP handler, and the generator unblocks: events flow to new stream.
 //
 // Note: resetTurnState clears turnSawStreamEvent while the generator may still
 // have queued messages from the previous turn. This is safe because step 3 nulls
@@ -190,7 +190,7 @@ export function processStreamEvent(
 		} else if (event.content_block?.type === "tool_use") {
 			const piName = piToolNameFor(event.content_block.name, customToolNameToPi);
 			if (!piName) {
-				debug(`processStreamEvent: skipping tool_use for unserved tool ${event.content_block.name} [${event.content_block.id}] — CC rejects it and retries`);
+				debug(`processStreamEvent: skipping tool_use for unserved tool ${event.content_block.name} [${event.content_block.id}]: CC rejects it and retries`);
 				return;
 			}
 			c.turnSawToolCall = true;
@@ -260,7 +260,7 @@ export function processStreamEvent(
 	}
 
 	if (event?.type === "message_stop" && c.turnSawToolCall) {
-		// Tool call complete — end this pi stream. The SDK will still yield an
+		// Tool call complete: end this pi stream. The SDK will still yield an
 		// assistant message for this turn, but currentPiStream=null causes
 		// consumeQuery to skip it. The MCP handler blocks the generator until
 		// pi delivers the tool result via the next streamSimple call.
@@ -285,7 +285,7 @@ export function processStreamEvent(
 // When stream_events already delivered the content, this is a no-op. But after
 // resetTurnState (e.g. tool result delivery), if the next turn's assistant message
 // arrives before any stream_events, this is the primary content path. Must maintain
-// the same stream lifecycle as processStreamEvent — including ending the stream on
+// the same stream lifecycle as processStreamEvent, including ending the stream on
 // tool_use to prevent deadlock with the MCP handler.
 export function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext): void {
 	if (c.turnSawStreamEvent || !c.currentPiStream || !c.turnOutput) return;
@@ -314,7 +314,7 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 		} else if (block.type === "tool_use") {
 			const piName = piToolNameFor(block.name, customToolNameToPi);
 			if (!piName) {
-				debug(`processAssistantMessage: skipping tool_use for unserved tool ${block.name} [${block.id}] — CC rejects it and retries`);
+				debug(`processAssistantMessage: skipping tool_use for unserved tool ${block.name} [${block.id}]: CC rejects it and retries`);
 				continue;
 			}
 			ensureTurnStarted(c);
@@ -371,7 +371,7 @@ export async function consumeQuery(
 		//   streamed generator (isSingleUserTurn=false), so missing this hangs the query.
 		// - the failure a `result` carries: it is the only record that the turn
 		//   failed at all. Behind the guard, a 429 arriving at a tool boundary set
-		//   no stopReason, no errorMessage, and logged nothing — the turn simply
+		//   no stopReason, no errorMessage, and logged nothing: the turn simply
 		//   ended empty.
 		// - rate-limit events: notifications to the user, which are most likely to
 		//   fire during exactly the long tool-using turns the guard was skipping.
@@ -410,7 +410,7 @@ export async function consumeQuery(
 				const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString() : "unknown";
 				bridgeState.piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}, resets at ${resetsAt})`, "warning");
 			} else if (info?.status === "allowed") {
-				// Back under the threshold (window reset) — re-arm the warning dedupe.
+				// Back under the threshold (window reset): re-arm the warning dedupe.
 				queryCtx.lastRateLimitWarnStep = null;
 				queryCtx.lastRateLimitWarnThreshold = undefined;
 			} else if (info?.status === "allowed_warning") {
@@ -458,7 +458,7 @@ export async function consumeQuery(
 				}
 				break;
 			case "user":
-				// SDK echo of the user prompt — no stream events to emit. Note it
+				// SDK echo of the user prompt: no stream events to emit. Note it
 				// carries only prompts and tool results: a steer CC drained at a
 				// tool boundary is recorded in its session transcript as a
 				// `queued_command` attachment and never reaches this stream, which

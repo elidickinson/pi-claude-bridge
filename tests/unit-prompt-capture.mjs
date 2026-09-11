@@ -68,7 +68,7 @@ describe("PromptCaptures", () => {
 		assert.match(projected, /browser/, "and so must its skills");
 		// The wrapper's own text is instruction too. Substituting the embedded prompt
 		// while discarding what surrounds it would be the silent loss the throw exists
-		// to prevent — accept the prompt whole or refuse it, never accept and discard.
+		// to prevent: accept the prompt whole or refuse it, never accept and discard.
 		assert.match(projected, /PREFIX FROM ANOTHER EXTENSION/, "the wrapper's prefix must survive");
 		assert.match(projected, /SUFFIX/, "and so must its suffix");
 		assert.doesNotMatch(projected, /Pi documentation/, "but never Pi's harness, which the projection replaces");
@@ -115,7 +115,7 @@ describe("PromptCaptures", () => {
 			() => captures.resolveOrDerive("a prompt sharing nothing with what we recorded"),
 			/no capture for this .* system prompt/,
 		);
-		// No prompt at all is not a loss — there is nothing to forward.
+		// No prompt at all is not a loss; there is nothing to forward.
 		assert.equal(captures.resolveOrDerive(undefined), undefined);
 	});
 

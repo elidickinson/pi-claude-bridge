@@ -23,7 +23,7 @@ type InheritedPrompt = {
 export type PromptCapture = PromptCaptureInput & {
 	assembledPrompt: string;
 	/** The assembled prompt minus pi's per-session tail (skills catalogue, cwd
-	 *  footer) — the form pi-subagents' `inheritedIdentity` embeds in a child.
+	 *  footer), the form pi-subagents' `inheritedIdentity` embeds in a child.
 	 *  Recorded so `findInheritedPrompts` can match children that carry the
 	 *  parent prompt stripped, which the full key never can: the stripping
 	 *  happens before embedding, so an exact substring search for the full
@@ -48,7 +48,7 @@ export type PromptCaptureDiagnostic = {
 	 *  inline, so a fingerprint plus the closest match's first divergent offset
 	 *  are enough to recognize the pump.
 	 *
-	 *  Closest is by shared prefix — the case that matters here is pi itself
+	 *  Closest is by shared prefix: the case that matters here is pi itself
 	 *  rebuilding the prompt outside `before_agent_start` (a changed tool list or
 	 *  fresh resource discovery), which edits near the boundary, and a prefix key
 	 *  gets us to within a handful of characters of where. */
@@ -115,9 +115,9 @@ export class PromptCaptures {
 
 	/** Recency is by use, not just by record. A parent agent records its prompt once
 	 *  and then only ever resolves it, so counting writes alone ages it out behind the
-	 *  sub-agent prompts churning past it — observed in a real 135-message session,
+	 *  sub-agent prompts churning past it (observed in a real 135-message session,
 	 *  where the parent's own prompt was evicted and its next turn resolved to
-	 *  nothing. */
+	 *  nothing). */
 	private touch(systemPrompt: string, capture: PromptCapture): void {
 		this.captures.delete(systemPrompt);
 		this.captures.set(systemPrompt, capture);
@@ -132,17 +132,17 @@ export class PromptCaptures {
 	/**
 	 * The capture to project for one query, for both the provider and AskClaude.
 	 *
-	 * An exact key is the normal case. A prompt that only *embeds* known prompts —
-	 * anything that wrapped what Pi assembled after we recorded it — resolves to a
+	 * An exact key is the normal case. A prompt that only *embeds* known prompts
+	 * (anything that wrapped what Pi assembled after we recorded it) resolves to a
 	 * transient descendant over the whole prompt, so projection swaps each embedded
 	 * capture for its portable parts and carries everything around them through
 	 * unchanged. That surrounding text belongs to whatever did the wrapping, and
 	 * dropping it would be exactly the silent instruction loss this exists to
-	 * prevent. The descendant is not retained — its key is not ours to own.
+	 * prevent. The descendant is not retained: its key is not ours to own.
 	 *
 	 * Throws when a prompt can be accounted for by neither route. Returning an empty
 	 * capture instead would hand Claude Code a turn with none of the user's context
-	 * files, skills, custom prompt or append text, and say so only in a debug line —
+	 * files, skills, custom prompt or append text, and say so only in a debug line,
 	 * silently discarding policy the user wrote down. A failed turn is recoverable;
 	 * a turn that quietly ignored its instructions is not.
 	 */
@@ -172,9 +172,9 @@ export class PromptCaptures {
 				`prompt-capture: no capture for this ${systemPrompt.length}-char system prompt, and it embeds none of the ${this.captures.size} known. `
 				+ `Closest known match diverges at offset ${matches[0]?.firstDivergent ?? "?"} (${matches.length ? matches[0].key.length : 0}-char key). `
 				+ `Claude Code would receive none of this turn's context files, skills or custom instructions. `
-				+ `The usual cause is an extension loaded after claude-bridge that rewrites the system prompt from before_agent_start — `
+				+ `The usual cause is an extension loaded after claude-bridge that rewrites the system prompt from before_agent_start: `
 				+ `one that wraps it is fine, one that rebuilds or strips it leaves nothing to match. `
-				+ `(Also possible: pi rebuilt the prompt outside before_agent_start — a late-registered tool or fresh resource discovery.)`,
+				+ `(Also possible: pi rebuilt the prompt outside before_agent_start, such as a late-registered tool or fresh resource discovery.)`,
 			);
 		}
 

@@ -11,7 +11,7 @@ const PRO = { plan: "pro", longContextExtraUsage: false };
 const MAX = { plan: "max", longContextExtraUsage: false };
 const EXTRA = { plan: "pro", longContextExtraUsage: true };
 
-// Simulated pi-ai registry entry — extra fields mimic the ones pi-ai exposes
+// Simulated pi-ai registry entry: extra fields mimic the ones pi-ai exposes
 // that must not leak into the provider-registered MODELS array.
 const mockPiAiModel = (id) => ({
 	id, name: id, reasoning: true, input: ["text"], cost: { input: 1, output: 1 },
@@ -42,7 +42,7 @@ describe("MODELS projection", () => {
 	});
 
 	it("silently drops IDs missing from pi-ai (no fallback)", () => {
-		// Only haiku present — opus/sonnet vanish from picker.
+		// Only haiku present: opus/sonnet vanish from picker.
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(models.map((m) => m.id), ["claude-haiku-4-5"]);
 	});

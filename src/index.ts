@@ -71,7 +71,7 @@ export const __test = {
  *  into the delivery path and returns a stream nobody ends; a pending tool call is an
  *  MCP handler Claude Code is still waiting on; a live prompt stream is an unresolved
  *  ack. The activeQueryContexts leak was present on every single happy-path run and
- *  no test noticed, because nothing asserted that anything ends clean — so assert it
+ *  no test noticed, because nothing asserted that anything ends clean, so assert it
  *  where the real sessions are, and let diag/audit-warnings.mjs scan for it. */
 function reportLeaks(label: string): void {
 	const pendingCalls = [...activeQueryContexts].reduce((n, c) => n + c.pendingToolCalls.size, 0);
@@ -87,7 +87,7 @@ function reportLeaks(label: string): void {
  *
  *  Cancelling on failure matches pi's own path, which rethrows a summary error out
  *  of the navigation rather than moving without one. Separated from the event
- *  handler so this decision is testable without a Claude Code subprocess — driving
+ *  handler so this decision is testable without a Claude Code subprocess: driving
  *  `generateBranchSummary` itself would only be testing pi. */
 function branchSummaryOutcome(result: BranchSummaryResult): { cancel: true } | { summary: { summary: string; details: unknown; usage?: BranchSummaryResult["usage"] } } {
 	if (result.aborted) return { cancel: true };
@@ -132,7 +132,7 @@ export default function (pi: ExtensionAPI) {
 		bridgeState.piMode = null;
 
 		// Clear the global streamSimple if this instance registered it.
-		// This allows /reload to work — the old instance clears the flag so
+		// This allows /reload to work: the old instance clears the flag so
 		// the new instance can register fresh without wrapping stale state.
 		const g = globalThis as Record<symbol, any>;
 		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
@@ -217,7 +217,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", (event) => markRebuild(`session_compact:${event.reason}:willRetry=${event.willRetry}`));
 	pi.on("session_tree", () => markRebuild("session_tree"));
 
-	// Branch summarization — rewind or fork-at-point with "summarize" — is the other
+	// Branch summarization (rewind or fork-at-point with "summarize") is the other
 	// place pi asks the model for a summary, and unlike compaction it runs through
 	// the *agent's* stream function (agent-session passes `streamFn:
 	// this.agent.streamFunction`). On a bridge model that reaches this provider

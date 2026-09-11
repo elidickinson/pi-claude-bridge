@@ -116,7 +116,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 
 `npm test` for the full suite, which adds integration tests that hit APIs (`tests/int-*.{sh,mjs}`: smoke, multi-turn, cache, session-resume, session-rebuild, tool-message). The alt-provider tests need two variables in `.env.test`, and both are required: `require_env` aborts the run if either is missing.
 
-- `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER` — the pi provider to run the non-claude-bridge side of the test against, e.g. `openrouter`
+- `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER`: the pi provider to run the non-claude-bridge side of the test against, e.g. `openrouter`
 - `CLAUDE_BRIDGE_TESTING_ALT_MODEL`: the model ID **without** the provider prefix (e.g. `google/gemini-2.5-flash`)
 
 - `CLAUDE_BRIDGE_DEBUG_PATH`: overrides the destination path for the bridge log.

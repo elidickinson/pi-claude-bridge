@@ -11,7 +11,7 @@ import { MCP_TOOL_PREFIX } from "./skills.js";
 export const PROVIDER_ID = "claude-bridge";
 
 // Pi tool names under Claude Code's builtin names. Only ever correct on the
-// AskClaude path, where CC runs its own tools — see mapPiToolNameToSdk.
+// AskClaude path, where CC runs its own tools (see mapPiToolNameToSdk).
 export const PI_TO_SDK_TOOL_NAME: Record<string, string> = {
 	read: "Read", write: "Write", edit: "Edit", bash: "Bash",
 };
@@ -29,17 +29,17 @@ export function sanitizeToolId(id: string, cache: Map<string, string>): string {
  *  Whether a map is passed is what distinguishes the two query shapes, because
  *  they need opposite answers:
  *
- *  - **With a map — the provider path.** The query runs `tools: []`, so every
+ *  - **With a map (the provider path).** The query runs `tools: []`, so every
  *    tool Claude can call is a pi tool served over MCP, and its name is
  *    `mcp__custom-tools__<pi name>` by construction (resolveMcpTools). The map
  *    is consulted first only because it carries the served tool's exact casing.
- *    A name it lacks is a tool pi ran that we do not serve now — AskClaude,
- *    excluded on purpose, or an extension since disabled — and naming that after
+ *    A name it lacks is a tool pi ran that we do not serve now (AskClaude,
+ *    excluded on purpose, or an extension since disabled), and naming that after
  *    a Claude Code builtin would tell the model a builtin it cannot call is
  *    available and was already used. That is the prompt condition behind the
  *    phantom-call deadlock fixed in 122914dd, and the read direction refuses the
  *    same names for the same reason (piToolNameFor in tools.ts).
- *  - **Without a map — the AskClaude path.** CC runs its own tools there, so
+ *  - **Without a map (the AskClaude path).** CC runs its own tools there, so
  *    builtin names are real, matching mapToolName in the other direction.
  */
 export function mapPiToolNameToSdk(name: string, customToolNameToSdk?: Map<string, string>): string {
@@ -130,7 +130,7 @@ export function convertPiMessages(
 	}
 	// The user message collecting this assistant turn's tool results, if one has
 	// been emitted yet, and the index of the assistant message it belongs to. Both
-	// are cleared at every assistant message — see the toolResult branch.
+	// are cleared at every assistant message (see the toolResult branch).
 	let turnResults: { role: "user"; content: ContentBlock[] } | null = null;
 	let turnAssistantIdx: number | null = null;
 
@@ -169,7 +169,7 @@ export function convertPiMessages(
 					blocks.push({ type: "text", text: block.text });
 				} else if (block.type === "thinking") {
 					// Only replay thinking Claude Code itself produced. A signature minted
-					// by any other provider — including pi's own Anthropic provider — is
+					// by any other provider (including pi's own Anthropic provider) is
 					// not ours to hand back, and Anthropic rejects ones it can't verify.
 					const sig = block.thinkingSignature;
 					if (msg.provider === PROVIDER_ID && sig) {
@@ -195,13 +195,13 @@ export function convertPiMessages(
 			// message actually emitted.
 			//
 			// Do NOT clear turnResults/turnAssistantIdx here. It looks like the tidy
-			// thing to do, but an abort between two parallel results — assistant[X,Y],
-			// R_X, aborted turn, R_Y — would then start a second results message for
+			// thing to do, but an abort between two parallel results (assistant[X,Y],
+			// R_X, aborted turn, R_Y) would then start a second results message for
 			// R_Y. repairToolPairing consumes both pending ids at the first one, stubs
 			// Y there and drops the real R_Y as unmatched, destroying the parallel
 			// result this merge exists to preserve. unit-import.mjs pins the shape.
 			if (!content.length) { dropped.abortedTurns++; continue; }
-			// Blocks were present but every one was filtered — content really was
+			// Blocks were present but every one was filtered: content really was
 			// dropped here, so keep the slot and say so. Empty content is rejected by
 			// the API, and dropping the message would break tool pairing.
 			if (!blocks.length) blocks.push({ type: "text", text: "[incompatible content omitted]" });
@@ -216,8 +216,8 @@ export function convertPiMessages(
 			// synthetic "[no tool result recorded]", so every rebuild silently
 			// destroyed the output of parallel tool calls. Session.importMessages
 			// applies the repair itself, so this cannot be opted out of by skipping
-			// our own call. (Claude Code's live writer splits a turn across records
-			// — one per content block, one per result — so the single-message shape
+			// our own call. (Claude Code's live writer splits a turn across records,
+			// one per content block, one per result, so the single-message shape
 			// is repairToolPairing's requirement, not a copy of CC's own layout;
 			// tests/int-cc-contracts.mjs pins both facts.)
 			//
@@ -226,13 +226,13 @@ export function convertPiMessages(
 			// which pi records between the results (see extractAllToolResults).
 			// The results also have to sit *directly* after their assistant message:
 			// repairToolPairing consumes the turn's pending ids at the first user
-			// message that follows it, so a steer arriving before the first result —
-			// what any steer during a slow first tool looks like — would otherwise
+			// message that follows it, so a steer arriving before the first result
+			// (what any steer during a slow first tool looks like) would otherwise
 			// take the stubs and strand every real result behind it.
 			//
 			// Both hoists reorder the steer against wall-clock: Claude sees results
 			// that were still running when the steer arrived. Claude Code normalizes
-			// to the same order — it records a mid-turn steer as an `attachment`, and
+			// to the same order: it records a mid-turn steer as an `attachment`, and
 			// reorderAttachmentsForAPI (claude-code-rip src/utils/messages.ts:1481)
 			// bubbles attachments up to the nearest assistant or tool_result message
 			// and re-inserts them after it. The on-disk form differs, the order does not.
@@ -251,15 +251,15 @@ export function convertPiMessages(
 	return { anthropicMessages, sanitizedIds, dropped };
 }
 
-/** Index of the first message of the current user turn — the trailing run of
+/** Index of the first message of the current user turn, the trailing run of
  *  user messages that has not been written into the Claude Code session yet.
  *  Equals messages.length when the last message is not a user message.
  *
  *  Single source of truth for the history/prompt split: everything before this
  *  index is replayed as session history, everything from it onward becomes the
  *  prompt. Deriving both halves from one index is what keeps a message from
- *  landing in both — an extension appending a display-only user message after
- *  the real one (see issue #34) makes the turn longer than one message. */
+ *  landing in both (an extension appending a display-only user message after
+ *  the real one; see issue #34) makes the turn longer than one message. */
 export function turnStart(messages: Context["messages"]): number {
 	let i = messages.length;
 	while (i > 0 && messages[i - 1].role === "user") i--;
@@ -279,7 +279,7 @@ export function extractUserPrompt(messages: Context["messages"]): string | null 
 }
 
 /** Extract the current user turn as ContentBlockParam[] (preserving images).
- *  Returns null if no images — caller should fall back to string prompt. */
+ *  Returns null if no images; caller should fall back to string prompt. */
 export function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockParam[] | null {
 	const turn = messages.slice(turnStart(messages)) as UserMessage[];
 	if (turn.length === 0) return null;
@@ -291,7 +291,7 @@ export function extractUserPromptBlocks(messages: Context["messages"]): ContentB
 			? [{ type: "text", text: message.content }]
 			: message.content;
 		// Off-type content violates UserMessage's contract, so fail rather than
-		// degrade — but name the shape, since the cause is almost always another
+		// degrade, but name the shape, since the cause is almost always another
 		// extension appending a malformed message, not this file.
 		if (!Array.isArray(content)) {
 			throw new Error(

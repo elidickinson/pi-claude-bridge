@@ -2,6 +2,9 @@
 
 ## UNRELEASED
 
+- **Fix: prompt-capture tail-stripping and session reset cleanup** — scan backwards across whitespace to strip the skills catalogue before the working directory footer in markdown prompts, and clear stale active query contexts on session resets (`new`, `resume`, `fork`).
+- **Fix: turn conversion for unreplayable thinking and thinking signature observability** — preserve assistant turns containing tool calls or followed by tool results when thinking is unreplayable to avoid broken tool pairing in `repairToolPairing`, and emit debug warnings when thinking blocks complete without signatures.
+- **Tests: model coverage and resolution validation** — add unit tests for `claude-fable-5-1` catalog synthesis and runtime resolution, exact model prefix resolution across Fable and Sonnet models, and long-context mapping.
 - **Add: Claude Fable 5.1 support and exact model resolution (PR #79, #84)** — added Claude Fable 5.1 with 1M context and 64k max output; updated `resolveModel` so exact model IDs always win over partial substring matches.
 - **Fix: subagent prompt capture matching and isolated instance sharing (issues #64, #88, PR #67, #89)** — match tail-stripped parent prompts so `@gotgenes/pi-subagents` prompts preserve inheritance without forwarding raw harness preambles; share prompt captures across isolated extension instances via process-wide key.
 - **Fix: abort race and latest thinking block replay guard (issues #86, PR #87, #90)** — mark shared session for rotation immediately when abort signal arrives to eliminate the next-turn reuse race; drop the latest assistant turn on rebuild when its thinking blocks are unreplayable to prevent Anthropic 400 errors.
