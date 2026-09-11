@@ -269,6 +269,25 @@ describe("PromptCaptures", () => {
 		assert.equal(childCapture?.inherited[0].parent.contextFiles[0].content, "parent rules");
 	});
 
+	it("matches tail-stripped parent prompt when skills catalogue is separated from cwd by blank lines", () => {
+		const captures = new PromptCaptures();
+		const SKILLS_SECTION = "The following skills provide specialized instructions for specific tasks.\n<available_skills>\n</available_skills>\n\nCurrent working directory: /parent";
+		const parentFull = `${PARENT_KEY}\n\n${SKILLS_SECTION}`;
+		captures.record(parentFull, capture({
+			cwd: "/parent",
+			contextFiles: [{ path: "/AGENTS.md", content: "parent rules" }],
+		}));
+
+		// A subagent embedding the parent prompt minus skills/cwd tail
+		const childCustom = `${PARENT_KEY}\n\nchild instructions`;
+		const childKey = `${childCustom}\nCurrent working directory: /child`;
+		captures.record(childKey, capture({ custom: childCustom }));
+
+		const childCapture = captures.resolve(childKey);
+		assert.equal(childCapture?.inherited.length, 1);
+		assert.equal(childCapture?.inherited[0].parent.contextFiles[0].content, "parent rules");
+	});
+
 	it("is bounded and evicts the least-recently-recorded key", () => {
 		const captures = new PromptCaptures(3);
 		captures.record("a", capture());

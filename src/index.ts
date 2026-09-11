@@ -145,6 +145,7 @@ export default function (pi: ExtensionAPI) {
 		bridgeState.piMode = ctx.mode;
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
+			activeQueryContexts.clear();
 		}
 	});
 	// `--system-prompt` replaces pi's default rather than adding to it, but Claude

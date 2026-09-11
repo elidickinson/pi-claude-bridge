@@ -365,12 +365,16 @@ function stripSessionTail(prompt: string, cwd?: string): string | undefined {
 	const footerAt = cwd
 		? lines.lastIndexOf(`Current working directory: ${cwd.replaceAll("\\", "/")}`)
 		: -1;
-	const catalogueEnd =
-		footerAt === -1
-			? lines.lastIndexOf(SKILLS_CATALOGUE_CLOSE)
-			: lines[footerAt - 1] === SKILLS_CATALOGUE_CLOSE
-				? footerAt - 1
-				: -1;
+	let catalogueEnd = -1;
+	if (footerAt !== -1) {
+		let i = footerAt - 1;
+		while (i >= 0 && lines[i].trim() === "") i--;
+		if (i >= 0 && lines[i] === SKILLS_CATALOGUE_CLOSE) {
+			catalogueEnd = i;
+		}
+	} else {
+		catalogueEnd = lines.lastIndexOf(SKILLS_CATALOGUE_CLOSE);
+	}
 	const cut =
 		catalogueEnd === -1
 			? footerAt
