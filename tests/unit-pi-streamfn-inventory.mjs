@@ -37,10 +37,11 @@ const PI_DIST = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding
  *  branch-summarization miss, and a filename-only inventory would wave it through.
  *  A changed count is not automatically a bug; it means read the diff and re-decide. */
 const HANDLED = {
-	"agent-session.js": { mentions: 1, why: "the one hand-off: `streamFn: this.agent.streamFunction` into generateBranchSummary" },
+	"agent-session.js": { mentions: 2, why: "two hand-offs of `streamFn: this.agent.streamFunction`: into generateBranchSummary, and (pi 0.86) summarizeForBugReport -> generateBugReportSummary (see bug-report.js). Both reach our registered provider, normalized by adaptContext()." },
 	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize" },
 	"compaction/compaction.js": { mentions: 13, why: "taken over via session_before_compact -> isolatedStreamFn" },
 	"compaction/branch-summarization.js": { mentions: 2, why: "taken over via session_before_tree -> isolatedStreamFn" },
+	"bug-report.js": { mentions: 1, why: "pi 0.86 /bug: one-shot model-written summary through options.streamFn -> our registered provider. adaptContext() normalizes its TranscriptContext like any other entry; the foreign one-shot prompt (no before_agent_start capture) is the pre-existing side-request case, tracked separately." },
 };
 
 const mentionsOf = (text) => (text.match(/streamFn/g) ?? []).length;
