@@ -63,6 +63,15 @@ const TAIL_KEY = [IDENTITY, PROJECT_CONTEXT_BLOCK].join("\n\n");
 /** The form it embeds for a relocated child: cut one layer earlier (#918). */
 const RELOCATED_KEY = IDENTITY;
 
+/** The pi ≥0.86 section-rendered parent: same layers, wrapped and joined by
+ *  blank lines, the cwd as a section instead of a footer line. */
+const SECTION_PARENT_KEY = [
+	IDENTITY,
+	PROJECT_CONTEXT_BLOCK,
+	`<skills>\n${SKILLS_CATALOGUE}\n</skills>`,
+	"<cwd>\n/parent\n</cwd>",
+].join("\n\n");
+
 function capture(overrides = {}) {
 	return { contextFiles: [], skills: [], ...overrides };
 }
@@ -127,23 +136,47 @@ describe("tail-stripped inheritance (#88)", () => {
 		assert.equal(derived.inherited[0].end, PARENT_KEY.length, "the full key matches");
 	});
 
-	it("matches via the catalogue fallback when pi writes no footer line (0.86 section shape)", () => {
+	it("keeps matching a pre-#959 child whose 0.86 embedding carries the dangling wrapper", () => {
 		const captures = new PromptCaptures();
-		// Sections joined by blank lines, no `Current working directory:` line —
-		// pi 0.86 renders the cwd as a `<cwd>` section instead.
-		const parent = [
-			IDENTITY,
-			PROJECT_CONTEXT_BLOCK,
-			`<skills>\n${SKILLS_CATALOGUE}\n</skills>`,
-			"<cwd>\n/parent\n</cwd>",
-		].join("\n\n");
-		recordParent(captures, parent);
+		recordParent(captures, SECTION_PARENT_KEY);
 
+		// Children on a pi-subagents that predates gotgenes#959 embed the parent
+		// cut at the heading, leaving the `<skills>` wrapper behind. The heading
+		// cut stays a key for them; the wrapper cut is longer but only fits the
+		// post-#959 embedding, so longest-match picks the heading cut here.
 		const tailKey = [IDENTITY, PROJECT_CONTEXT_BLOCK, "<skills>"].join("\n\n");
 		const child = `${tailKey}${CHILD_SUFFIX}`;
 		const derived = captures.resolveOrDerive(child);
 		assert.ok(derived, "the stripped child resolves without a footer anchor");
-		assert.equal(derived.inherited[0].end, tailKey.length, "the cut lands at the skills heading (leaving the section's open tag, exactly as the embedding side cuts it)");
+		assert.equal(derived.inherited[0].end, tailKey.length, "the heading cut still matches the pre-#959 embedding, longest match wins");
+	});
+
+	it("matches a ≥0.86 child embedding cut at the skills-section wrapper (post-#959)", () => {
+		const captures = new PromptCaptures();
+		recordParent(captures, SECTION_PARENT_KEY);
+
+		// gotgenes#959 moves the same-cwd cut to the wrapper's opening tag, so
+		// the embedded region is the tail key without the dangling wrapper line.
+		const child = `${TAIL_KEY}${CHILD_SUFFIX}`;
+		const derived = captures.resolveOrDerive(child);
+		assert.ok(derived, "the wrapper-cut child resolves");
+		assert.equal(derived.inherited[0].end, TAIL_KEY.length, "the wrapper cut matches");
+
+		const projected = projectPromptCapture(derived, { skillReadTool: "read" });
+		assert.ok(!projected.includes("<skills>"), "the wrapper is not forwarded");
+	});
+
+	it("matches a relocated ≥0.86 child: the lead-in sits one line below the opening", () => {
+		// The shape that was dead before this change: 0.86's renderer drops the
+		// blank line below the opening tag, and the wrapper tag broke the
+		// close-tag adjacency — neither guard could find the block.
+		const captures = new PromptCaptures();
+		recordParent(captures, SECTION_PARENT_KEY);
+
+		const child = `${RELOCATED_KEY}${CHILD_SUFFIX}`;
+		const derived = captures.resolveOrDerive(child);
+		assert.ok(derived, "the relocated 0.86 child resolves");
+		assert.equal(derived.inherited[0].end, RELOCATED_KEY.length, "the project-context cut matches");
 	});
 
 	it("records the edge on the child's own record path, not just the derived route", () => {
@@ -202,6 +235,7 @@ describe("tail-stripped inheritance (#88)", () => {
 		assert.ok(stored, "the plain prompt is a capture key");
 		assert.equal(stored.tailStrippedPrompt, undefined, "no tail layer means no tail key");
 		assert.equal(stored.projectContextStrippedPrompt, undefined, "no context layer means no project-context key");
+		assert.equal(stored.skillsSectionStrippedPrompt, undefined, "no section shape means no wrapper key");
 
 		// A child quoting one marker line is not an edge either.
 		assert.throws(

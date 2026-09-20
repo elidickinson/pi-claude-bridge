@@ -39,6 +39,10 @@ export type PromptCapture = PromptCaptureInput & {
 	 *  both keys lets the existing longest-match selection pick the right span
 	 *  per child shape. Undefined when neither layer is present. */
 	projectContextStrippedPrompt?: string;
+	/** ...cut at the `<skills>` wrapper's opening tag — the form the
+	 *  embedding side moves to on pi ≥0.86 (gotgenes#959), where the wrapper
+	 *  must drop with the layers it carries. */
+	skillsSectionStrippedPrompt?: string;
 	/** Exact previously assembled prompts embedded in `custom`. */
 	inherited: InheritedPrompt[];
 };
@@ -105,6 +109,7 @@ export class PromptCaptures {
 		const stripped = stripSessionLayers(systemPrompt, input.cwd);
 		capture.tailStrippedPrompt = stripped.tail;
 		capture.projectContextStrippedPrompt = stripped.projectContext;
+		capture.skillsSectionStrippedPrompt = stripped.skillsSection;
 		capture.contextFiles = input.contextFiles.map((file) => ({ ...file }));
 		capture.skills = [...input.skills];
 		capture.source = source;
@@ -238,7 +243,7 @@ export class PromptCaptures {
 			// relocated one. All are exact substring searches, so a match under
 			// any key is a real inheritance edge, and the longest-match selection
 			// below picks the right span when a child carries several.
-			for (const key of [parent.assembledPrompt, parent.tailStrippedPrompt, parent.projectContextStrippedPrompt]) {
+			for (const key of [parent.assembledPrompt, parent.tailStrippedPrompt, parent.projectContextStrippedPrompt, parent.skillsSectionStrippedPrompt]) {
 				if (!key || key === systemPrompt || key.length === 0) continue;
 				for (let start = custom.indexOf(key); start !== -1; start = custom.indexOf(key, start + key.length)) {
 					candidates.push({ start, end: start + key.length, length: key.length, parent });
@@ -364,6 +369,18 @@ function projectCustom(
 	return result + capture.custom.slice(cursor);
 }
 
+/** Opening tag of the section Pi ≥0.86 wraps the catalogue in. */
+const SKILLS_SECTION_OPEN = "<skills>";
+
+/** Closing tag of that section. */
+const SKILLS_SECTION_CLOSE = "</skills>";
+
+/** Opening tag of the section Pi ≥0.86 renders the working directory into. */
+const CWD_SECTION_OPEN = "<cwd>";
+
+/** Closing tag of that section. */
+const CWD_SECTION_CLOSE = "</cwd>";
+
 /** First line of the section Pi writes above the `<available_skills>` catalogue. */
 const SKILLS_SECTION_HEADING =
 	"The following skills provide specialized instructions for specific tasks.";
@@ -377,13 +394,23 @@ const PROJECT_CONTEXT_OPEN = "<project_context>";
 /** Closing tag of that block. */
 const PROJECT_CONTEXT_CLOSE = "</project_context>";
 
-/** The sentence Pi writes two lines below the opening tag. */
+/** The sentence Pi writes below the opening tag — two lines below it through
+ *  0.85, whose block opens with a blank line, and directly below it from
+ *  0.86's section renderer. */
 const PROJECT_CONTEXT_LEAD_IN = "Project-specific instructions and guidelines:";
 
 /** Both cut forms of one prompt: `tail` is the per-session-tail cut
  *  pi-subagents embeds for a same-workspace child, `projectContext` the
- *  one-layer-earlier cut it embeds for a relocated one (#918 there). */
-type StrippedPromptKeys = { tail?: string; projectContext?: string };
+ *  one-layer-earlier cut it embeds for a relocated one (#918 there). On
+ *  pi ≥0.86's section renderer `skillsSection` carries the additional
+ *  wrapper-tag cut the relocated anchors move to (gotgenes#959), and `tail`
+ *  keeps the heading cut the pre-#959 embedding produces — both stay keys
+ *  while children on either embedding version are in the wild. */
+type StrippedPromptKeys = {
+	tail?: string;
+	projectContext?: string;
+	skillsSection?: string;
+};
 
 /**
  * Both stripped forms of a parent prompt, or the empty object when neither
@@ -410,13 +437,74 @@ function stripSessionLayers(prompt: string, cwd?: string): StrippedPromptKeys {
 	const footerAt = cwd
 		? lines.lastIndexOf(`Current working directory: ${cwd.replaceAll("\\", "/")}`)
 		: -1;
-	const catalogueAt = skillsSectionStart(lines, footerAt);
-	const tailAt = catalogueAt === -1 ? footerAt : catalogueAt;
-	if (tailAt === -1) return {};
+	if (footerAt !== -1) {
+		const catalogueAt = skillsSectionStart(lines, footerAt);
+		const tailAt = catalogueAt === -1 ? footerAt : catalogueAt;
+		return {
+			tail: cutAt(lines, tailAt, prompt),
+			projectContext: cutAt(lines, projectContextStart(lines, tailAt), prompt),
+		};
+	}
+	const cwdAt = cwd ? cwdSectionStart(lines, cwd) : -1;
+	if (cwdAt !== -1) {
+		const wrapperAt = skillsSectionWrapperStart(lines, cwdAt);
+		return {
+			tail: cutAt(lines, wrapperAt + 1, prompt),
+			skillsSection: cutAt(lines, wrapperAt, prompt),
+			projectContext: cutAt(lines, projectContextStart(lines, wrapperAt), prompt),
+		};
+	}
+	const catalogueAt = skillsSectionStart(lines, -1);
+	if (catalogueAt === -1) return {};
 	return {
-		tail: cutAt(lines, tailAt, prompt),
-		projectContext: cutAt(lines, projectContextStart(lines, tailAt), prompt),
+		tail: cutAt(lines, catalogueAt, prompt),
+		projectContext: cutAt(lines, projectContextStart(lines, catalogueAt), prompt),
 	};
+}
+
+/**
+ * Line index of the `<skills>` section's opening tag, or the cwd section's own
+ * opening when the parent resolved no skills.
+ *
+ * The catalogue section sits immediately below the cwd section in
+ * `buildSystemPrompt`'s order, separated only by the section join, so the
+ * closing tag on the other side of that join is Pi's own. Its opening is then
+ * accepted only when the heading is its first content line, keeping a custom
+ * section that merely ends where Pi's does from being taken for it.
+ */
+function skillsSectionWrapperStart(lines: readonly string[], cwdAt: number): number {
+	let closeAt = cwdAt - 1;
+	while (closeAt >= 0 && lines[closeAt] === "") closeAt--;
+	if (closeAt < 0 || lines[closeAt] !== SKILLS_SECTION_CLOSE) return cwdAt;
+	const openAt = lines.lastIndexOf(SKILLS_SECTION_OPEN, closeAt);
+	if (openAt === -1 || lines[openAt + 1] !== SKILLS_SECTION_HEADING) return cwdAt;
+	return openAt;
+}
+
+/**
+ * Line index of pi ≥0.86's `<cwd>` section opening tag, or -1 when it wrote
+ * none.
+ *
+ * Located by content, not document order: the section is accepted only when
+ * the line inside it is exactly the session cwd and the closing tag follows,
+ * so a `<cwd>` quoted elsewhere — or one naming a directory that merely
+ * shares a prefix — is not mistaken for it, the same whole-line discipline
+ * the 0.85 footer anchor applies.
+ */
+function cwdSectionStart(lines: readonly string[], cwd: string): number {
+	for (
+		let openAt = lines.lastIndexOf(CWD_SECTION_OPEN);
+		openAt !== -1;
+		openAt = lines.lastIndexOf(CWD_SECTION_OPEN, openAt - 1)
+	) {
+		if (
+			lines[openAt + 1] === cwd.replaceAll("\\", "/") &&
+			lines[openAt + 2] === CWD_SECTION_CLOSE
+		) {
+			return openAt;
+		}
+	}
+	return -1;
 }
 
 /** The prompt cut at `cut`, or undefined when there is nothing to cut. */
