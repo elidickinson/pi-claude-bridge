@@ -394,9 +394,17 @@ const PROJECT_CONTEXT_OPEN = "<project_context>";
 /** Closing tag of that block. */
 const PROJECT_CONTEXT_CLOSE = "</project_context>";
 
-/** The sentence Pi writes below the opening tag — two lines below it through
- *  0.85, whose block opens with a blank line, and directly below it from
- *  0.86's section renderer. */
+/**
+ * The sentence Pi writes below the opening tag — two lines below it through
+ * 0.85, whose block opens with a blank line, and directly below it from
+ * 0.86's section renderer.
+ *
+ * Both offsets are accepted because the peer range (`>=0.81.0`) admits both
+ * renderers. The 0.85 arm in `projectContextStart` is dead once that floor
+ * moves past 0.85; drop it with the fixtures that exercise it rather than
+ * carrying it forward. Same disposition as gotgenes/pi-packages#959's note on
+ * the embedding side — the mirror retires its arms together.
+ */
 const PROJECT_CONTEXT_LEAD_IN = "Project-specific instructions and guidelines:";
 
 /** Both cut forms of one prompt: `tail` is the per-session-tail cut
