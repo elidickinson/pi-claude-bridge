@@ -6,8 +6,9 @@ import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@a
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
-import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
+import { createSession, deleteSession, getSessionPath, openSession, repairToolPairing } from "cc-session-io";
+import { randomUUID } from "crypto";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
@@ -214,6 +215,12 @@ interface SessionState {
 	// this — there's no concurrent CC writer during those events, so
 	// in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
 	forceRotate?: boolean;
+	// The history (system messages excluded) this lane was last synced against, held
+	// by reference. Read only when another lane's first request arrives carrying the
+	// same history: that lane's session file is then the best possible starting
+	// point for it, because it already holds the exact prefix the prompt cache is
+	// keyed on. Never used to decide anything about this lane's own next turn.
+	history?: readonly Context["messages"][number][];
 }
 
 /**
@@ -272,6 +279,83 @@ function getLane(lane: string): SessionState | null {
 function setLane(lane: string, state: SessionState | null): void {
 	if (state) sessionLanes.set(lane, state);
 	else sessionLanes.delete(lane);
+}
+
+/** Same conversation, message for message. Timestamps are ignored: pi may re-stamp on
+ *  replay, and two histories that agree on every role and every content block are the
+ *  same history for the purpose of resuming a session built from one of them. */
+function sameHistory(a: readonly Context["messages"][number][], b: readonly Context["messages"][number][]): boolean {
+	if (a.length !== b.length) return false;
+	const key = (m: Context["messages"][number]): string => {
+		const content = (m as { content?: unknown }).content;
+		return `${m.role}\u0000${typeof content === "string" ? content : JSON.stringify(content ?? null)}`;
+	};
+	for (let i = 0; i < a.length; i++) if (key(a[i]) !== key(b[i])) return false;
+	return true;
+}
+
+/**
+ * Another lane whose session already holds exactly the history this request carries.
+ *
+ * The prompt cache is server-side and keyed on the request prefix, but the bytes of
+ * that prefix are decided here: Claude Code rebuilds its request from whatever JSONL it
+ * resumes. A session built by importing pi's message array serialises the same
+ * conversation differently from one Claude Code appended to itself, so the common
+ * prefix between the two ends at the system prompt and tool table. A request that
+ * carries another lane's history therefore wants a copy of that lane's file, not a
+ * re-import of the same messages.
+ *
+ * The match is by content, not by length: a lane with a different conversation that
+ * merely happens to be as long is not a donor. The request may run past the donor by
+ * the one trailing assistant message REUSE already tolerates, since Claude Code
+ * persisted that reply into the donor's file itself.
+ */
+function findDonorLane(lane: string, priorMessages: Context["messages"], cwd: string): SessionState | undefined {
+	let best: SessionState | undefined;
+	for (const [candidateLane, candidate] of sessionLanes) {
+		if (candidateLane === lane || candidate.cwd !== cwd || candidate.needsRebuild || !candidate.history) continue;
+		if (candidate.history.length < candidate.cursor || priorMessages.length < candidate.cursor) continue;
+		const beyond = priorMessages.slice(candidate.cursor);
+		if (beyond.length > 1 || (beyond.length === 1 && beyond[0].role !== "assistant")) continue;
+		if (!sameHistory(candidate.history.slice(0, candidate.cursor), priorMessages.slice(0, candidate.cursor))) continue;
+		if (!best || candidate.cursor > best.cursor) best = candidate;
+	}
+	return best;
+}
+
+/**
+ * Seed `lane` with a byte copy of `donor`'s session file under this lane's own id.
+ *
+ * Only the `sessionId` field is rewritten: it is local bookkeeping Claude Code matches
+ * against the filename and never sends to the API, so the copy resumes with the
+ * donor's exact request prefix. The lane keeps its id across re-seeds so a caller
+ * that returns every settle does not leave a file behind each time. After an abort
+ * `forceRotate` wins, for the reason it exists — but the file the killed process may
+ * still be writing to is this lane's own, never resumed again, so it is deleted rather
+ * than left behind: a caller that aborts every pass on purpose would otherwise leave
+ * one transcript-sized file per pass.
+ *
+ * Returns undefined when the copy cannot be made — the donor's file is gone, or is
+ * not a plain file — and the caller falls through to a rebuild from pi's messages.
+ */
+function seedLaneFromDonor(donor: SessionState, existing: SessionState | null, cwd: string): string | undefined {
+	const rotate = Boolean(existing?.forceRotate);
+	const targetId = existing && !rotate ? existing.sessionId : randomUUID();
+	if (targetId === donor.sessionId) return undefined;
+	try {
+		const source = getSessionPath(donor.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		const target = getSessionPath(targetId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		const copied = readFileSync(source, "utf8").replaceAll(`"sessionId":"${donor.sessionId}"`, `"sessionId":"${targetId}"`);
+		writeFileSync(target, copied);
+		if (rotate && existing && existing.sessionId !== donor.sessionId) {
+			deleteSession(existing.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		}
+		debug(`provider: seeded session ${targetId.slice(0, 8)} from ${donor.sessionId.slice(0, 8)}, ${copied.length} bytes, donor untouched`);
+		return targetId;
+	} catch (error) {
+		debug(`provider: could not seed from ${donor.sessionId.slice(0, 8)}, rebuilding from pi's messages instead:`, error);
+		return undefined;
+	}
 }
 
 // Convert pi messages to Anthropic API format for session import.
@@ -719,7 +803,7 @@ function syncSharedSession(
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
 		if (missed.length === 0 || trailingAssistantOnly) {
 			if (trailingAssistantOnly) {
-				setLane(lane, { ...sharedSession, cursor: priorMessages.length, cwd });
+				setLane(lane, { ...sharedSession, cursor: priorMessages.length, cwd, history: priorMessages });
 			}
 			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${getLane(lane)?.cursor}`);
 			debug(`syncResult: path=reuse sessionId=${sharedSession.sessionId} cursor=${getLane(lane)?.cursor}`);
@@ -752,6 +836,17 @@ function syncSharedSession(
 		debug(`syncResult: path=clean-start`);
 		return { sessionId: null };
 	}
+	// COPY: this history is already held, byte for byte, by another lane's session.
+	const donor = findDonorLane(lane, priorMessages, cwd);
+	if (donor) {
+		const seeded = seedLaneFromDonor(donor, sharedSession, cwd);
+		if (seeded) {
+			setLane(lane, { sessionId: seeded, cursor: priorMessages.length, cwd, history: priorMessages });
+			debug(`Case 2 copy: ${priorMessages.length} prior messages already in session ${donor.sessionId.slice(0, 8)} → session ${seeded.slice(0, 8)}`);
+			debug(`syncResult: path=copy sessionId=${seeded} donor=${donor.sessionId} priors=${priorMessages.length}`);
+			return { sessionId: seeded };
+		}
+	}
 	const previousSessionId = sharedSession?.sessionId;
 	const previousCursor = sharedSession?.cursor ?? 0;
 	// preserveId: rebuild in place (deleteSession + createSession with the
@@ -776,7 +871,7 @@ function syncSharedSession(
 	// records, not messages: `messages` filters out the attachment records that
 	// carrying an `@file` expansion across a rebuild writes into the same file.
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
-	setLane(lane, { sessionId: session.sessionId, cursor: priorMessages.length, cwd });
+	setLane(lane, { sessionId: session.sessionId, cursor: priorMessages.length, cwd, history: priorMessages });
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.records.length} records`);
 	} else if (preserveId) {
@@ -1606,8 +1701,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// — observed pulling a parent from 5 back to 3, which cost the parent's next
 		// turn a full rebuild and a flushed prompt cache.
 		const laneSession = getLane(lane);
-		if (laneSession && resultCtx === ctx()) laneSession.cursor = context.messages.length;
-		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
+		if (laneSession && resultCtx === ctx()) {
+			laneSession.cursor = context.messages.length;
+			laneSession.history = context.messages;
+		}
+		if (context.messages.length >= resultCtx.latestCursor) {
+			resultCtx.latestCursor = context.messages.length;
+			resultCtx.latestHistory = context.messages;
+		}
 		return stream;
 	}
 
@@ -1675,6 +1776,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.turnToolCallIds = [];
 	queryCtx.resetTurnState(model);
 	queryCtx.latestCursor = 0;
+	queryCtx.latestHistory = undefined;
 
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
@@ -1843,7 +1945,16 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			} else if (sessionId) {
 				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, laneSession?.cursor ?? 0);
 				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-				setLane(lane, { sessionId, cursor, cwd });
+				// The history behind that cursor: this request's messages when they reach it,
+				// else whatever the tool-result deliveries recorded (theirs is the longer
+				// context). A history shorter than the cursor is not offered to other lanes.
+				const latest = queryCtx.latestHistory as Context["messages"] | undefined;
+				const history = context.messages.length >= cursor
+					? context.messages
+					: latest && latest.length >= cursor
+						? latest
+						: laneSession?.history && laneSession.history.length >= cursor ? laneSession.history : undefined;
+				setLane(lane, { sessionId, cursor, cwd, ...(history ? { history } : {}) });
 			}
 
 			if (!isReentrant && queryCtx.activeQuery === sdkQuery) {

@@ -20,6 +20,12 @@ export class QueryContext {
 	activeQuery: unknown | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
 	latestCursor = 0;
+	/** The context behind `latestCursor`: tool-result deliveries carry a longer context
+	 *  than the fresh query did, and the completion handler records the lane's cursor
+	 *  from the longest one. The history it records has to come from the same place, or
+	 *  a lane that just finished a tool-using turn offers nothing for another lane to
+	 *  match against. */
+	latestHistory: readonly unknown[] | undefined = undefined;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();
 	/** tool_use ids emitted this turn. Sole purpose is routing a delivered result
