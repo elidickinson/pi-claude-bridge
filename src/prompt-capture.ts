@@ -575,7 +575,12 @@ function projectContextStart(lines: readonly string[], tailAt: number): number {
 		openAt !== -1;
 		openAt = lines.lastIndexOf(PROJECT_CONTEXT_OPEN, openAt - 1)
 	) {
-		if (lines[openAt + 2] === PROJECT_CONTEXT_LEAD_IN) return openAt;
+		if (
+			lines[openAt + 2] === PROJECT_CONTEXT_LEAD_IN ||
+			lines[openAt + 1] === PROJECT_CONTEXT_LEAD_IN
+		) {
+			return openAt;
+		}
 	}
 	return -1;
 }

@@ -63,11 +63,28 @@ const TAIL_KEY = [IDENTITY, PROJECT_CONTEXT_BLOCK].join("\n\n");
 /** The form it embeds for a relocated child: cut one layer earlier (#918). */
 const RELOCATED_KEY = IDENTITY;
 
+/** The context block as the 0.86 section renderer writes it: the lead-in sits
+ *  directly below the opening tag — no blank line. This is the shape the
+ *  relocated guard's 0.86 offset arm is load-bearing for; building it with
+ *  0.85's blank line would let the old single-offset guard pass vacuously. */
+const SECTION_PROJECT_CONTEXT_BLOCK = [
+	"<project_context>",
+	"Project-specific instructions and guidelines:",
+	"",
+	'<project_instructions path="/parent/AGENTS.md">',
+	"Repo rules.",
+	"</project_instructions>",
+	"</project_context>",
+].join("\n");
+
+/** The post-#959 same-workspace embedding from a 0.86-rendered parent. */
+const SECTION_TAIL_KEY = [IDENTITY, SECTION_PROJECT_CONTEXT_BLOCK].join("\n\n");
+
 /** The pi ≥0.86 section-rendered parent: same layers, wrapped and joined by
  *  blank lines, the cwd as a section instead of a footer line. */
 const SECTION_PARENT_KEY = [
 	IDENTITY,
-	PROJECT_CONTEXT_BLOCK,
+	SECTION_PROJECT_CONTEXT_BLOCK,
 	`<skills>\n${SKILLS_CATALOGUE}\n</skills>`,
 	"<cwd>\n/parent\n</cwd>",
 ].join("\n\n");
@@ -144,7 +161,7 @@ describe("tail-stripped inheritance (#88)", () => {
 		// cut at the heading, leaving the `<skills>` wrapper behind. The heading
 		// cut stays a key for them; the wrapper cut is longer but only fits the
 		// post-#959 embedding, so longest-match picks the heading cut here.
-		const tailKey = [IDENTITY, PROJECT_CONTEXT_BLOCK, "<skills>"].join("\n\n");
+		const tailKey = [IDENTITY, SECTION_PROJECT_CONTEXT_BLOCK, "<skills>"].join("\n\n");
 		const child = `${tailKey}${CHILD_SUFFIX}`;
 		const derived = captures.resolveOrDerive(child);
 		assert.ok(derived, "the stripped child resolves without a footer anchor");
@@ -157,10 +174,10 @@ describe("tail-stripped inheritance (#88)", () => {
 
 		// gotgenes#959 moves the same-cwd cut to the wrapper's opening tag, so
 		// the embedded region is the tail key without the dangling wrapper line.
-		const child = `${TAIL_KEY}${CHILD_SUFFIX}`;
+		const child = `${SECTION_TAIL_KEY}${CHILD_SUFFIX}`;
 		const derived = captures.resolveOrDerive(child);
 		assert.ok(derived, "the wrapper-cut child resolves");
-		assert.equal(derived.inherited[0].end, TAIL_KEY.length, "the wrapper cut matches");
+		assert.equal(derived.inherited[0].end, SECTION_TAIL_KEY.length, "the wrapper cut matches");
 
 		const projected = projectPromptCapture(derived, { skillReadTool: "read" });
 		assert.ok(!projected.includes("<skills>"), "the wrapper is not forwarded");
