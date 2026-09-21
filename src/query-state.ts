@@ -28,6 +28,11 @@ export class QueryContext {
 	turnToolCallIds: string[] = [];
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
+	/** pi request lane this context serves (`options.sessionId`), or undefined before
+	 *  its first query claims one. Requests on different lanes are different callers,
+	 *  so they never share a context: results route only to the lane that asked, and a
+	 *  lane starting a query mid-flight must not overwrite another's turn state. */
+	lane: string | undefined = undefined;
 	/** Last rate-limit rejection seen on this query. Claude Code sends it just before the
 	 *  failure it caused, which is the only thing tying the two together. */
 	rateLimitRejection: { rateLimitType?: string; resetsAt?: number } | null = null;
