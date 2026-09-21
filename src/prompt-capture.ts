@@ -1,5 +1,6 @@
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { formatProjectContext } from "./agents-md.js";
+import { collectPromptGuidelines, renderGuidelinesBlock } from "./prompt-guidelines.js";
 import { renderSkillsBlock, type SkillReadTool } from "./skills.js";
 
 // What pi assembled for one agent, kept so the bridge can append only the
@@ -10,6 +11,8 @@ export type PromptCaptureInput = {
 	append?: string;
 	contextFiles: { path: string; content: string }[];
 	skills: Skill[];
+	/** Pi's tool and prompt guidelines, which its own `rules` section carries and this preset replaces. */
+	guidelines?: string[];
 };
 
 type InheritedPrompt = {
@@ -79,6 +82,7 @@ export class PromptCaptures {
 			assembledPrompt: systemPrompt,
 			contextFiles: [],
 			skills: [],
+			guidelines: [],
 			inherited: [],
 		};
 
@@ -86,6 +90,7 @@ export class PromptCaptures {
 		capture.append = input.append;
 		capture.contextFiles = input.contextFiles.map((file) => ({ ...file }));
 		capture.skills = [...input.skills];
+		capture.guidelines = [...(input.guidelines ?? [])];
 		capture.source = source;
 		if (!existing || customChanged) {
 			capture.inherited = this.findInheritedPrompts(systemPrompt, input.custom);
@@ -181,7 +186,7 @@ export class PromptCaptures {
 		// `custom` is the prompt itself and the edges keep their original offsets, so
 		// projectCustom substitutes the embedded captures in place and preserves every
 		// byte between and around them.
-		return { assembledPrompt: systemPrompt, custom: systemPrompt, contextFiles: [], skills: [], inherited: embedded };
+		return { assembledPrompt: systemPrompt, custom: systemPrompt, contextFiles: [], skills: [], guidelines: [], inherited: embedded };
 	}
 
 	get size(): number {
@@ -307,10 +312,16 @@ function projectCapture(
 			return true;
 		});
 
+		// Same rule as the skills above: a projected ancestor already carries its own guidelines, so
+		// repeating them here would restate the parent's block inside the child's.
+		const inheritedGuidelines = new Set(capture.inherited.flatMap((edge) => collectPromptGuidelines(edge.parent)));
+		const ownGuidelines = (capture.guidelines ?? []).filter((line) => !inheritedGuidelines.has(line));
+
 		const custom = projectCustom(capture, options, visiting);
 		const parts = [
 			formatProjectContext(capture.contextFiles),
 			renderSkillsBlock(ownSkills, options.skillReadTool),
+			renderGuidelinesBlock(ownGuidelines),
 			custom,
 			capture.append,
 		].filter((part): part is string => Boolean(part));
