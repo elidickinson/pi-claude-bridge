@@ -237,7 +237,42 @@ function readCarriedAttachments(sessionId: string, cwd: string): CarriedAttachme
 	}
 }
 
-let sharedSession: SessionState | null = null;
+/**
+ * Claude Code session state, one lane per pi request lane.
+ *
+ * pi labels every provider request with `options.sessionId`
+ * (`ProviderRequestOptions`, "for providers that support session-based caching …
+ * request routing, or other session-aware features"). Its own turns carry the
+ * AgentSession id; an extension running a small agent of its own beside the
+ * conversation carries whatever id it chose, and several pi extensions already
+ * derive one per role.
+ *
+ * Keying on it is what keeps such a request from resuming — and steering into —
+ * the conversation's Claude Code session. With a single global, a request whose
+ * history merely *extended* the cursor passed the REUSE check, so whatever it
+ * appended was written to the conversation's stdin as a steer and the
+ * conversation's own agent acted on it.
+ *
+ * A host that sends no sessionId keeps the previous single-session behaviour
+ * under `DEFAULT_LANE`.
+ */
+const sessionLanes = new Map<string, SessionState>();
+
+/** Lane for requests that carry no `options.sessionId`. */
+const DEFAULT_LANE = "";
+
+function laneOf(options?: { sessionId?: string }): string {
+	return options?.sessionId ?? DEFAULT_LANE;
+}
+
+function getLane(lane: string): SessionState | null {
+	return sessionLanes.get(lane) ?? null;
+}
+
+function setLane(lane: string, state: SessionState | null): void {
+	if (state) sessionLanes.set(lane, state);
+	else sessionLanes.delete(lane);
+}
 
 // Convert pi messages to Anthropic API format for session import.
 // Lossy: only text, thinking and toolCall blocks survive, and thinking only when
@@ -656,9 +691,15 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
+	// Ahead of the optional parameters, and required: a caller that forgot it would sync
+	// one lane's history against another lane's session — the whole failure this keying
+	// exists to stop, and one no unit test of this function can see, because such a test
+	// passes the lane itself. `tsc` sees it.
+	lane: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
 ): SyncResult {
+	const sharedSession = getLane(lane);
 	// System messages are pi 0.86's transcript representation of prompt and tool state, not
 	// conversation history — they are never imported into a CC session, so exclude them from
 	// the history space (priorMessages, cursor, missed) everywhere below (issue #106).
@@ -678,10 +719,10 @@ function syncSharedSession(
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
 		if (missed.length === 0 || trailingAssistantOnly) {
 			if (trailingAssistantOnly) {
-				sharedSession = { ...sharedSession, cursor: priorMessages.length, cwd };
+				setLane(lane, { ...sharedSession, cursor: priorMessages.length, cwd });
 			}
-			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
-			debug(`syncResult: path=reuse sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
+			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${getLane(lane)?.cursor}`);
+			debug(`syncResult: path=reuse sessionId=${sharedSession.sessionId} cursor=${getLane(lane)?.cursor}`);
 			return { sessionId: sharedSession.sessionId };
 		}
 	}
@@ -735,7 +776,7 @@ function syncSharedSession(
 	// records, not messages: `messages` filters out the attachment records that
 	// carrying an `@file` expansion across a rebuild writes into the same file.
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
-	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
+	setLane(lane, { sessionId: session.sessionId, cursor: priorMessages.length, cwd });
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.records.length} records`);
 	} else if (preserveId) {
@@ -752,19 +793,29 @@ function syncSharedSession(
 // @internal
 export const __test = {
 	resetSharedSession() {
-		sharedSession = null;
+		sessionLanes.clear();
 	},
-	setSharedSession(state: SessionState | null) {
-		sharedSession = state;
+	setSharedSession(state: SessionState | null, lane = DEFAULT_LANE) {
+		setLane(lane, state);
 	},
-	getSharedSession() {
-		return sharedSession;
+	getSharedSession(lane = DEFAULT_LANE) {
+		return getLane(lane);
+	},
+	getLaneCount() {
+		return sessionLanes.size;
 	},
 	setPiUI(ui: ExtensionUIContext | null) {
 		piUI = ui;
 	},
 	toBridgeContext,
-	syncSharedSession,
+	// Defaulted for the suites that predate lanes and pass neither a lane nor a second one.
+	syncSharedSession: (
+		messages: Context["messages"],
+		cwd: string,
+		customToolNameToSdk?: Map<string, string>,
+		modelId?: string,
+		lane = DEFAULT_LANE,
+	) => syncSharedSession(messages, cwd, lane, customToolNameToSdk, modelId),
 	extractUserPromptBlocks,
 	consumeQuery,
 	finalizeCurrentStream,
@@ -1410,9 +1461,10 @@ function steerBlocks(messages: Context["messages"]): ContentBlockParam[] | null 
 /** A steer that never made it into CC's session. The cursor has already counted
  *  it, so count-based sync would skip it forever — rebuild instead, which
  *  re-imports the message from pi's context. */
-function steerMissedSession(text: string): void {
-	if (!sharedSession) return;
-	sharedSession = { ...sharedSession, needsRebuild: true };
+function steerMissedSession(text: string, lane: string): void {
+	const state = getLane(lane);
+	if (!state) return;
+	setLane(lane, { ...state, needsRebuild: true });
 	debug(`provider: steer never reached CC, marked session for rebuild: ${text.slice(0, 60)}`);
 }
 
@@ -1439,7 +1491,7 @@ async function deliverToolResults(
 		const text = steer.map((b) => (b.type === "text" ? b.text : "[image]")).join("\n");
 		if (!c.promptStream) {
 			debug(`WARNING: steer with no prompt stream, dropping: ${text.slice(0, 60)}`);
-			steerMissedSession(text);
+			steerMissedSession(text, c.lane ?? DEFAULT_LANE);
 		} else {
 			try {
 				await c.promptStream.push(userMessage(steer, "next"));
@@ -1450,7 +1502,7 @@ async function deliverToolResults(
 				// pi's context, and the caller has already advanced the session
 				// cursor past it, so force a rebuild or CC would never see it.
 				debug(`provider: steer push rejected, delivering tool result anyway:`, error);
-				steerMissedSession(text);
+				steerMissedSession(text, c.lane ?? DEFAULT_LANE);
 			}
 		}
 	}
@@ -1514,9 +1566,21 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
 	debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}, isReentrant=${ctx().activeQuery !== null}`);
 
+	// Which caller this request belongs to. Everything below that could touch another
+	// caller's Claude Code session or query state is keyed on it.
+	const lane = laneOf(options as { sessionId?: string } | undefined);
 	const activeQuery = ctx().activeQuery !== null;
-	const allResults = activeQueryContexts.size > 0 ? extractAllToolResults(context) : [];
-	const resultCtx = allResults.length > 0 ? contextForToolResults(allResults) : undefined;
+	const extracted = activeQueryContexts.size > 0 ? extractAllToolResults(context) : [];
+	const routed = extracted.length > 0 ? contextForToolResults(extracted) : undefined;
+	// Results route by tool-call id, then only to a query on the same lane. A request
+	// from another caller carries the conversation's history, so the conversation's
+	// trailing tool result is within reach of the walk above — delivering it here would
+	// answer the conversation's own handler out of turn, on a stream it does not own.
+	const resultCtx = routed && (routed.lane ?? DEFAULT_LANE) === lane ? routed : undefined;
+	const allResults = resultCtx ? extracted : [];
+	if (routed && !resultCtx) {
+		debug(`provider: ${extracted.length} tool result(s) belong to lane ${(routed.lane ?? DEFAULT_LANE).slice(0, 8) || "(default)"}, not this request's ${lane.slice(0, 8) || "(default)"} — not delivering`);
+	}
 	const isReentrantUserQuery = activeQuery && lastMsgRole === "user" && allResults.length === 0;
 	if (isReentrantUserQuery) {
 		debug(`provider: active query user-only call treated as reentrant fresh query, waitingHandlers=${ctx().pendingToolCalls.size}, ctx.msgs=${context.messages.length}`);
@@ -1541,7 +1605,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// delivering its own results would drag it to that subagent's message count
 		// — observed pulling a parent from 5 back to 3, which cost the parent's next
 		// turn a full rebuild and a flushed prompt cache.
-		if (sharedSession && resultCtx === ctx()) sharedSession.cursor = context.messages.length;
+		const laneSession = getLane(lane);
+		if (laneSession && resultCtx === ctx()) laneSession.cursor = context.messages.length;
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
 		return stream;
 	}
@@ -1552,7 +1617,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const lastMsg = context.messages[context.messages.length - 1];
 	if (lastMsg?.role === "toolResult") {
 		debug(`provider: orphaned tool result after abort, emitting end_turn`);
-		if (sharedSession && activeQueryContexts.size === 0) sharedSession.cursor = context.messages.length;
+		const laneSession = getLane(lane);
+		if (laneSession && activeQueryContexts.size === 0) laneSession.cursor = context.messages.length;
 		// No query owns this result, so there is no context to reset: resetTurnState
 		// on the top-level ctx() would replace a live parent's turnOutput mid-stream,
 		// stranding the blocks it had already emitted. A throwaway context just
@@ -1571,9 +1637,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// 1. Determine reentrancy. Reentrant queries get their own QueryContext so
 	//    background subagents can run concurrently with the parent query.
-	const isReentrant = activeQuery;
-	const queryCtx = isReentrant ? new QueryContext() : ctx();
-	debug(`provider: fresh query setup, isReentrant=${isReentrant}, activeContexts=${activeQueryContexts.size}`);
+	//    A request on another lane is likewise its own: it runs beside the
+	//    conversation rather than as part of it, so sharing the top-level context would
+	//    let each overwrite the other's turn state.
+	const shared = ctx();
+	const isReentrant = activeQuery || (shared.lane !== undefined && shared.lane !== lane);
+	const queryCtx = isReentrant ? new QueryContext() : shared;
+	queryCtx.lane = lane;
+	debug(`provider: fresh query setup, isReentrant=${isReentrant}, lane=${lane.slice(0, 8) || "(default)"}, activeContexts=${activeQueryContexts.size}`);
 
 	// Resolved first: an unaccountable system prompt throws, and doing that before
 	// anything is claimed or reset leaves no half-built query behind — in particular
@@ -1609,7 +1680,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	const syncResult = syncSharedSession(context.messages, cwd, lane, customToolNameToSdk, cliModel);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1623,7 +1694,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			isReentrant,
 			activeQueryContexts: activeQueryContexts.size,
 			activeQueryExists: queryCtx.activeQuery !== null,
-			sharedSession: sharedSession ? { sessionId: sharedSession.sessionId.slice(0, 8), cursor: sharedSession.cursor } : null,
+			lane,
+			sharedSession: getLane(lane) ? { sessionId: getLane(lane)!.sessionId.slice(0, 8), cursor: getLane(lane)!.cursor } : null,
 			messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 		});
 		// Recover: use a continuation prompt so the SDK doesn't send an empty text block
@@ -1744,8 +1816,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
-				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
-				debug(`provider: abort detected, marked sharedSession needsRebuild + forceRotate`);
+				const aborting = getLane(lane);
+				if (aborting) setLane(lane, { ...aborting, needsRebuild: true, forceRotate: true });
+				debug(`provider: abort detected, marked lane ${lane.slice(0, 8) || "(default)"} needsRebuild + forceRotate`);
 				if (queryCtx.turnOutput) {
 					queryCtx.turnOutput.stopReason = "aborted";
 					queryCtx.turnOutput.errorMessage = "Operation aborted";
@@ -1759,17 +1832,18 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			}
 
 			// --- Capture session ID ---
-			const sessionId = capturedSessionId ?? sharedSession?.sessionId;
+			const laneSession = getLane(lane);
+			const sessionId = capturedSessionId ?? laneSession?.sessionId;
 			if (syncResult.preserveSharedSession) {
-				if (capturedSessionId && capturedSessionId !== sharedSession?.sessionId) {
+				if (capturedSessionId && capturedSessionId !== laneSession?.sessionId) {
 					deleteSession(capturedSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
 					debug(`provider: query done, deleted ephemeral session ${capturedSessionId.slice(0, 8)} to preserve shared session`);
 				}
 				debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
 			} else if (sessionId) {
-				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, sharedSession?.cursor ?? 0);
+				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, laneSession?.cursor ?? 0);
 				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-				sharedSession = { sessionId, cursor, cwd };
+				setLane(lane, { sessionId, cursor, cwd });
 			}
 
 			if (!isReentrant && queryCtx.activeQuery === sdkQuery) {
@@ -1780,10 +1854,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		})
 		.catch((error) => {
 			debug(`provider: query error, model=${cliModel}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
-			if ((wasAborted || options?.signal?.aborted) && sharedSession) {
-				sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
+			const failing = getLane(lane);
+			if ((wasAborted || options?.signal?.aborted) && failing) {
+				setLane(lane, { ...failing, needsRebuild: true, forceRotate: true });
 			} else {
-				sharedSession = null;
+				setLane(lane, null);
 			}
 			promptStream.fail(error instanceof Error ? error : new Error(String(error)));
 			if (queryCtx.turnOutput) {
@@ -1852,18 +1927,23 @@ async function promptAndWait(
 
 	// Session resume for shared mode — reuse provider's session if it exists,
 	// otherwise create one from pi's context.
-	// Note: doesn't update sharedSession.cursor after completion, so the next
+	// Note: doesn't update the lane's cursor after completion, so the next
 	// provider call will see missed messages and trigger a Case 4 rebuild.
+	//
+	// AskClaude is a tool of the conversation, so its session is the conversation's:
+	// the lane of the top-level query context, which is the one that claimed ctx().
+	const lane = ctx().lane ?? DEFAULT_LANE;
 	let resumeSessionId: string | null = null;
 	if (!options?.isolated && options?.context?.length) {
-		if (sharedSession) {
+		const laneSession = getLane(lane);
+		if (laneSession) {
 			// Provider already has a session — just resume from it
 			// Any missed messages from other providers were already handled by the provider's Case 4
-			resumeSessionId = sharedSession.sessionId;
+			resumeSessionId = laneSession.sessionId;
 		} else {
 			// No provider session yet — create one from pi's context
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel);
+			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, lane, undefined, cliModel);
 			resumeSessionId = sync.sessionId;
 		}
 	}
@@ -2052,10 +2132,13 @@ export default function (pi: ExtensionAPI) {
 		if (config.askClaude?.enabled === undefined) pendingNotices.push("The AskClaude tool is opt-in only. Set askClaude.enabled to use it.");
 	}
 
-	// Reset shared session on pi session lifecycle events
+	// Reset session state on pi session lifecycle events
 	const clearSession = (event: string) => {
-		debug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
-		sharedSession = null;
+		debug(`${event}: clearing ${sessionLanes.size} session lane(s)`);
+		sessionLanes.clear();
+		// The top-level context outlives the pi session; unbind it so the next one's
+		// first turn can claim it instead of being treated as a second lane.
+		ctx().lane = undefined;
 
 		// Clear the global streamSimple if this instance registered it.
 		// This allows /reload to work — the old instance clears the flag so
@@ -2175,10 +2258,11 @@ export default function (pi: ExtensionAPI) {
 	// session that no longer matches pi's history. /compact in particular
 	// triggers CC's autocompact-thrashing guard (issue #8). Force the next
 	// call down the REBUILD path so CC sees the current history.
+	// Every lane is built from that same history, so every lane is stale.
 	const markRebuild = (event: string) => {
-		if (sharedSession) {
-			debug(`${event}: marking needsRebuild on session ${sharedSession.sessionId.slice(0, 8)}`);
-			sharedSession = { ...sharedSession, needsRebuild: true };
+		for (const [lane, state] of sessionLanes) {
+			debug(`${event}: marking needsRebuild on session ${state.sessionId.slice(0, 8)} (lane ${lane.slice(0, 8) || "(default)"})`);
+			sessionLanes.set(lane, { ...state, needsRebuild: true });
 		}
 	};
 	pi.on("session_compact", (event) => markRebuild(`session_compact:${event.reason}:willRetry=${event.willRetry}`));
