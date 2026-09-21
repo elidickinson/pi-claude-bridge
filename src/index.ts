@@ -23,6 +23,7 @@ import {
 	projectPromptCapture,
 	sharedPromptCaptures,
 } from "./prompt-capture.js";
+import { selectedGuidelines } from "./prompt-guidelines.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
@@ -2096,6 +2097,10 @@ export default function (pi: ExtensionAPI) {
 			append: options?.appendSystemPrompt,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
+			// Read from the options rather than from the assembled prompt: pi builds its `rules`
+			// section only when no custom prompt replaced the default, but these fields are
+			// populated either way, so the guidelines survive a `--system-prompt` too.
+			guidelines: selectedGuidelines(options),
 		}, source);
 	}
 	pi.on("before_agent_start", (event) => {
