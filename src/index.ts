@@ -10,6 +10,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { isForeignOneShot } from "./one-shot.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -437,11 +438,19 @@ function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleS
 	return stream;
 }
 
+/** A foreign one-shot (reviewer, judge) on the same isolated path, logged as its own kind. */
+function oneShotStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	const stream = createAssistantMessageEventStream();
+	void runIsolatedSummary(model, context, options, stream, "one-shot");
+	return stream;
+}
+
 async function runIsolatedSummary(
 	model: Model<any>,
 	context: Context,
 	options: SimpleStreamOptions | undefined,
 	stream: AssistantMessageEventStream,
+	label = "compact summary",
 ): Promise<void> {
 	// pi delivers compaction/branch-summary requests as a transcript: the summarization
 	// prompt folded into a leading system message ahead of the lone user message
@@ -471,7 +480,7 @@ async function runIsolatedSummary(
 		const compactProviderSettings = loadConfig(cwd).provider;
 		const claudeExecutable = compactProviderSettings?.pathToClaudeCodeExecutable;
 		const cliModel = claudeCodeModelId(model, longContextSettings);
-		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
+		debug(`${label}: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
 		sdkQuery = query({
 			prompt: promptText,
@@ -488,7 +497,7 @@ async function runIsolatedSummary(
 				model: cliModel,
 				maxTurns: 1,
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-				...makeCliDebugOptions("compact-summary"),
+				...makeCliDebugOptions(label.replace(/ /g, "-")),
 			},
 		});
 
@@ -504,7 +513,7 @@ async function runIsolatedSummary(
 
 		for await (const message of sdkQuery) {
 			if (!firstEventLogged) {
-				debug(`compact summary: first event type=${message.type}`);
+				debug(`${label}: first event type=${message.type}`);
 				firstEventLogged = true;
 			}
 			if (wasAborted) break;
@@ -514,7 +523,7 @@ async function runIsolatedSummary(
 					if (block.type === "text" && typeof block.text === "string") assistantText += block.text;
 				}
 			} else if (message.type === "result") {
-				logServedContextWindow("compact summary", message, model);
+				logServedContextWindow(label, message, model);
 				errorText = resultErrorText(message);
 				if (!errorText && message.subtype === "success") finalText = message.result || assistantText;
 			}
@@ -522,7 +531,7 @@ async function runIsolatedSummary(
 
 		if (wasAborted) {
 			const output = newAssistantOutput(model, "", "aborted", "Operation aborted");
-			debug("compact summary: aborted");
+			debug(`${label}: aborted`);
 			stream.push({ type: "error", reason: "aborted", error: output });
 			stream.end();
 			return;
@@ -531,13 +540,13 @@ async function runIsolatedSummary(
 		const text = finalText || assistantText;
 		if (errorText || !text.trim()) {
 			const msg = errorText ?? "Claude Code summary returned empty text";
-			debug(`compact summary: error ${msg}`);
+			debug(`${label}: error ${msg}`);
 			stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
 			stream.end();
 			return;
 		}
 
-		debug(`compact summary: done textLen=${text.length}`);
+		debug(`${label}: done textLen=${text.length}`);
 		stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
 		stream.end();
 	} catch (err) {
@@ -1531,6 +1540,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	if (options?.cacheRetention === "none") {
 		debug(`provider: one-off summarizer call (cacheRetention none) routed to isolated summary, msgs=${context.messages.length}`);
 		return isolatedStreamFn(model, context, options);
+	}
+
+	// A permission reviewer or judge extension calls our streamSimple with its own
+	// rubric, one user message and no tools — often mid-turn, where the main lane
+	// would take it for a reentrant query of the active session. Serve it on the
+	// same isolated one-shot path as the summarizers.
+	if (isForeignOneShot(context, (systemPrompt) => promptCaptures.resolveOrDerive(systemPrompt))) {
+		debug(`provider: foreign one-shot (${context.systemPrompt!.length}-char system prompt, no tools) routed to isolated path, activeQuery=${!!ctx().activeQuery}`);
+		return oneShotStreamFn(model, context, options);
 	}
 
 	const stream = createAssistantMessageEventStream();
