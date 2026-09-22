@@ -32,6 +32,7 @@ the footnote below the table).
 
 | requested id              | Pro, credits off | Pro, credits on | Max, credits off | Max, credits on |
 |---------------------------|------------------|-----------------|------------------|-----------------|
+| `claude-opus-5-5[1m]`    | —                | —               | —                | —               |
 | `claude-opus-5`           | —                | —               | 200K             | —               |
 | `claude-opus-5[1m]`      | —                | —               | 1M               | —               |
 | `claude-opus-4-8`         | 200K             | 200K            | 200K             | 200K            |
@@ -52,7 +53,12 @@ the footnote below the table).
 Raw runs: `.test-output/context-size/{pro,max}-2026-06-26T21-*.json`
 
 `—` = not yet tested in that condition. Max-credits-on matched Pro-credits-on
-for every cell tested in both (shown for completeness).
+for every cell tested in both (shown for completeness). Opus 5.5 is enabled at
+1M in the bridge based on [Anthropic's documentation](https://code.claude.com/docs/en/model-config#extended-context)
+for Opus 4.7 and later (1M by default on the Anthropic API, including Pro),
+**not an SDK subscription/OAuth measurement**. The bridge requests `[1m]` to
+match the measured SDK behavior of earlier models; Opus 5.5's `[1m]` behavior
+on Pro remains to be tested.
 
 † **Inferred, not directly measured.** The Pro-credits-off run predates
 error-field capture; its three rejected `[1m]` rows have no recorded HTTP status
