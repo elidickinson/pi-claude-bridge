@@ -58,5 +58,10 @@
     "extensions": [
       "./src/index.ts"
     ]
+  },
+  "overrides": {
+    "ajv": {
+      "fast-uri": "4.1.3"
+    }
   }
 }
