@@ -40,6 +40,13 @@ export class QueryContext {
 	turnStarted = false;
 	turnSawStreamEvent = false;
 	turnSawToolCall = false;
+	/** API message id from the last message_start, and whether its message_stop has
+	 *  arrived. An `assistant` message under a different id while the stream is still
+	 *  open is Claude Code's non-streaming fallback for a stalled stream. */
+	turnStreamMessageId: string | undefined;
+	turnStreamOpen = false;
+	/** turnBlocks length at that message_start: where an abandoned attempt's blocks begin. */
+	turnStreamBlockStart = 0;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
@@ -68,6 +75,9 @@ export class QueryContext {
 		this.turnStarted = false;
 		this.turnSawStreamEvent = false;
 		this.turnSawToolCall = false;
+		this.turnStreamMessageId = undefined;
+		this.turnStreamOpen = false;
+		this.turnStreamBlockStart = 0;
 		// turnToolCallIds is NOT reset — it persists across tool-result delivery
 		// callbacks within the same assistant message so results can be routed to
 		// this query while its handlers are still pending.
