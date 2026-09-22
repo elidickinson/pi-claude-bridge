@@ -281,3 +281,16 @@ describe("capture provenance", () => {
 		);
 	});
 });
+
+describe("freshest()", () => {
+	it("returns the most recently touched capture, or undefined when empty", () => {
+		const captures = new PromptCaptures();
+		assert.equal(captures.freshest(), undefined, "empty store has no fallback");
+		captures.record("first", capture({ custom: "first" }));
+		captures.record("second", capture({ custom: "second" }));
+		assert.equal(captures.freshest().custom, "second");
+		// Resolving an older key touches it back to the head.
+		captures.resolve("first");
+		assert.equal(captures.freshest().custom, "first");
+	});
+});
