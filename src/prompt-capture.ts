@@ -104,6 +104,16 @@ export class PromptCaptures {
 		return capture;
 	}
 
+	/** Most recently recorded or resolved capture (touch() keeps Map order = recency).
+	 *  Serves the mid-query fallback in index.ts: pi issues user-only steer / follow-up
+	 *  turns while a query is active, carrying a reduced prompt that no capture boundary
+	 *  records. The freshest capture describes the same conversation, so its portable
+	 *  parts are the safe projection for that turn. */
+	freshest(): PromptCapture | undefined {
+		const keys = [...this.captures.keys()];
+		return keys.length > 0 ? this.captures.get(keys[keys.length - 1]) : undefined;
+	}
+
 	/** Recency is by use, not just by record. A parent agent records its prompt once
 	 *  and then only ever resolves it, so counting writes alone ages it out behind the
 	 *  sub-agent prompts churning past it — observed in a real 135-message session,
