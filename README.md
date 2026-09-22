@@ -31,7 +31,7 @@ Behind the scenes, pi's tools are bridged to Claude Code but it should all work 
 
 The model list comes from pi-ai's Anthropic catalog automatically — when pi-ai adds a new Claude model, it appears in `/model` after updating the package, no bridge update needed. Dated snapshot ids (e.g. `claude-opus-4-5-20251101`) are not shown. Selection by shortcut or partial id always prefers an exact match first, then the newest version of the matching family.
 
-**1M Context:** 1M is enabled per a *measured* list — models verified to serve 1M through the SDK on every plan (Fable 5/5.1, Opus 5/4.8/4.7, Sonnet 5). A new model appearing from pi-ai starts at 200K context until it's measured and added to that list, so no model can 400/429 its way through every turn. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
+**1M Context:** 1M is enabled per a *measured* list — models verified to serve 1M through the SDK on every plan (Fable 5/5.1, Opus 5.5/5/4.8/4.7, Sonnet 5). A new model appearing from pi-ai starts at 200K context until it's measured and added to that list, so no model can 400/429 its way through every turn. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
 
 ## AskClaude Tool
 

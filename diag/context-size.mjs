@@ -25,7 +25,7 @@ const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUTDIR = join(DIR, ".test-output", "context-size");
 mkdirSync(OUTDIR, { recursive: true });
 
-const MODELS = ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-fable-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+const MODELS = ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-fable-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
 const VARIANTS = ["bare", "1m"];
 const PER_CALL_MS = 120_000;
 const PROMPT = 'Reply with just the word "yes".';
