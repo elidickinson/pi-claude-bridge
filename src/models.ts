@@ -55,6 +55,35 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 		}));
 }
 
+// Ids named in provider.extraModels that pi-ai's catalog does not carry yet (a model
+// Claude Code already serves but pi has not released). Each one copies the newest
+// catalog model of its family — capabilities, limits, thinking map — under its own
+// id and name. Ids the catalog already has are left to the catalog, so the entry
+// retires itself once pi ships the model.
+export function withExtraModels<T extends { id: string; name: string }>(
+	catalog: T[],
+	extraIds: string[] = [],
+	onSkip: (id: string, why: string) => void = () => {},
+): T[] {
+	const extras: T[] = [];
+	for (const raw of extraIds) {
+		const id = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+		if (!/^claude-[a-z]+-\d+(-\d+)?$/.test(id)) { onSkip(String(raw), "not a claude-<family>-<major>[-<minor>] id"); continue; }
+		if (catalog.some((m) => m.id === id) || extras.some((m) => m.id === id)) continue;
+		const { family } = versionRank(id);
+		const template = newestPartialMatch(catalog.filter((m) => !isDatedAlias(m.id) && versionRank(m.id).family === family));
+		if (!template) { onSkip(id, `no ${family} model in pi-ai's catalog to copy from`); continue; }
+		extras.push({ ...template, id, name: displayName(id) });
+	}
+	return [...catalog, ...extras];
+}
+
+// claude-opus-5-5 → "Claude Opus 5.5", matching pi-ai's naming.
+function displayName(id: string): string {
+	const [, family, major, minor] = id.split("-");
+	return `Claude ${family[0].toUpperCase()}${family.slice(1)} ${major}${minor ? `.${minor}` : ""}`;
+}
+
 export type LongContextSettings = {
 	plan: "pro" | "max";
 	longContextExtraUsage: boolean;
@@ -81,6 +110,7 @@ export type ClaudeCodeRuntimeModel = {
 const MEASURED_ONE_M = new Set([
 	"claude-fable-5",
 	"claude-fable-5-1",
+	"claude-opus-5-5",
 	"claude-opus-5",
 	"claude-opus-4-8",
 	"claude-opus-4-7",

@@ -7,7 +7,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { applyLongContext, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel, resolveModel } from "../src/models.js";
+import { applyLongContext, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel, resolveModel, withExtraModels } from "../src/models.js";
 import { getModels } from "@earendil-works/pi-ai/compat";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
@@ -187,5 +187,40 @@ describe("applyLongContext", () => {
 
 		const extra = applyLongContext(models, EXTRA);
 		assert.equal(find(extra, "claude-sonnet-4-6").name, "Claude Sonnet 4.6 1M");
+	});
+});
+
+describe("provider.extraModels", () => {
+	const catalog = [
+		oneM("claude-opus-5"), mockPiAiModel("claude-opus-4-5-20251101"), oneM("claude-opus-4-8"),
+		oneM("claude-sonnet-5"),
+	];
+
+	it("adds an id the catalog lacks, copied from the newest model of its family", () => {
+		const models = withExtraModels(catalog, ["claude-opus-5-5"]);
+		const added = find(models, "claude-opus-5-5");
+		assert.equal(added.name, "Claude Opus 5.5");
+		assert.equal(added.contextWindow, 1000000);
+		assert.equal(added.maxTokens, find(catalog, "claude-opus-5").maxTokens);
+		assert.equal(buildModels(models)[0].id, "claude-opus-5-5", "sorts ahead of opus-5");
+		assert.equal(resolveModel(buildModels(models), "opus")?.id, "claude-opus-5-5");
+	});
+
+	it("leaves ids the catalog already has to the catalog", () => {
+		const models = withExtraModels(catalog, ["claude-opus-5", "claude-opus-5-5", "CLAUDE-OPUS-5-5"]);
+		assert.equal(models.filter((m) => m.id === "claude-opus-5").length, 1);
+		assert.equal(models.filter((m) => m.id === "claude-opus-5-5").length, 1);
+		assert.equal(find(models, "claude-opus-5").name, "claude-opus-5");
+	});
+
+	it("skips ids it cannot place, and says why", () => {
+		const skipped = [];
+		const models = withExtraModels(catalog, ["claude-mythos-1", "gpt-9", 42], (id, why) => skipped.push([id, why]));
+		assert.equal(models.length, catalog.length);
+		assert.deepEqual(skipped.map(([id]) => id), ["claude-mythos-1", "gpt-9", "42"]);
+	});
+
+	it("claude-opus-5-5 is measured at 1M", () => {
+		assert.deepEqual(resolveClaudeCodeRuntimeModel({ id: "claude-opus-5-5" }, PRO), { cliModelId: "claude-opus-5-5[1m]", contextWindow: 1000000 });
 	});
 });

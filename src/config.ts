@@ -35,6 +35,10 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Model ids (e.g. "claude-opus-5-5") to offer before pi-ai's catalog has
+		// them. Each copies the newest catalog model of its family; ignored once
+		// the catalog carries the id.
+		extraModels?: string[];
 	};
 }
 
