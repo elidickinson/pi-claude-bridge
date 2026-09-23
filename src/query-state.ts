@@ -8,6 +8,7 @@
 
 import type { AssistantMessage, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
+import type { ToolServer } from "./mcp-server.js";
 import type { PromptStream } from "./prompt-stream.js";
 import { LiveRecording } from "./session-sync.js";
 import type { RateLimitInfo } from "./rate-limit.js";
@@ -86,6 +87,11 @@ export class QueryContext {
 	 *  a run that continues it from a tool result (e.g. after pi terminated a tool
 	 *  batch and ended the opening run) has no other way to stop it. */
 	bindRunSignal: ((signal: AbortSignal | undefined, runStream: AssistantMessageEventStream) => void) | null = null;
+	/** The query's MCP server and the pi tools it serves; see syncServedTools. */
+	toolServer: ToolServer | null = null;
+	servedToolNames: string[] = [];
+	/** The SDK→pi name map consumeQuery reads; updated in place. */
+	toolNameToPi: Map<string, string> | null = null;
 	/** Last rate-limit rejection seen on this query. Claude Code sends it just before the
 	 *  failure it caused, which is the only thing tying the two together. */
 	rateLimitRejection: { rateLimitType?: string; resetsAt?: number } | null = null;

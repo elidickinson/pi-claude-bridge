@@ -27,7 +27,7 @@ import {
 	type PromptCapture,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments } from "./attachments.js";
-import { createToolServer } from "./mcp-server.js";
+import { createToolServer, type ToolServer } from "./mcp-server.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
@@ -709,6 +709,7 @@ export const __test = {
 	CC_CHILD_ENV,
 	ccChildEnv,
 	buildMcpServers,
+	syncServedTools,
 	get promptCaptures() {
 		return promptCaptures;
 	},
@@ -866,9 +867,8 @@ function resolveMcpTools(context: Context): {
 // it, and a handler that runs first parks its resolver in `pendingToolCalls`.
 // Handlers close over the captured `queryCtx`, ensuring they operate on the
 // correct query's state while multiple queries run concurrently.
-function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, ReturnType<typeof createToolServer>> | undefined {
-	if (!tools.length) return undefined;
-	const mcpTools = tools.map((tool) => ({
+function toMcpToolDefs(tools: Tool[], queryCtx: QueryContext) {
+	return tools.map((tool) => ({
 		name: tool.name,
 		description: tool.description,
 		inputSchema: tool.parameters,
@@ -886,7 +886,31 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 			});
 		},
 	}));
-	return { [MCP_SERVER_NAME]: createToolServer(MCP_SERVER_NAME, mcpTools) };
+}
+
+function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, ToolServer> | undefined {
+	if (!tools.length) return undefined;
+	return { [MCP_SERVER_NAME]: createToolServer(MCP_SERVER_NAME, toMcpToolDefs(tools, queryCtx)) };
+}
+
+// A tool call can change pi's active tools (web_enable, tool_search), but the
+// query's MCP server was built at query start. Push the new set through the live
+// server, and hold the tool result until CC re-lists: delivering first races the
+// re-list (diag/probe-mid-turn-tools.mjs). Returns undefined when nothing changed.
+function syncServedTools(c: QueryContext, context: Context): Promise<void> | undefined {
+	if (!c.toolServer || !c.toolNameToPi) return undefined;
+	const { mcpTools, customToolNameToPi } = resolveMcpTools(context);
+	const names = mcpTools.map((tool) => tool.name);
+	if (names.length === c.servedToolNames.length && names.every((name, i) => name === c.servedToolNames[i])) return undefined;
+	debug(`tool sync: served [${c.servedToolNames.join(",")}] → [${names.join(",")}]`);
+	c.servedToolNames = names;
+	// In place: consumeQuery holds this map. Removed names must drop out too.
+	c.toolNameToPi.clear();
+	for (const [sdkName, piName] of customToolNameToPi) c.toolNameToPi.set(sdkName, piName);
+	return c.toolServer.setTools(toMcpToolDefs(mcpTools, c)).then(
+		(relisted) => { if (!relisted) debug(`tool sync: no re-list from Claude Code within the timeout; delivering anyway`); },
+		(error) => debug(`tool sync failed; delivering anyway:`, error),
+	);
 }
 
 // --- Usage helpers ---
@@ -1842,7 +1866,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// Delivery is async because the steer must reach CC's stdin *before* the
 		// tool result does — see deliverToolResults. Detached so the provider
 		// still returns its stream synchronously.
-		void deliverToolResults(resultCtx, allResults, steer, context.messages.length, context.messages);
+		const toolSync = syncServedTools(resultCtx, context);
+		if (toolSync) void toolSync.then(() => deliverToolResults(resultCtx, allResults, steer, context.messages.length, context.messages));
+		else void deliverToolResults(resultCtx, allResults, steer, context.messages.length, context.messages);
 		return stream;
 	}
 
@@ -2002,6 +2028,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			.catch((error) => debug(`provider: initial prompt push rejected:`, error));
 		queryCtx.promptStream = promptStream;
 		const mcpServers = buildMcpServers(mcpTools, queryCtx);
+		queryCtx.toolServer = mcpServers?.[MCP_SERVER_NAME] ?? null;
+		queryCtx.servedToolNames = mcpTools.map((tool) => tool.name);
+		queryCtx.toolNameToPi = customToolNameToPi;
 
 		// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
 		// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
