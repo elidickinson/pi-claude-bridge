@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: tools activated mid-turn never reached Claude (#125, issue #176)** — a tool that changes pi's active tools from inside a tool call (`tool_search` loading a deferred MCP tool, pi-web-access's `web_enable`) had no effect until the next user message. The bridge now updates its live MCP server, sends `tools/list_changed`, and holds the tool result until Claude Code has re-listed. Thanks @danth3b0t and @Piesson.
+
 ## 0.11.0 — 2026-11-06
 
 - **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.
