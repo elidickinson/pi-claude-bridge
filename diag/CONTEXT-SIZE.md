@@ -23,6 +23,13 @@ Raw JSON + MD per run save to `.test-output/context-size/` (gitignored).
 - Options: `settingSources: []`, `tools: []`, `maxTurns: 1`, `persistSession: false`
 - Date: 2026-06-26
 
+The Opus 5.5 rows come from a later run, same options and auth:
+
+- Claude Agent SDK 0.3.280 (bundled Claude Code 2.1.280)
+- Plan: Max 20x, Extra Usage off — the run's rate-limit event reports
+  `overageStatus: "rejected"`, `overageDisabledReason: "org_level_disabled"`
+- Date: 2026-09-23
+
 ## Served context windows
 
 Four conditions, each run with the probe above. Values are tokens; `1M` =
@@ -32,7 +39,8 @@ the footnote below the table).
 
 | requested id              | Pro, credits off | Pro, credits on | Max, credits off | Max, credits on |
 |---------------------------|------------------|-----------------|------------------|-----------------|
-| `claude-opus-5-5[1m]`    | —                | —               | —                | —               |
+| `claude-opus-5-5`         | —                | —               | 1M               | —               |
+| `claude-opus-5-5[1m]`    | —                | —               | 1M               | —               |
 | `claude-opus-5`           | —                | —               | 200K             | —               |
 | `claude-opus-5[1m]`      | —                | —               | 1M               | —               |
 | `claude-opus-4-8`         | 200K             | 200K            | 200K             | 200K            |
@@ -50,15 +58,18 @@ the footnote below the table).
 | `claude-haiku-4-5`        | 200K             | 200K            | 200K             | 200K            |
 | `claude-haiku-4-5[1m]`   | 429†             | 400             | 400              | 400             |
 
-Raw runs: `.test-output/context-size/{pro,max}-2026-06-26T21-*.json`
+Raw runs: `.test-output/context-size/{pro,max}-2026-06-26T21-*.json`,
+Opus 5.5 `.test-output/context-size/max-2026-09-23T13-50-08-107Z.json`
 
 `—` = not yet tested in that condition. Max-credits-on matched Pro-credits-on
-for every cell tested in both (shown for completeness). Opus 5.5 is enabled at
-1M in the bridge based on [Anthropic's documentation](https://code.claude.com/docs/en/model-config#extended-context)
+for every cell tested in both (shown for completeness). Opus 5.5 served 1M from
+both the bare id and `[1m]` on Max with credits off (128K max output either
+way), the same shape as Opus 4.7 — the suffix is not what buys the window
+there. The bridge still requests `[1m]`, which is what keeps its
+`MEASURED_ONE_M` entry safe on the plans below. Opus 5.5 on Pro remains
+unmeasured; its 1M there rests on [Anthropic's documentation](https://code.claude.com/docs/en/model-config#extended-context)
 for Opus 4.7 and later (1M by default on the Anthropic API, including Pro),
-**not an SDK subscription/OAuth measurement**. The bridge requests `[1m]` to
-match the measured SDK behavior of earlier models; Opus 5.5's `[1m]` behavior
-on Pro remains to be tested.
+**not an SDK subscription/OAuth measurement**.
 
 † **Inferred, not directly measured.** The Pro-credits-off run predates
 error-field capture; its three rejected `[1m]` rows have no recorded HTTP status
