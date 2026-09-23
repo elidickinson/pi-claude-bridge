@@ -48,8 +48,10 @@ async function connectClient(server) {
 	transport.onmessage({ jsonrpc: "2.0", method: "notifications/initialized" });
 
 	// Claude Code stamps every tools/call with the id of the tool_use block it came from.
-	return (name, toolUseId) =>
+	const callTool = (name, toolUseId) =>
 		request("tools/call", { name, arguments: {}, _meta: { "claudecode/toolUseId": toolUseId } });
+	callTool.listTools = async () => (await request("tools/list", {})).result.tools.map((t) => t.name);
+	return callTool;
 }
 
 const TOOLS = ["alpha", "beta", "gamma"].map((name) => ({
@@ -276,5 +278,46 @@ describe("delivering an extracted turn to its handlers", () => {
 		assert.equal(replyText(await alpha), "read the file");
 		assert.equal(replyText(await beta), "ran the command");
 		assert.equal(c.pendingToolCalls.size, 0, "every handler for the turn must be released");
+	});
+});
+
+// pi-web-access's web_enable activates tools from inside a tool call. The query's
+// MCP server must pick them up, and the result must wait for Claude Code's
+// re-list, or CC's next request goes out with the old tool set.
+describe("tool set changed by a tool call", () => {
+	async function startServedQuery(names) {
+		const c = new QueryContext();
+		const tools = TOOLS.filter((t) => names.includes(t.name));
+		const servers = __test.buildMcpServers(tools, c);
+		c.toolServer = Object.values(servers)[0];
+		c.servedToolNames = tools.map((t) => t.name);
+		c.toolNameToPi = new Map(tools.map((t) => [`mcp__custom-tools__${t.name}`, t.name]));
+		return { c, callTool: await connectClient(c.toolServer) };
+	}
+	const contextWith = (...names) => ({ messages: [], tools: [...TOOLS, { name: "AskClaude", description: "", parameters: { type: "object", properties: {} } }].filter((t) => names.includes(t.name)) });
+
+	it("is a no-op while pi's tool set matches what the query serves", async () => {
+		const { c } = await startServedQuery(["alpha"]);
+		assert.equal(__test.syncServedTools(c, contextWith("alpha")), undefined);
+	});
+
+	it("serves the new set, remaps names, and holds until Claude Code re-lists", async () => {
+		const { c, callTool } = await startServedQuery(["alpha"]);
+		let synced = false;
+		const sync = __test.syncServedTools(c, contextWith("beta", "gamma", "AskClaude")).then(() => { synced = true; });
+
+		assert.deepEqual([...c.toolNameToPi.keys()].sort(),
+			["mcp__custom-tools__beta", "mcp__custom-tools__gamma"],
+			"removed tools must drop out of the map and AskClaude must stay unserved");
+		await tick();
+		assert.equal(synced, false, "a result released before the re-list races CC's next request");
+
+		assert.deepEqual(await callTool.listTools(), ["beta", "gamma"]);
+		await sync;
+
+		const beta = callTool("beta", "toolu_b");
+		await tick();
+		await deliver(c, result("toolu_b", "beta ran"));
+		assert.equal(replyText(await beta), "beta ran");
 	});
 });

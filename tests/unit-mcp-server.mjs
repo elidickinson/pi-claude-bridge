@@ -44,10 +44,11 @@ const NESTED_TOOL_SCHEMA = {
 // requests into transport.onmessage, read replies out of transport.send.
 async function connectClient(server) {
 	const pending = new Map();
+	const notifications = [];
 	const transport = {
 		start: async () => {},
 		close: async () => {},
-		send: async (msg) => pending.get(msg.id)?.(msg),
+		send: async (msg) => (msg.id === undefined ? notifications.push(msg.method) : pending.get(msg.id)?.(msg)),
 	};
 	await server.instance.connect(transport);
 
@@ -73,7 +74,7 @@ async function connectClient(server) {
 		clientInfo: { name: "test", version: "1.0.0" },
 	});
 	transport.onmessage({ jsonrpc: "2.0", method: "notifications/initialized" });
-	return { request, callTool };
+	return { request, callTool, notifications };
 }
 
 describe("MCP tool schema advertisement", () => {
@@ -234,5 +235,43 @@ describe("MCP tool invocation", () => {
 		const res = await callTool("strict", "toolu_y", { count: "not-a-number", extra: 1 });
 		assert.ok(called, "handler must run — pi validates and executes tools, not the MCP layer");
 		assert.strictEqual(res.result.content[0].text, "ran");
+	});
+});
+
+// A pi extension can activate tools from inside a tool call (web_enable). Claude
+// Code builds its next request as soon as that call's result lands, so the
+// bridge holds the result until CC has re-listed — setTools resolving is the
+// signal it waits on.
+describe("MCP tool set replaced mid-query", () => {
+	const tool = (name) => ({
+		name,
+		description: name,
+		inputSchema: { type: "object", properties: {} },
+		handler: async () => ({ content: [{ type: "text", text: `from ${name}` }] }),
+	});
+
+	it("announces the change and resolves only after the client re-lists", async () => {
+		const server = createToolServer("custom-tools", [tool("enable")]);
+		const { request, callTool, notifications } = await connectClient(server);
+
+		let settled = false;
+		const synced = server.setTools([tool("canary")]).then((relisted) => { settled = true; return relisted; });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepStrictEqual(notifications, ["notifications/tools/list_changed"]);
+		assert.strictEqual(settled, false, "must hold until the client has fetched the new list");
+
+		const listed = await request("tools/list", {});
+		assert.deepStrictEqual(listed.result.tools.map((t) => t.name), ["canary"]);
+		assert.strictEqual(await synced, true);
+
+		assert.strictEqual((await callTool("canary", "toolu_c")).result.content[0].text, "from canary");
+		const removed = await callTool("enable", "toolu_e");
+		assert.ok(removed.error || removed.result?.isError, "a tool no longer served must not run");
+	});
+
+	it("gives up and resolves false when the client never re-lists", async () => {
+		const server = createToolServer("custom-tools", [tool("enable")]);
+		await connectClient(server);
+		assert.strictEqual(await server.setTools([tool("canary")]), false);
 	});
 });

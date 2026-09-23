@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: tools activated mid-turn never reached Claude** — an extension that enables tools from inside a tool call (pi-web-access's `web_enable`) changed pi's tool set, but the bridge's MCP server was fixed at query start, so the model kept the old set until the next user message and fell back to `curl`. The bridge now replaces the served tools on the live server, sends `tools/list_changed`, and holds the tool result until Claude Code has re-listed; delivering first races the re-list and loses (`diag/probe-mid-turn-tools.mjs`). Covered by `tests/unit-queue.mjs`, `tests/unit-mcp-server.mjs` and a contract in `tests/int-cc-contracts.mjs`.
 - **Fix: reject leaked pi harness prompts (issue #88)** — Prompts that somehow still reference pi's harness now fail loudly instead of being forwarded and potentially being billed as extra usage. See note in README.
 - **Fix: AskClaude reports its effective configured defaults (issue #65)** — its schema, description, and TUI now agree on mode and isolation, and disabling full mode removes it from the enum.
 - **Bump: require pi ≥0.86.1, drop pre-0.86 compat** — `src/transcript.ts` now replays prompt/tool state through pi-ai's helpers instead of a vendored copy (canonical section re-rank stays local). Also removes the event-stream factory fallback and version-tolerance casts. devDeps move to `^0.87.1`; Agent SDK to `^0.3.280` (the API now rejects older clients); fixes a model-catalog test bug from 0.87.1's added `claude-opus-5-5`.
