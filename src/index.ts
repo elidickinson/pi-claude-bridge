@@ -20,6 +20,7 @@ import {
 	collectPromptSkills,
 	projectPromptCapture,
 	sharedPromptCaptures,
+	type PromptCapture,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
@@ -1605,9 +1606,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const queryCtx = isReentrant ? new QueryContext() : ctx();
 	debug(`provider: fresh query setup, isReentrant=${isReentrant}, activeContexts=${activeQueryContexts.size}`);
 
-	// Resolved first: an unaccountable system prompt throws, and doing that before
-	// anything is claimed or reset leaves no half-built query behind — in particular
-	// no stream claimed on the shared context that nobody will ever end.
+	// Resolved first: an unaccountable system prompt fails this query before anything
+	// is claimed or reset, leaving no half-built query behind — in particular no stream
+	// claimed on the shared context that nobody will ever end.
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
 	// Build from what Pi loaded for this run, so `--no-context-files` and
 	// `--no-skills` reach Claude Code by leaving nothing to forward. A sub-agent's
@@ -1616,12 +1617,60 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Derive the key from the transcript replay (toBridgeContext), NOT from the
 	// recorded keys: under a forced prompt the transcript head is projected via
 	// transformContext after turn_start, so ctx.getSystemPrompt() is not the head.
-	const promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
-	const systemPromptAppend = promptCapture
-		? projectPromptCapture(promptCapture, {
-			skillReadTool: mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none",
-		})
-		: undefined;
+	const skillReadTool = mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none";
+	let promptCapture: PromptCapture | undefined;
+	let systemPromptAppend: string | undefined;
+	let resolveErr: unknown;
+	try {
+		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
+		systemPromptAppend = promptCapture ? projectPromptCapture(promptCapture, { skillReadTool }) : undefined;
+	} catch (err) {
+		resolveErr = err;
+	}
+	if (resolveErr) {
+		// resolveOrDerive and projectPromptCapture both throw to fail a turn that would
+		// otherwise silently lose its instructions or leak pi's harness text — but nothing
+		// below pi catches provider throws, so the whole process died instead. Observed on
+		// mid-query user-only turns (steer / background-task follow-up), which carry a
+		// reduced prompt no capture boundary records (12961-char steer prompt vs the
+		// 48071-char turn_start key). On that path the freshest capture describes this same
+		// conversation — project it and say so. Anything else still fails loud, but as a
+		// failed turn, not a dead process.
+		const fallback = isReentrantUserQuery ? promptCaptures.freshest() : undefined;
+		let fallbackAppend: string | undefined;
+		let fallbackOk = false;
+		if (fallback) {
+			try {
+				fallbackAppend = projectPromptCapture(fallback, { skillReadTool });
+				fallbackOk = true;
+			} catch (fallbackErr) {
+				resolveErr = fallbackErr;
+			}
+		}
+		if (!fallback || !fallbackOk) {
+			diagDump("prompt_capture_unresolved", {
+				promptChars: context.systemPrompt?.length ?? 0,
+				knownKeys: promptCaptures.size,
+				reentrantUserQuery: isReentrantUserQuery,
+				error: errorMessage(resolveErr),
+			});
+			const output = newAssistantOutput(model, "", "error", errorMessage(resolveErr));
+			queueMicrotask(() => {
+				stream.push({ type: "error", reason: "error", error: output });
+				markStreamComplete(stream);
+				stream.end();
+			});
+			return stream;
+		}
+		diagDump("prompt_capture_fallback", {
+			promptChars: context.systemPrompt?.length ?? 0,
+			fallbackChars: fallback.assembledPrompt.length,
+			error: errorMessage(resolveErr),
+		});
+		debug(`prompt-capture: unresolved ${context.systemPrompt?.length}-char prompt on reentrant user query; projecting freshest capture (${fallback.assembledPrompt.length}-char)`);
+		promptCapture = fallback;
+		systemPromptAppend = fallbackAppend;
+	}
 
 	// 2. Fresh child context — constructor already gave us clean Maps and empty
 	//    arrays. For a reused top-level context, clear explicitly.
