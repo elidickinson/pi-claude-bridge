@@ -58,6 +58,10 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 export type LongContextSettings = {
 	plan: "pro" | "max";
 	longContextExtraUsage: boolean;
+	// Give an unmeasured model the 1M window pi-ai declares for it, instead of
+	// 200K until someone measures it. Opt-in: an unentitled [1m] id fails every
+	// turn, so this is for accounts known to serve 1M. forceTwoHundredK still wins.
+	oneMByDefault?: boolean;
 	// Model ids whose declared 1M context Claude Code turned out not to serve;
 	// forces bare id at 200K without a code change.
 	forceTwoHundredK?: string[];
@@ -98,7 +102,7 @@ const PLAN_GATED_ONE_M: Record<string, (settings: LongContextSettings) => boolea
 };
 
 export function resolveClaudeCodeRuntimeModel(
-	model: { id: string },
+	model: { id: string; contextWindow?: number | null },
 	settings: LongContextSettings,
 ): ClaudeCodeRuntimeModel {
 	const modelId = model.id;
@@ -115,6 +119,9 @@ export function resolveClaudeCodeRuntimeModel(
 			cliModelId: useOneM ? `${modelId}[1m]` : modelId,
 			contextWindow: useOneM ? ONE_M_CONTEXT : TWO_HUNDRED_K_CONTEXT,
 		};
+	}
+	if (settings.oneMByDefault && (model.contextWindow ?? 0) >= ONE_M_CONTEXT) {
+		return { cliModelId: `${modelId}[1m]`, contextWindow: ONE_M_CONTEXT };
 	}
 	// No measured row: bare id at 200K, the safe default (see diag/CONTEXT-SIZE.md).
 	return { cliModelId: modelId, contextWindow: TWO_HUNDRED_K_CONTEXT };

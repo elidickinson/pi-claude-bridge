@@ -35,6 +35,9 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Give models pi-ai declares at 1M the [1m] id even before they are
+		// measured. For accounts known to serve 1M; forceTwoHundredK still wins.
+		oneMByDefault?: boolean;
 	};
 }
 

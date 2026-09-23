@@ -130,6 +130,34 @@ describe("Claude Code runtime policy", () => {
 		);
 	});
 
+	it("oneMByDefault gives an unmeasured 1M-declared model the [1m] id", () => {
+		assert.deepEqual(
+			resolveClaudeCodeRuntimeModel(oneM("claude-future-9"), { ...PRO, oneMByDefault: true }),
+			{ cliModelId: "claude-future-9[1m]", contextWindow: 1000000 },
+		);
+	});
+
+	it("oneMByDefault leaves a 200K-declared model at 200K", () => {
+		assert.deepEqual(
+			resolveClaudeCodeRuntimeModel(mockPiAiModel("claude-future-9-9"), { ...PRO, oneMByDefault: true }),
+			{ cliModelId: "claude-future-9-9", contextWindow: 200000 },
+		);
+	});
+
+	it("forceTwoHundredK beats oneMByDefault", () => {
+		assert.deepEqual(
+			resolveClaudeCodeRuntimeModel(oneM("claude-future-9"), { ...PRO, oneMByDefault: true, forceTwoHundredK: ["claude-future-9"] }),
+			{ cliModelId: "claude-future-9", contextWindow: 200000 },
+		);
+	});
+
+	it("oneMByDefault does not override a plan gate", () => {
+		assert.deepEqual(
+			resolveClaudeCodeRuntimeModel(oneM("claude-sonnet-4-6"), { ...PRO, oneMByDefault: true }),
+			{ cliModelId: "claude-sonnet-4-6", contextWindow: 200000 },
+		);
+	});
+
 	it("unknown model falls back to bare id at 200K", () => {
 		assert.deepEqual(resolveClaudeCodeRuntimeModel(mockPiAiModel("claude-future-9-9"), PRO), { cliModelId: "claude-future-9-9", contextWindow: 200000 });
 	});
