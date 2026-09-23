@@ -19,6 +19,7 @@ import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } f
 import {
 	collectPromptSkills,
 	projectPromptCapture,
+	PromptCaptureLifecycle,
 	sharedPromptCaptures,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
@@ -766,6 +767,9 @@ export const __test = {
 	branchSummaryOutcome,
 	get promptCaptures() {
 		return promptCaptures;
+	},
+	resolvePromptCapture(systemPrompt: string) {
+		return promptCaptures.resolve(systemPrompt);
 	},
 };
 
@@ -2059,6 +2063,10 @@ const PREVIEW_MAX_LINES = 6;
 let askClaudeToolName = "AskClaude";
 
 export default function (pi: ExtensionAPI) {
+	// Structured prompt inputs are available in `before_agent_start`, while the
+	// finalized prompt is only available after every handler in that chain ran.
+	const promptCaptureLifecycle = new PromptCaptureLifecycle(promptCaptures);
+
 	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
@@ -2103,6 +2111,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
+		promptCaptureLifecycle.clear();
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
@@ -2113,28 +2122,34 @@ export default function (pi: ExtensionAPI) {
 	//
 	// The options (custom/append/contextFiles/skills) are pi config, stable across a
 	// turn; only the auto-generated tool list in the rendered prompt varies. Stash them
-	// at before_agent_start so the agent_start recording below can reuse them.
-	type RecordOptions = Parameters<typeof recordSystemPrompt>[2];
-	let lastSystemPromptOptions: RecordOptions | undefined;
-	function recordSystemPrompt(source: string, systemPrompt: string | undefined, options: {
+	// at before_agent_start so the finalized agent_start prompt and later turn_start
+	// re-renders can reuse them.
+	type RecordOptions = {
 		customPrompt?: string;
 		appendSystemPrompt?: string;
 		contextFiles?: { path: string; content: string }[];
 		skills?: Parameters<typeof promptCaptures.record>[1]["skills"];
 		selectedTools?: string[];
-	} | undefined) {
-		if (!systemPrompt) return;
+	};
+	let lastSystemPromptOptions: RecordOptions | undefined;
+	function promptCaptureInput(options: RecordOptions | undefined): Parameters<typeof promptCaptures.record>[1] {
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
-		promptCaptures.record(systemPrompt, {
+		return {
 			custom: options?.customPrompt,
 			append: options?.appendSystemPrompt,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
-		}, source);
+		};
 	}
+	function recordSystemPrompt(source: string, systemPrompt: string | undefined, options: RecordOptions | undefined) {
+		if (!systemPrompt) return;
+		promptCaptures.record(systemPrompt, promptCaptureInput(options), source);
+	}
+	// Capture the structured inputs here, but wait until `agent_start` to key them:
+	// later `before_agent_start` handlers may still rewrite the assembled prompt.
 	pi.on("before_agent_start", (event) => {
 		lastSystemPromptOptions = event.systemPromptOptions;
-		recordSystemPrompt("before_agent_start", event.systemPrompt, event.systemPromptOptions);
+		promptCaptureLifecycle.prepare(promptCaptureInput(event.systemPromptOptions));
 	});
 	// The prompt the provider actually queries with is the fully-widened one: MCP tool
 	// descriptions merge into the system prompt only after their servers connect, which
@@ -2149,7 +2164,7 @@ export default function (pi: ExtensionAPI) {
 	// agent_start also captures a handler-returned forceSystemPrompt, which
 	// buildSystemPrompt renders verbatim.
 	pi.on("agent_start", (_event, ctx) => {
-		recordSystemPrompt("agent_start", ctx.getSystemPrompt(), lastSystemPromptOptions);
+		promptCaptureLifecycle.recordFinal(ctx.getSystemPrompt(), "agent_start");
 	});
 
 	// Mid-run re-renders: turn_start fires before every turn (first turn included)
@@ -2163,6 +2178,7 @@ export default function (pi: ExtensionAPI) {
 		recordSystemPrompt("turn_start", ctx.getSystemPrompt(), lastSystemPromptOptions);
 	});
 	pi.on("session_shutdown", () => {
+		promptCaptureLifecycle.clear();
 		reportLeaks("session_shutdown");
 		clearSession("session_shutdown");
 	});
