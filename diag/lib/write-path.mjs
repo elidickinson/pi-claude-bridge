@@ -5,7 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import { createSession, repairToolPairing } from "cc-session-io";
-import { convertPiMessages } from "../../src/convert.js";
+import { convertPiMessages, PROVIDER_ID } from "../../src/convert.js";
 
 /** Record fields that legitimately differ between two builds of the same
  *  history: identity and clock, none of which reaches the Anthropic prompt. */
@@ -43,16 +43,23 @@ export function transcript(piMessages) {
  *  Truncating mid-turn leaves repairToolPairing no choice but to stand in a
  *  synthetic stub for the results that have not arrived, so only settled
  *  prefixes can be expected to extend cleanly. */
+function hasUnreplayableThinking(msg) {
+	return Array.isArray(msg.content) && msg.content.some((b) =>
+		b.type === "thinking" && !(msg.provider === PROVIDER_ID && b.thinkingSignature));
+}
+
 export function settledPrefixes(messages) {
 	const lengths = [];
 	const pending = new Set();
+	let lastAssistantUnreplayable = false;
 	for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i];
 		if (msg.role === "assistant" && Array.isArray(msg.content)) {
 			for (const b of msg.content) if (b.type === "toolCall") pending.add(b.id);
 		}
+		if (msg.role === "assistant") lastAssistantUnreplayable = hasUnreplayableThinking(msg);
 		if (msg.role === "toolResult") pending.delete(msg.toolCallId);
-		if (pending.size === 0) lengths.push(i + 1);
+		if (pending.size === 0 && !lastAssistantUnreplayable) lengths.push(i + 1);
 	}
 	return lengths;
 }
