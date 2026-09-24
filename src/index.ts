@@ -195,14 +195,15 @@ interface SessionState {
 	// navigation) or after an abort left the JSONL in an indeterminate state.
 	// REBUILD wipes and rewrites the file to match pi's current history.
 	needsRebuild?: boolean;
-	// Set ONLY after an abort. The killed CC subprocess may still be flushing
-	// a late "[Request interrupted by user]" record to the session JSONL.
-	// Reusing the same sessionId/path would race that orphan write into our
-	// fresh file and break CC's parent-uuid chain on the next resume. When
-	// this flag is set, REBUILD takes a fresh UUID and skips deleteSession
-	// so the orphan writes land on a dead inode. Compact/tree do NOT set
-	// this — there's no concurrent CC writer during those events, so
-	// in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
+	// Set ONLY where we have just killed a CC subprocess: an abort, or a query
+	// discarded because pi rewrote the history under it. The killed subprocess
+	// may still be flushing a late "[Request interrupted by user]" record to the
+	// session JSONL. Reusing the same sessionId/path would race that orphan write
+	// into our fresh file and break CC's parent-uuid chain on the next resume.
+	// When this flag is set, REBUILD takes a fresh UUID and skips deleteSession
+	// so the orphan writes land on a dead inode. A compact or tree navigation
+	// with no query in flight does NOT set this — there's no concurrent CC writer
+	// then, so in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
 	forceRotate?: boolean;
 }
 
@@ -228,6 +229,26 @@ function readCarriedAttachments(sessionId: string, cwd: string): CarriedAttachme
 }
 
 let sharedSession: SessionState | null = null;
+
+// pi replaced its history (compact, tree) rather than appending to it. Read on
+// the tool-result path — the one provider call that never reaches
+// syncSharedSession — so a query parked at a tool boundary is discarded rather
+// than resumed (issue #101). Module scope rather than a SessionState field:
+// sharedSession stays null until a query completes, so a first turn long enough
+// to compact would have nowhere to record it.
+let historyRewritten = false;
+
+/** pi mutated its messages array out from under us: force the next
+ *  syncSharedSession down REBUILD, and arm the discard above. */
+function markRebuild(event: string): void {
+	historyRewritten = true;
+	if (sharedSession) {
+		debug(`${event}: marking needsRebuild on session ${sharedSession.sessionId.slice(0, 8)}`);
+		sharedSession = { ...sharedSession, needsRebuild: true };
+	} else {
+		debug(`${event}: history rewritten, no session to mark yet`);
+	}
+}
 
 // Convert pi messages to Anthropic API format for session import.
 // Lossy: only text, thinking and toolCall blocks survive, and thinking only when
@@ -743,6 +764,15 @@ function syncSharedSession(
 export const __test = {
 	resetSharedSession() {
 		sharedSession = null;
+		historyRewritten = false;
+	},
+	markRebuild,
+	getHistoryRewritten: () => historyRewritten,
+	discardRewrittenQuery,
+	contextForToolResults,
+	isQueryAbandoned: (q: object) => abandonedQueries.has(q),
+	get activeQueryContexts() {
+		return activeQueryContexts;
 	},
 	setSharedSession(state: SessionState | null) {
 		sharedSession = state;
@@ -1518,6 +1548,57 @@ function drainForAbort(c: QueryContext, promptStream: PromptStream): void {
 	c.releasePendingToolCalls("Operation aborted");
 }
 
+/** Queries pi's history moved out from under. Their completion must not touch
+ *  `sharedSession` or the pi stream: the query that took over the turn has
+ *  already rebuilt both from the new history, and this one's session id names the
+ *  conversation pi just discarded. */
+const abandonedQueries = new WeakSet<object>();
+
+/** The prompt a continuation query is opened with: the pi turn goes on, but its
+ *  last message is a tool result rather than a prompt, and query() cannot resume
+ *  a session without one. */
+const CONTINUE_AFTER_REWRITE_PROMPT =
+	"[Your context was compacted. What precedes this is a summary plus the most recent messages, "
+	+ "ending with the tool result you were waiting for. Continue the task from there.]";
+
+/** Drop a Claude Code query parked at a tool boundary whose conversation pi has
+ *  since rewritten (/compact, tree navigation).
+ *
+ *  Delivering the turn's tool result into that query hands Claude Code the
+ *  context pi just shrank: one pi turn is one CC query, and the query keeps its
+ *  own context inside the CLI whatever pi does to its transcript. It answers off
+ *  the pre-compaction conversation, reports the pre-compaction usage back, and pi
+ *  crosses the same threshold at the next boundary — measured as one compaction
+ *  per tool call with usage never dropping (issue #101). `needsRebuild` does not
+ *  prevent it: only syncSharedSession reads that flag, and tool-result delivery
+ *  is the one call that never syncs.
+ *
+ *  The caller then takes the fresh-query path, where REBUILD imports pi's
+ *  rewritten history — this tool result included, since it is already in that
+ *  history — so the turn continues instead of ending here. Nothing is lost by
+ *  killing the subprocess: pi owns the only copy of the conversation that counts. */
+function discardRewrittenQuery(c: QueryContext): void {
+	const discarded = c.activeQuery as { interrupt?: () => Promise<unknown>; close?: () => void } | null;
+	if (discarded) abandonedQueries.add(discarded);
+	c.activeQuery = null;
+	// Leaving the routing set is what stops this result coming straight back here:
+	// contextForToolResults only matches ids against contexts still in it.
+	activeQueryContexts.delete(c);
+	c.turnToolCallIds = [];
+	c.promptStream?.fail(new Error("conversation rewritten"));
+	c.promptStream = null;
+	// Settle the parked handlers before killing the CLI, for drainForAbort's
+	// reason: one left awaiting a dead subprocess never settles.
+	c.releasePendingToolCalls("Context was compacted; this query was discarded.");
+	void discarded?.interrupt?.().catch(() => {});
+	try { discarded?.close?.(); } catch {}
+	// The CLI we just killed may still flush a record into the session JSONL, and
+	// the rebuild is the next thing that happens — so rotate rather than race it,
+	// exactly as after an abort.
+	if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
+	debug("provider: history rewritten under a parked query — discarded it, rebuilding from current history");
+}
+
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -1544,9 +1625,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
 	debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}, isReentrant=${ctx().activeQuery !== null}`);
 
-	const activeQuery = ctx().activeQuery !== null;
+	let activeQuery = ctx().activeQuery !== null;
 	const allResults = activeQueryContexts.size > 0 ? extractAllToolResults(context) : [];
-	const resultCtx = allResults.length > 0 ? contextForToolResults(allResults) : undefined;
+	let resultCtx = allResults.length > 0 ? contextForToolResults(allResults) : undefined;
+
+	// pi rewrote its history while this query sat parked at a tool boundary, so the
+	// query answers about a conversation that no longer exists. Discard it and let
+	// this tool result carry the turn into a fresh query over the rewritten history.
+	const rewrittenUnderQuery = Boolean(resultCtx && historyRewritten);
+	if (resultCtx && rewrittenUnderQuery) {
+		discardRewrittenQuery(resultCtx);
+		historyRewritten = false;
+		resultCtx = undefined;
+		// Recomputed, not cleared: a reentrant subagent may still hold a query of its own.
+		activeQuery = ctx().activeQuery !== null;
+	}
+
 	const isReentrantUserQuery = activeQuery && lastMsgRole === "user" && allResults.length === 0;
 	if (isReentrantUserQuery) {
 		debug(`provider: active query user-only call treated as reentrant fresh query, waitingHandlers=${ctx().pendingToolCalls.size}, ctx.msgs=${context.messages.length}`);
@@ -1580,7 +1674,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// The query is gone but pi still delivered the result. Nothing to do — just
 	// emit end_turn so pi waits for the next real user message.
 	const lastMsg = context.messages[context.messages.length - 1];
-	if (lastMsg?.role === "toolResult") {
+	if (lastMsg?.role === "toolResult" && !rewrittenUnderQuery) {
 		debug(`provider: orphaned tool result after abort, emitting end_turn`);
 		if (sharedSession && activeQueryContexts.size === 0) sharedSession.cursor = context.messages.length;
 		// No query owns this result, so there is no context to reset: resetTurnState
@@ -1640,9 +1734,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
 	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	// This query starts from the history pi has now. Left set, the flag would
+	// discard the first tool result of a query that was never stale.
+	if (!isReentrant) historyRewritten = false;
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
+
+	// A turn continuing past a discarded query ends at its tool result, not at a
+	// prompt, so say what happened rather than falling into the empty-prompt
+	// recovery below — that one is for a shape we do not expect, and this is one
+	// we do. The rebuilt session already ends with the tool result, placed after
+	// the tool call it answers.
+	if (rewrittenUnderQuery && !promptText && !promptBlocks) {
+		promptText = CONTINUE_AFTER_REWRITE_PROMPT;
+		debug(`provider: continuing the turn after a rewritten history, ${context.messages.length} msgs rebuilt`);
+	}
 
 	// Guard: empty prompt means the last context message isn't a user message.
 	// This should never happen with per-query state — dump diagnostics if it does.
@@ -1779,6 +1886,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		.then(async ({ capturedSessionId }) => {
 			debug(`provider: consumeQuery completed, stopReason=${queryCtx.turnOutput?.stopReason}, error=${queryCtx.turnOutput?.errorMessage}, aborted=${wasAborted}`);
 
+			// Discarded out from under: the query continuing the turn owns the context,
+			// the session and the stream. Capturing this one's session id here would put
+			// Claude Code back on the conversation it was discarded for.
+			if (abandonedQueries.has(sdkQuery)) {
+				debug("provider: discarded query completed, leaving session and stream to its replacement");
+				return;
+			}
+
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
 				if (sharedSession) sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
@@ -1817,6 +1932,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		})
 		.catch((error) => {
 			debug(`provider: query error, model=${cliModel}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
+			if (abandonedQueries.has(sdkQuery)) {
+				debug("provider: discarded query ended in error, leaving session and stream to its replacement");
+				return;
+			}
 			if ((wasAborted || options?.signal?.aborted) && sharedSession) {
 				sharedSession = { ...sharedSession, needsRebuild: true, forceRotate: true };
 			} else {
@@ -2090,6 +2209,7 @@ export default function (pi: ExtensionAPI) {
 	const clearSession = (event: string) => {
 		debug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
 		sharedSession = null;
+		historyRewritten = false;
 
 		// Clear the global streamSimple if this instance registered it.
 		// This allows /reload to work — the old instance clears the flag so
@@ -2206,13 +2326,9 @@ export default function (pi: ExtensionAPI) {
 	// slice(cursor) === [] (or skip entries) and keep --resume'ing a CC
 	// session that no longer matches pi's history. /compact in particular
 	// triggers CC's autocompact-thrashing guard (issue #8). Force the next
-	// call down the REBUILD path so CC sees the current history.
-	const markRebuild = (event: string) => {
-		if (sharedSession) {
-			debug(`${event}: marking needsRebuild on session ${sharedSession.sessionId.slice(0, 8)}`);
-			sharedSession = { ...sharedSession, needsRebuild: true };
-		}
-	};
+	// call down the REBUILD path so CC sees the current history — and, when a
+	// query is parked at a tool boundary while this fires, discard that query
+	// instead of resuming it (markRebuild, discardRewrittenQuery).
 	pi.on("session_compact", (event) => markRebuild(`session_compact:${event.reason}:willRetry=${event.willRetry}`));
 	pi.on("session_tree", () => markRebuild("session_tree"));
 
