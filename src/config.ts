@@ -36,6 +36,21 @@ export interface Config {
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
 	};
+	compaction?: {
+		// When true (default), the extension answers session_before_compact and
+		// runs pi's compact() through an isolated Claude Code subprocess (no
+		// tools, no skills, single turn). Set to false to stand down so native
+		// pi compaction or another extension owns the summary instead.
+		takeover?: boolean;
+	};
+	branchSummary?: {
+		// When true (default), the extension answers session_before_tree the same
+		// way. Set to false only when another extension owns branch summaries:
+		// unlike compaction, native fall-through cannot work on a bridge model,
+		// because pi's branch-summary prompt reaches the provider unrecorded and
+		// resolveOrDerive throws on it.
+		takeover?: boolean;
+	};
 }
 
 export function tryParseJson(path: string): Partial<Config> {
@@ -88,5 +103,7 @@ export function loadConfig(cwd: string): Config {
 		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
 		askClaude: { ...global.askClaude, ...project.askClaude },
 		provider: { ...global.provider, ...project.provider },
+		compaction: { ...global.compaction, ...project.compaction },
+		branchSummary: { ...global.branchSummary, ...project.branchSummary },
 	};
 }
