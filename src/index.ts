@@ -26,6 +26,7 @@ import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
+import { createClaudeUsageTracker, getProviderUsageBus } from "./usage-bus.js";
 
 // --- Debug logging ---
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to ~/.pi/agent/claude-bridge.log
@@ -826,6 +827,9 @@ function mapToolArgs(
 
 // Global (not query state):
 let piUI: ExtensionUIContext | null = null;
+// Latest subscription window per rate_limit_event, published on the shared
+// provider-usage bus for other extensions to render (the bridge draws nothing).
+const claudeUsage = createClaudeUsageTracker(getProviderUsageBus());
 let piMode: ExtensionContext["mode"] | null = null;
 const activeQueryContexts = new Set<QueryContext>();
 
@@ -1350,6 +1354,7 @@ async function consumeQuery(
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+			claudeUsage.record(info);
 			if (info?.status === "rejected") {
 				// Held so the failure Claude Code sends next can be named as a rate limit.
 				queryCtx.rateLimitRejection = info;
@@ -2061,6 +2066,10 @@ let askClaudeToolName = "AskClaude";
 export default function (pi: ExtensionAPI) {
 	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+
+	// Same adapter id on every activation, so a /reload replaces the previous
+	// instance's entry on the shared bus instead of adding a second one.
+	getProviderUsageBus().register(claudeUsage.adapter);
 
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));

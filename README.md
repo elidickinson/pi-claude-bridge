@@ -120,6 +120,10 @@ When filing a bug about a session-resume failure (e.g. "No conversation found"),
 
 Other extensions can change the system prompt. When the result still contains pi's built-in system prompt text, or the two documentation paths that Anthropic looks for (`docs/custom-provider.md` in the same prompt with `docs/packages.md`), the bridge stops the turn instead of sending it. Otherwise Anthropic may try to bill these requests as Extra Usage. The stop repeats on every later turn in that session, since the same prompt is captured again, so fix the source before retrying. If you run into issues, `CLAUDE_BRIDGE_DEBUG=1` writes the full prompt to `~/.pi/agent/claude-bridge.log` when that happens.
 
+### Subscription usage for other extensions
+
+Claude Code streams the plan's rate-limit windows (`five_hour`, `seven_day`, `seven_day_opus`, ...) on every turn. The bridge does not render them, but it publishes the latest sample per window on a process-wide bus so a quota dashboard or status bar can. Resolve `globalThis[Symbol.for("pi.provider-usage.bus.v1")]`: it exposes `adapters()` (this bridge registers id `claude-bridge`, `usageProvider: "claude"`, `modelProviders: ["claude-bridge"]`, and an async `refresh()` that resolves the latest snapshot from local state) and `subscribe(listener)`, which receives `{ adapterId, snapshot }` on every new sample. A snapshot is `{ version: 1, provider: "claude", adapterId, capturedAt, overageInUse, windows: [{ id, usedPercent, windowMinutes, resetsAt, state, scope? }] }`, with `resetsAt` in Unix seconds and `capturedAt` in epoch milliseconds. No credentials are read and no request is made: the numbers are the ones Claude Code already sent. Current Claude Code builds send every window in each event (`unifiedWindows`); older builds sent one per event, in which case the picture fills in over successive turns.
+
 ### Using claude bridge with @gotgenes/pi-subagents
 
 Requires the following in `~/.pi/agent/subagents.json`:
