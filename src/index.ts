@@ -1,6 +1,6 @@
 import { calculateCost, createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
-import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
@@ -551,6 +551,14 @@ async function runIsolatedSummary(
 	}
 }
 
+/** Seed the next compaction's file ops from the prior compaction's details.
+ *  Needed because pi's native extractFileOperations skips prior-compaction details
+ *  on fromHook entries (extension-written compactions), restarting the cumulative
+ *  <read-files>/<modified-files> lists empty on exactly the sessions where an
+ *  extension did the previous compaction. Called as a
+ *  pre-mutation of event.preparation before the session_before_compact hook yields;
+ *  pi's native compact() and later hooks see the mutation. Earlier hooks have
+ *  already consumed preparation.fileOps; their returned summaries are unchanged. */
 function reinjectPriorCompactionFileOps(branchEntries: Array<{ type: string; details?: unknown }>, preparation: { fileOps: { read: Set<string>; edited: Set<string> } }): void {
 	const prior = [...branchEntries]
 		.reverse()
@@ -559,7 +567,7 @@ function reinjectPriorCompactionFileOps(branchEntries: Array<{ type: string; det
 	if (!Array.isArray(details?.readFiles) || !Array.isArray(details?.modifiedFiles)) return;
 	for (const file of details.readFiles) preparation.fileOps.read.add(String(file));
 	for (const file of details.modifiedFiles) preparation.fileOps.edited.add(String(file));
-	debug(`compact takeover: re-injected prior file ops read=${details.readFiles.length} modified=${details.modifiedFiles.length}`);
+	debug(`session_before_compact: re-injected prior file ops read=${details.readFiles.length} modified=${details.modifiedFiles.length}`);
 }
 
 interface SyncResult {
@@ -2167,37 +2175,35 @@ export default function (pi: ExtensionAPI) {
 		clearSession("session_shutdown");
 	});
 
+	// Compaction ownership: yield. pi 0.87.1 runs session_before_compact handlers
+	// sequentially in extension load order and the last truthy return wins, so this
+	// hook returning a compaction result could overwrite an earlier extension's
+	// compiled summary, and {cancel:true} on the old failure path could discard
+	// that completed summary. Returning undefined lets another handler's result
+	// stand when it produced one; when no handler provides a result, native
+	// compaction runs
+	// through the agent stream fn and is safe on a bridge model: pi marks its
+	// summarizer calls cacheRetention:"none" and the provider routes those to the
+	// isolated CC summary path (streamClaudeAgentSdk below), the same fence /bug
+	// summarization already goes through.
+	//
+	// The takeover did carry one real fix worth keeping: pi's native
+	// extractFileOperations skips prior-compaction details when the session entry
+	// was written by an extension (fromHook:true), so on a session whose previous
+	// compaction came from an extension, the cumulative <read-files>/<modified-files> lists would restart
+	// empty. Re-inject them as a pre-mutation of event.preparation before
+	// yielding. Native compact() and later hooks see these sets. A handler that
+	// ran earlier has already compiled its summary and cannot inherit this mutation.
+	// This mutates only this dispatch's preparation, not persisted prior entries.
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
 		debug(
-			`session_before_compact: takeover reason=${event.reason} willRetry=${event.willRetry} ` +
+			`session_before_compact: yield reason=${event.reason} willRetry=${event.willRetry} ` +
 			`isSplitTurn=${event.preparation.isSplitTurn} messages=${event.preparation.messagesToSummarize.length} ` +
 			`turnPrefix=${event.preparation.turnPrefixMessages.length}`,
 		);
-		try {
-			reinjectPriorCompactionFileOps(event.branchEntries, event.preparation);
-			const compaction = await compact(
-				event.preparation,
-				ctx.model,
-				undefined,
-				undefined,
-				event.customInstructions,
-				event.signal,
-				undefined,
-				isolatedStreamFn,
-				undefined,
-			);
-			debug(`session_before_compact: takeover complete summaryLen=${compaction.summary.length}`);
-			return { compaction };
-		} catch (err) {
-			const msg = errorMessage(err);
-			debug("session_before_compact: takeover failed; cancelling to avoid native compact fallback", err);
-			ctx.ui?.notify?.(
-				`Claude bridge compact failed (${msg}); cancelled to avoid known hang. Retry, switch model, or reduce context.`,
-				"error",
-			);
-			return { cancel: true };
-		}
+		reinjectPriorCompactionFileOps(event.branchEntries, event.preparation);
+		return undefined;
 	});
 
 	// pi /compact and session-tree navigation (rewind / fork-at-point /
@@ -2217,12 +2223,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_tree", () => markRebuild("session_tree"));
 
 	// Branch summarization — rewind or fork-at-point with "summarize" — is the other
-	// place pi asks the model for a summary, and unlike compaction it runs through
+	// place pi asks the model for a summary. Like native compaction it runs through
 	// the *agent's* stream function (agent-session passes `streamFn:
 	// this.agent.streamFunction`). On a bridge model that reaches this provider
 	// carrying pi's internal summarization prompt, which no `before_agent_start`
 	// ever recorded, so the prompt-capture resolver has nothing to resolve it to.
-	// Take it over the way compaction is taken over: the summary runs as its own
+	// Keep the branch-summary takeover: the summary runs as its own
 	// Claude Code subprocess, never touching the live session or the resolver.
 	pi.on("session_before_tree", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;

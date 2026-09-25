@@ -17,8 +17,9 @@
  *
  * If this fails: a pi upgrade added or moved a streamFn consumer. Work out
  * whether it can reach a bridge model, and either handle it (the way
- * `session_before_compact` and `session_before_tree` are taken over) or add it
- * below with a note on why it is harmless.
+ * `session_before_tree` is taken over, and compaction + one-off summarizers are
+ * covered by the cacheRetention:"none" routing into the isolated path) or add
+ * it below with a note on why it is harmless.
  */
 
 import { describe, it } from "node:test";
@@ -39,8 +40,8 @@ const PI_DIST = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding
 const HANDLED = {
 	"agent-session.js": { mentions: 2, why: "hand-offs: branch summary into generateBranchSummary, /bug into generateBugReportSummary — both via agent.streamFunction" },
 	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize" },
-	"bug-report.js": { mentions: 1, why: "/bug summarization via completeSummarization (cacheRetention: none) — routed to the isolated path from streamClaudeAgentSdk (no takeover hook, unlike compaction)" },
-	"compaction/compaction.js": { mentions: 13, why: "taken over via session_before_compact -> isolatedStreamFn" },
+	"bug-report.js": { mentions: 1, why: "/bug summarization via completeSummarization (cacheRetention: none) — routed to the isolated path from streamClaudeAgentSdk (no takeover hook, like native compaction)" },
+	"compaction/compaction.js": { mentions: 13, why: "native compaction uses completeSummarization (cacheRetention:'none'), routed by streamClaudeAgentSdk to the isolated path; other session_before_compact handlers own their own results" },
 	"compaction/branch-summarization.js": { mentions: 2, why: "taken over via session_before_tree -> isolatedStreamFn" },
 };
 
