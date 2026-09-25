@@ -46,6 +46,22 @@ describe("MODELS projection", () => {
 		assert.ok(find(models, "claude-haiku-4-5"), "haiku present");
 	});
 
+	it("carries pi-ai's list prices only when apiCost is set (provider.reportApiCost)", () => {
+		const catalog = getModels("anthropic");
+		const listed = catalog.find((m) => m.id === "claude-haiku-4-5");
+		assert.ok(listed.cost.output > 0, "pi-ai prices haiku");
+		const priced = find(buildModels(catalog, { apiCost: true }), "claude-haiku-4-5");
+		assert.deepEqual(priced.cost, {
+			input: listed.cost.input, output: listed.cost.output,
+			cacheRead: listed.cost.cacheRead, cacheWrite: listed.cost.cacheWrite,
+		});
+		assert.deepEqual(find(buildModels(catalog, { apiCost: false }), "claude-haiku-4-5").cost,
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		// A catalog entry without prices reports zero rather than NaN.
+		assert.deepEqual(buildModels([mockPiAiModel("claude-opus-5", { cost: undefined })], { apiCost: true })[0].cost,
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+	});
+
 	it("sorts newest generation first within each family", () => {
 		const models = buildModels([
 			oneM("claude-opus-4-7"), oneM("claude-opus-5"),

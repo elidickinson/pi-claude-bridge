@@ -2076,7 +2076,8 @@ export default function (pi: ExtensionAPI) {
 		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
 		forceTwoHundredK,
 	};
-	const registeredModels = applyLongContext(MODELS, longContextSettings);
+	const catalogModels = providerSettings.reportApiCost === true ? buildModels(getModels("anthropic"), { apiCost: true }) : MODELS;
+	const registeredModels = applyLongContext(catalogModels, longContextSettings);
 	if (registeredModels.length === 0) {
 		console.error("claude-bridge: no models available from pi-ai's anthropic catalog — update @earendil-works/pi-ai (requires >=0.86.1)");
 	}
