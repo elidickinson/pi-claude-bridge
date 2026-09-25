@@ -33,6 +33,8 @@ The model list comes from pi-ai's Anthropic catalog automatically — when pi-ai
 
 **1M Context:** 1M is enabled for an explicit list: Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5. Opus 5.5 was measured on Max with Extra Usage off, where the bare id and `[1m]` both serve 1M; on Pro it is still unmeasured and rests on [Anthropic's documentation](https://code.claude.com/docs/en/model-config#extended-context) for Opus 4.7 and later (see `diag/CONTEXT-SIZE.md`). Other models on the list were verified through the SDK. A new model appearing from pi-ai starts at 200K context until explicitly added, to avoid sending unsupported `[1m]` requests. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
 
+**Subscription usage:** Claude Code reports your plan's usage windows with every request, and the bridge shows them in pi's footer, e.g. `Claude 5h 10% ↻23:30 · 7d 16% ↻9/29` (percent used, then when the window resets). `/claude-usage` shows the same windows with exact reset times and Extra Usage status. The latest report is saved to `~/.pi/agent/claude-bridge-usage.json` so a new session shows it before its first request; a window whose reset time has passed drops out of the footer until the next request reports it again.
+
 ## AskClaude Tool
 
 Opt-in: set `askClaude.enabled` to `true` (see [Configuration](#configuration)). Available when using any non-claude-bridge provider. Pi's LLM can delegate tasks to Claude Code and wait for it to answer a question or perform a task. Examples of how to use:

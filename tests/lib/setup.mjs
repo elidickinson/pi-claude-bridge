@@ -17,4 +17,7 @@ import { join } from "node:path";
 
 const logDir = mkdtempSync(join(tmpdir(), "claude-bridge-test-log-"));
 process.env.CLAUDE_BRIDGE_DEBUG_PATH = join(logDir, "claude-bridge.log");
+// Same for the usage snapshot: replayed fixtures carry rate_limit_events, which the
+// bridge would otherwise save over the developer's real ~/.pi/agent/claude-bridge-usage.json.
+process.env.CLAUDE_BRIDGE_USAGE_PATH = join(logDir, "claude-bridge-usage.json");
 process.on("exit", () => rmSync(logDir, { recursive: true, force: true }));
