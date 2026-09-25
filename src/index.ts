@@ -142,6 +142,9 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
+// Every Claude Code spawn goes through this, so unit tests can swap in a fake
+// and assert what each site sends (model id, env) without a subprocess.
+let queryFn: typeof query = query;
 // MODELS after applyLongContext at activation: adds the 200K twins, so AskClaude
 // can name one by exact id.
 let registeredModels = MODELS;
@@ -476,7 +479,7 @@ async function runIsolatedSummary(
 		const { cliModelId: cliModel, childEnv: modelEnv } = resolveClaudeCodeRuntimeModel(model, longContextSettings);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
-		sdkQuery = query({
+		sdkQuery = queryFn({
 			prompt: promptText,
 			options: {
 				cwd,
@@ -766,6 +769,11 @@ export const __test = {
 	drainForAbort,
 	CC_CHILD_ENV,
 	buildMcpServers,
+	setQueryFn(fn: typeof query | null) {
+		queryFn = fn ?? query;
+	},
+	streamClaudeAgentSdk,
+	promptAndWait,
 	branchSummaryOutcome,
 	get promptCaptures() {
 		return promptCaptures;
@@ -1754,7 +1762,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
-	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
+	const sdkQuery = queryFn({ prompt: promptStream.stream, options: queryOptions });
 	queryCtx.activeQuery = sdkQuery;
 	activeQueryContexts.add(queryCtx);
 
@@ -1949,7 +1957,7 @@ async function promptAndWait(
 	// removes the Skill tool and the listing with it — but AskClaude runs on CC's native
 	// tools, so it has to be asked for. Pi-side skills still arrive via skillsBlock below,
 	// which is meant to be the only channel.
-	const sdkQuery = query({
+	const sdkQuery = queryFn({
 		prompt,
 		options: {
 			cwd,
