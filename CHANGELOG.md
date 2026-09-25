@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Add: `provider.reportApiCost` prices usage at API list prices** — every model registers with zero cost, since a subscription is not billed per token, so pi's cost displays (`/session`, footer themes) always read $0. With the option set, models keep pi-ai's catalog prices and the per-message `usage.cost` the bridge already computes reflects what the same tokens would cost on the API. Off by default. Covered by `tests/unit-models.mjs`.
 - **Fix: reject leaked pi harness prompts (issue #88)** — Prompts that somehow still reference pi's harness now fail loudly instead of being forwarded and potentially being billed as extra usage. See note in README.
 - **Fix: AskClaude reports its effective configured defaults (issue #65)** — its schema, description, and TUI now agree on mode and isolation, and disabling full mode removes it from the enum.
 - **Bump: require pi ≥0.86.1, drop pre-0.86 compat** — `src/transcript.ts` now replays prompt/tool state through pi-ai's helpers instead of a vendored copy (canonical section re-rank stays local). Also removes the event-stream factory fallback and version-tolerance casts. devDeps move to `^0.87.1`; Agent SDK to `^0.3.280` (the API now rejects older clients); fixes a model-catalog test bug from 0.87.1's added `claude-opus-5-5`.

@@ -89,6 +89,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` if you have a Max (or Team Premium/Enterprise) Anthropic plan. This enables Opus with 1M context.
 - `longContextExtraUsage` — set to `true` to enable 1M context models even if they cost money through Extra Usage on your plan. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 4.7 or 4.8.
+- `reportApiCost` — set to `true` to price usage at pi-ai's Anthropic API list prices, so pi's cost displays (`/session`, footer themes) show what the same tokens would cost on the API. Default `false` reports $0, since a subscription is not billed per token.
 - `forceTwoHundredK` — array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)

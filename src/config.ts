@@ -35,6 +35,9 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Set to true to price usage at pi-ai's API list prices, so pi's cost
+		// displays show what the tokens would cost on the API. Default zero.
+		reportApiCost?: boolean;
 	};
 }
 
