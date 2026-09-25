@@ -24,7 +24,7 @@ function activateWithMockPi() {
 	// config enables AskClaude (e.g. a developer's global ~/.pi/agent/claude-bridge.json),
 	// so a mock missing it throws before any handler is registered. CI has no such
 	// config, which is why this only surfaced locally.
-	activate({ on: (event, handler) => handlers.set(event, handler), registerProvider: () => {}, registerTool: () => {} });
+	activate({ on: (event, handler) => handlers.set(event, handler), registerProvider: () => {}, registerTool: () => {}, registerCommand: () => {} });
 	return handlers;
 }
 

@@ -1,6 +1,6 @@
 import { calculateCost, createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
-import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, compact, generateBranchSummary, getAgentDir, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
@@ -26,6 +26,7 @@ import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
+import { formatUsageDetails, formatUsageStatus, loadUsageSnapshot, mergeUsageSnapshot, saveUsageSnapshot, snapshotFromRateLimitInfo, usageChanged, type UsageSnapshot } from "./usage-status.js";
 
 // --- Debug logging ---
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to ~/.pi/agent/claude-bridge.log
@@ -513,6 +514,8 @@ async function runIsolatedSummary(
 				for (const block of (message as any).message?.content ?? []) {
 					if (block.type === "text" && typeof block.text === "string") assistantText += block.text;
 				}
+			} else if (message.type === "rate_limit_event") {
+				recordUsage((message as any).rate_limit_info);
 			} else if (message.type === "result") {
 				logServedContextWindow("compact summary", message, model);
 				errorText = resultErrorText(message);
@@ -753,6 +756,13 @@ export const __test = {
 	setPiUI(ui: ExtensionUIContext | null) {
 		piUI = ui;
 	},
+	getUsageSnapshot() {
+		return usageSnapshot;
+	},
+	resetUsage() {
+		usageSnapshot = null;
+		savedUsage = null;
+	},
 	toBridgeContext,
 	syncSharedSession,
 	extractUserPromptBlocks,
@@ -828,6 +838,44 @@ function mapToolArgs(
 let piUI: ExtensionUIContext | null = null;
 let piMode: ExtensionContext["mode"] | null = null;
 const activeQueryContexts = new Set<QueryContext>();
+
+// --- Subscription usage status ---
+// Every rate_limit_event carries the plan's usage windows; the latest is shown in pi's
+// footer and saved so the next session starts with it. See usage-status.ts.
+const USAGE_STATUS_KEY = "claude-usage";
+const USAGE_PATH = process.env.CLAUDE_BRIDGE_USAGE_PATH || join(getAgentDir(), "claude-bridge-usage.json");
+/** Resave an unchanged snapshot at most this often, so its "reported" time stays honest. */
+const USAGE_RESAVE_MS = 60_000;
+let usageSnapshot: UsageSnapshot | null = null;
+let savedUsage: UsageSnapshot | null = null;
+
+function showUsageStatus(): void {
+	piUI?.setStatus(USAGE_STATUS_KEY, formatUsageStatus(usageSnapshot, Date.now()));
+}
+
+/** Adopt the saved snapshot when it is newer than ours — another pi process may have
+ *  made a request since. */
+function reloadUsage(): void {
+	const disk = loadUsageSnapshot(USAGE_PATH);
+	if (disk && (!usageSnapshot || disk.observedAt > usageSnapshot.observedAt)) {
+		usageSnapshot = disk;
+		savedUsage = disk;
+	}
+}
+
+function recordUsage(info: unknown): void {
+	const next = snapshotFromRateLimitInfo(info, Date.now());
+	if (!next) return;
+	usageSnapshot = mergeUsageSnapshot(usageSnapshot, next);
+	showUsageStatus();
+	if (!usageChanged(savedUsage, usageSnapshot) && usageSnapshot.observedAt - savedUsage!.observedAt < USAGE_RESAVE_MS) return;
+	try {
+		saveUsageSnapshot(USAGE_PATH, usageSnapshot);
+		savedUsage = usageSnapshot;
+	} catch (e) {
+		debug(`usage: failed to save ${USAGE_PATH}: ${e}`);
+	}
+}
 
 // Defaults that silently cost the user something (no Opus 1M on Max, no
 // AskClaude tool) are announced once. Deferred to the first bridge query rather
@@ -1350,6 +1398,7 @@ async function consumeQuery(
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+			recordUsage(info);
 			if (info?.status === "rejected") {
 				// Held so the failure Claude Code sends next can be named as a rate limit.
 				queryCtx.rateLimitRejection = info;
@@ -1988,6 +2037,9 @@ async function promptAndWait(
 			sdkMessageCount++;
 
 			switch (message.type) {
+				case "rate_limit_event":
+					recordUsage((message as any).rate_limit_info);
+					break;
 				case "stream_event": {
 					const event = (message as SDKMessage & { event: any }).event;
 					// Text deltas → accumulate and stream
@@ -2103,6 +2155,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
+		reloadUsage();
+		showUsageStatus();
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
@@ -2300,6 +2354,15 @@ export default function (pi: ExtensionAPI) {
 			pi.registerProvider(PROVIDER_ID, providerConfig);
 		});
 	}
+
+	pi.registerCommand("claude-usage", {
+		description: "Show Claude subscription usage (5-hour and weekly windows) as last reported by Claude Code",
+		handler: async (_args, ctx) => {
+			reloadUsage();
+			showUsageStatus();
+			ctx.ui.notify(formatUsageDetails(usageSnapshot, Date.now()), "info");
+		},
+	});
 
 	// --- AskClaude tool ---
 
