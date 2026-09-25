@@ -582,7 +582,7 @@ async function runIsolatedSummary(
 		const { cliModelId: cliModel, childEnv: modelEnv } = resolveClaudeCodeRuntimeModel(model, longContextSettings);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
-		sdkQuery = query({
+		sdkQuery = queryImpl({
 			prompt: promptText,
 			options: {
 				cwd,
@@ -858,9 +858,9 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	return { sessionId: session.sessionId };
 }
 
-// The SDK's query(), or a test double (see setQuery). The compact/summary
-// path calls the real query() directly — its subprocess must never be swapped
-// out from under a real compaction.
+// The SDK's query(), or a test double (see setQuery). Every Claude Code spawn
+// goes through it, so unit tests can assert what each site sends (model id,
+// env) without a subprocess. Only tests ever swap it.
 let queryImpl: typeof query = query;
 
 // @internal
@@ -903,6 +903,8 @@ export const __test = {
 	drainForAbort,
 	CC_CHILD_ENV,
 	buildMcpServers,
+	streamClaudeAgentSdk,
+	promptAndWait,
 	branchSummaryOutcome,
 	get promptCaptures() {
 		return promptCaptures;
@@ -2243,7 +2245,7 @@ async function promptAndWait(
 	// removes the Skill tool and the listing with it — but AskClaude runs on CC's native
 	// tools, so it has to be asked for. Pi-side skills still arrive via skillsBlock below,
 	// which is meant to be the only channel.
-	const sdkQuery = query({
+	const sdkQuery = queryImpl({
 		prompt,
 		options: {
 			cwd,
