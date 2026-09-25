@@ -193,3 +193,87 @@ describe("applyLongContext", () => {
 it("claude-opus-5-5 requests 1M on Pro", () => {
 	assert.deepEqual(resolveClaudeCodeRuntimeModel({ id: "claude-opus-5-5" }, PRO), { cliModelId: "claude-opus-5-5[1m]", contextWindow: 1000000 });
 });
+
+describe("200K twins", () => {
+	const models = buildModels(getModels("anthropic"));
+	const pro = applyLongContext(models, PRO);
+	const ids = (list) => list.map((m) => m.id);
+
+	it("every 1M model gets a claude-200k-* twin right after it; 200K models get none", () => {
+		for (const m of pro.filter((m) => !m.id.startsWith("claude-200k-"))) {
+			const twin = find(pro, m.id.replace(/^claude-/, "claude-200k-"));
+			if (m.contextWindow === 1000000) {
+				assert.ok(twin, `${m.id} has a twin`);
+				assert.equal(pro.indexOf(twin), pro.indexOf(m) + 1, `${m.id} twin sits right after it`);
+			} else {
+				assert.equal(twin, undefined, `${m.id} is 200K, no twin`);
+			}
+		}
+		assert.ok(find(pro, "claude-200k-opus-5-5"));
+		assert.equal(find(pro, "claude-200k-haiku-4-5"), undefined);
+		assert.equal(find(pro, "claude-200k-sonnet-4-5"), undefined);
+	});
+
+	it("twin registers 200K with a 200K label and inherits the rest of its base", () => {
+		const base = find(pro, "claude-opus-5-5");
+		const twin = find(pro, "claude-200k-opus-5-5");
+		assert.equal(base.contextWindow, 1000000);
+		assert.equal(base.name, "Claude Opus 5.5 1M");
+		assert.equal(twin.contextWindow, 200000);
+		assert.equal(twin.name, "Claude Opus 5.5 200K");
+		assert.deepEqual(twin.thinkingLevelMap, base.thinkingLevelMap);
+		assert.equal(twin.maxTokens, base.maxTokens);
+		assert.equal(twin.reasoning, base.reasoning);
+	});
+
+	it("twin sends the bare base id with 1M context disabled in CC", () => {
+		assert.deepEqual(resolveClaudeCodeRuntimeModel({ id: "claude-200k-opus-5-5" }, PRO), {
+			cliModelId: "claude-opus-5-5", contextWindow: 200000, childEnv: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" },
+		});
+		assert.equal(claudeCodeModelId({ id: "claude-200k-fable-5-1" }, MAX), "claude-fable-5-1");
+		// Base ids keep their current request and carry no extra env.
+		assert.deepEqual(resolveClaudeCodeRuntimeModel({ id: "claude-opus-5-5" }, PRO), { cliModelId: "claude-opus-5-5[1m]", contextWindow: 1000000 });
+	});
+
+	it("plan-gated models get a twin only when the plan grants 1M", () => {
+		assert.equal(find(pro, "claude-200k-opus-4-6"), undefined);
+		assert.ok(find(applyLongContext(models, MAX), "claude-200k-opus-4-6"));
+		assert.equal(find(applyLongContext(models, MAX), "claude-200k-sonnet-4-6"), undefined);
+		assert.ok(find(applyLongContext(models, EXTRA), "claude-200k-sonnet-4-6"));
+	});
+
+	it("forceTwoHundredK pins the base and drops its twin", () => {
+		const forced = applyLongContext(models, { ...PRO, forceTwoHundredK: ["claude-opus-5-5"] });
+		assert.equal(find(forced, "claude-opus-5-5").contextWindow, 200000);
+		assert.equal(find(forced, "claude-200k-opus-5-5"), undefined);
+		assert.ok(find(forced, "claude-200k-opus-5"), "other twins unaffected");
+	});
+
+	it("base ids and their order are unchanged", () => {
+		assert.deepEqual(ids(pro.filter((m) => !m.id.startsWith("claude-200k-"))), ids(models));
+	});
+
+	it("shortcuts and partial matches never land on a twin", () => {
+		for (const input of ["opus", "fable", "sonnet", "haiku", "opus-5-5", "opus-5", "claude-opus", "5-5"]) {
+			assert.equal(resolveModel(pro, input)?.id, resolveModel(models, input)?.id, `"${input}" resolves as before`);
+			assert.equal(resolveModel([...pro].reverse(), input)?.id, resolveModel(models, input)?.id, `"${input}" order-independent`);
+		}
+	});
+
+	it("twins resolve by exact id, or by partial input that asks for 200k", () => {
+		assert.equal(resolveModel(pro, "claude-200k-opus-5-5")?.id, "claude-200k-opus-5-5");
+		assert.equal(resolveModel(pro, "200k-opus-5")?.id, "claude-200k-opus-5-5");
+		assert.equal(resolveModel(pro, "200k-opus")?.id, resolveModel(models, "opus")?.id.replace(/^claude-/, "claude-200k-"));
+	});
+
+	it("pi's own partial --model match still prefers the base id", () => {
+		// Mirrors pi's tryMatchModel partial step: all non-dated matches, highest id
+		// by localeCompare wins. A suffixed twin id would win here and steal "opus".
+		const piPartial = (list, pattern) => list
+			.filter((m) => m.id.includes(pattern) || m.name.toLowerCase().includes(pattern))
+			.sort((a, b) => b.id.localeCompare(a.id))[0]?.id;
+		for (const pattern of ["opus", "fable", "sonnet", "opus-5-5", "opus 5.5"]) {
+			assert.equal(piPartial(pro, pattern), piPartial(models.map((m) => find(pro, m.id)), pattern), `pi "${pattern}"`);
+		}
+	});
+});

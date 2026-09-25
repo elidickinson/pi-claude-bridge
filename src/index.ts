@@ -9,7 +9,7 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { applyLongContext, buildModels, type LongContextSettings, resolveClaudeCodeRuntimeModel, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -142,9 +142,15 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
+// Every Claude Code spawn goes through this, so unit tests can swap in a fake
+// and assert what each site sends (model id, env) without a subprocess.
+let queryFn: typeof query = query;
+// MODELS after applyLongContext at activation: adds the 200K twins, so AskClaude
+// can name one by exact id.
+let registeredModels = MODELS;
 
 function resolveModel(input: string) {
-	return _resolveModel(MODELS, input);
+	return _resolveModel(registeredModels, input);
 }
 
 // --- Error handling ---
@@ -470,14 +476,14 @@ async function runIsolatedSummary(
 		const cwd = process.cwd();
 		const compactProviderSettings = loadConfig(cwd).provider;
 		const claudeExecutable = compactProviderSettings?.pathToClaudeCodeExecutable;
-		const cliModel = claudeCodeModelId(model, longContextSettings);
+		const { cliModelId: cliModel, childEnv: modelEnv } = resolveClaudeCodeRuntimeModel(model, longContextSettings);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
-		sdkQuery = query({
+		sdkQuery = queryFn({
 			prompt: promptText,
 			options: {
 				cwd,
-				env: { ...process.env, ...CC_CHILD_ENV },
+				env: { ...process.env, ...CC_CHILD_ENV, ...modelEnv },
 				settings: { autoMemoryEnabled: false },
 				tools: [],
 				strictMcpConfig: true,
@@ -763,6 +769,11 @@ export const __test = {
 	drainForAbort,
 	CC_CHILD_ENV,
 	buildMcpServers,
+	setQueryFn(fn: typeof query | null) {
+		queryFn = fn ?? query;
+	},
+	streamClaudeAgentSdk,
+	promptAndWait,
 	branchSummaryOutcome,
 	get promptCaptures() {
 		return promptCaptures;
@@ -1638,7 +1649,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const cwd = process.cwd();
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
-	const cliModel = claudeCodeModelId(model, longContextSettings);
+	const { cliModelId: cliModel, childEnv: modelEnv } = resolveClaudeCodeRuntimeModel(model, longContextSettings);
 	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
@@ -1710,7 +1721,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// also autocompact would double-flush the prompt cache and races pi's
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ...CC_CHILD_ENV };
+	const childEnv = { ...process.env, ...CC_CHILD_ENV, ...modelEnv };
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
@@ -1751,7 +1762,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
-	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
+	const sdkQuery = queryFn({ prompt: promptStream.stream, options: queryOptions });
 	queryCtx.activeQuery = sdkQuery;
 	activeQueryContexts.add(queryCtx);
 
@@ -1885,7 +1896,8 @@ async function promptAndWait(
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
-	const cliModel = model ? claudeCodeModelId(model, longContextSettings) : modelId;
+	const runtime = model ? resolveClaudeCodeRuntimeModel(model, longContextSettings) : undefined;
+	const cliModel = runtime?.cliModelId ?? modelId;
 
 	// Session resume for shared mode — reuse provider's session if it exists,
 	// otherwise create one from pi's context.
@@ -1945,11 +1957,11 @@ async function promptAndWait(
 	// removes the Skill tool and the listing with it — but AskClaude runs on CC's native
 	// tools, so it has to be asked for. Pi-side skills still arrive via skillsBlock below,
 	// which is meant to be the only channel.
-	const sdkQuery = query({
+	const sdkQuery = queryFn({
 		prompt,
 		options: {
 			cwd,
-			env: { ...process.env, ...CC_CHILD_ENV },
+			env: { ...process.env, ...CC_CHILD_ENV, ...runtime?.childEnv },
 			permissionMode: "bypassPermissions",
 			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 			skills: [],
@@ -2067,7 +2079,7 @@ export default function (pi: ExtensionAPI) {
 	providerSettings = config.provider ?? {};
 	// We need these settings to know if we're eligible for 1M context on certain models
 	// Validate at the boundary: a non-array here would throw inside every
-	// claudeCodeModelId call and brick the extension at activation.
+	// runtime-model resolution and brick the extension at activation.
 	const forceTwoHundredK = Array.isArray(providerSettings.forceTwoHundredK)
 		? providerSettings.forceTwoHundredK.filter((id): id is string => typeof id === "string")
 		: undefined;
@@ -2076,7 +2088,7 @@ export default function (pi: ExtensionAPI) {
 		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
 		forceTwoHundredK,
 	};
-	const registeredModels = applyLongContext(MODELS, longContextSettings);
+	registeredModels = applyLongContext(MODELS, longContextSettings);
 	if (registeredModels.length === 0) {
 		console.error("claude-bridge: no models available from pi-ai's anthropic catalog — update @earendil-works/pi-ai (requires >=0.86.1)");
 	}

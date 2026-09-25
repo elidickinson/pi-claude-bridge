@@ -25,7 +25,7 @@ const FAMILY_ORDER = ["fable", "opus", "sonnet", "haiku"];
 // Version rank of a claude id, e.g. claude-opus-4-7 → ["opus", 4, 7]. Shared by
 // the display sort and resolveModel's newest-first partial tiebreak.
 function versionRank(id: string): { family: string; tuple: [number, number] } {
-	const [, family, major, minor] = id.split("-");
+	const [, family, major, minor] = (twinBaseId(id) ?? id).split("-");
 	return { family, tuple: [Number(major) || 0, Number(minor) || 0] };
 }
 
@@ -66,7 +66,26 @@ export type LongContextSettings = {
 export type ClaudeCodeRuntimeModel = {
 	cliModelId: string;
 	contextWindow: number;
+	// Extra env for the Claude Code child process. Set only for 200K twins.
+	childEnv?: Record<string, string>;
 };
+
+// 200K twins: every model registered at 1M is also registered as
+// claude-200k-<family>-<version>, served at 200K, so one pi process can run the
+// same model at both windows (e.g. a 1M coordinator with 200K workers).
+// The tag goes after "claude-", not at the end: pi's partial --model match
+// picks the highest id by localeCompare, and a base-prefixed suffix id
+// (claude-opus-5-5-200k) would outrank its base and steal "opus".
+const TWIN_PREFIX = "claude-200k-";
+
+// Base id of a 200K twin, or undefined for any other id.
+export function twinBaseId(id: string): string | undefined {
+	return id.startsWith(TWIN_PREFIX) ? `claude-${id.slice(TWIN_PREFIX.length)}` : undefined;
+}
+
+function twinId(baseId: string): string {
+	return baseId.replace(/^claude-/, TWIN_PREFIX);
+}
 
 // Measured Claude Agent SDK behavior - see diag/CONTEXT-SIZE.md:
 // - The `[1m]` suffix is the only reliable way to request 1M context through
@@ -102,6 +121,13 @@ export function resolveClaudeCodeRuntimeModel(
 	settings: LongContextSettings,
 ): ClaudeCodeRuntimeModel {
 	const modelId = model.id;
+	const twinBase = twinBaseId(modelId);
+	if (twinBase) {
+		// The bare id alone is not enough: Opus 4.7 and 5.5 serve 1M from it.
+		// CLAUDE_CODE_DISABLE_1M_CONTEXT makes CC serve 200K for every model
+		// (pinned in tests/int-cc-contracts.mjs).
+		return { cliModelId: twinBase, contextWindow: TWO_HUNDRED_K_CONTEXT, childEnv: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" } };
+	}
 	if (settings.forceTwoHundredK?.includes(modelId)) {
 		return { cliModelId: modelId, contextWindow: TWO_HUNDRED_K_CONTEXT };
 	}
@@ -128,9 +154,11 @@ export function resolveModel<T extends { id: string }>(models: T[], input: strin
 	const lower = input.toLowerCase();
 	// Exact first, then partial (mirrors pi's tryMatchModel ordering), so a
 	// longer newer id containing the input (claude-fable-5-1 vs "claude-fable-5")
-	// cannot shadow the exact match.
+	// cannot shadow the exact match. A 200K twin is reachable by partial match
+	// only when the input asks for it, so "opus" never lands on a twin.
+	const wantsTwin = lower.includes("200k");
 	return models.find((m) => m.id === lower)
-		?? newestPartialMatch(models.filter((m) => m.id.includes(lower)));
+		?? newestPartialMatch(models.filter((m) => m.id.includes(lower) && (wantsTwin || !twinBaseId(m.id))));
 }
 
 // Newest match by version rank — independent of registration order.
@@ -147,13 +175,19 @@ function newestPartialMatch<T extends { id: string }>(candidates: T[]): T | unde
 // match the window the bridge actually requests from Claude Code, or pi's status
 // bar and auto-compaction threshold will misreport. The runtime policy is based
 // on measured SDK behavior - see diag/CONTEXT-SIZE.md
+// Each model registered at 1M is followed by its 200K twin, which inherits
+// everything else (thinkingLevelMap included) from the base entry.
 export function applyLongContext<T extends { id: string; name: string; contextWindow?: number | null }>(
 	models: T[],
 	settings: LongContextSettings,
 ): T[] {
-	return models.map((m) => {
+	return models.flatMap((m) => {
 		const { contextWindow } = resolveClaudeCodeRuntimeModel(m, settings);
-		const name = contextWindow > TWO_HUNDRED_K_CONTEXT && !/\b1M\b/i.test(m.name) ? `${m.name} 1M` : m.name;
-		return contextWindow === m.contextWindow && name === m.name ? m : { ...m, contextWindow, name };
+		const oneM = contextWindow > TWO_HUNDRED_K_CONTEXT;
+		const name = oneM && !/\b1M\b/i.test(m.name) ? `${m.name} 1M` : m.name;
+		const base = contextWindow === m.contextWindow && name === m.name ? m : { ...m, contextWindow, name };
+		if (!oneM || !m.id.startsWith("claude-")) return [base];
+		const twinName = `${m.name.replace(/\s*\b1M\b/i, "")} 200K`;
+		return [base, { ...m, id: twinId(m.id), name: twinName, contextWindow: TWO_HUNDRED_K_CONTEXT }];
 	});
 }

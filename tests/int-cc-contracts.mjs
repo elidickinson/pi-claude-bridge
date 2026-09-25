@@ -222,6 +222,24 @@ test("result.modelUsage reports the served context window", { timeout: 120_000 }
 		`modelUsage entries missing contextWindow: ${JSON.stringify(result.modelUsage)}`);
 });
 
+test("CLAUDE_CODE_DISABLE_1M_CONTEXT serves 200K from a bare id that otherwise serves 1M", { timeout: 180_000 }, async () => {
+	// What the claude-200k-* twins in src/models.ts rely on. Opus 5.5 serves 1M from
+	// its bare id (diag/CONTEXT-SIZE.md, measured on Max), so the bare id alone
+	// cannot give a twin 200K; the env var has to.
+	const served = async (env) => {
+		const { result } = await collect(query({
+			prompt: "Reply with just: OK",
+			options: providerOptions({ model: "claude-opus-5-5", maxTurns: 1, persistSession: false, env: { ...providerOptions().env, ...env } }),
+		}));
+		return Object.values(result?.modelUsage ?? {})[0]?.contextWindow;
+	};
+	assert.equal(await served({ CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" }), 200_000);
+	// Tripwire for the premise: if the bare id stops serving 1M on this account,
+	// the env var is no longer what separates a twin from its base.
+	const bare = await served({});
+	if (bare !== 1_000_000) console.log(`note: bare claude-opus-5-5 served ${bare} on this account`);
+});
+
 // --- Streaming ---
 
 test("includePartialMessages yields the stream_event shapes processStreamEvent destructures", { timeout: 120_000 }, async () => {
