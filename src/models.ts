@@ -29,7 +29,15 @@ function versionRank(id: string): { family: string; tuple: [number, number] } {
 	return { family, tuple: [Number(major) || 0, Number(minor) || 0] };
 }
 
-export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]) {
+// Registered cost is zero by default: a subscription is not billed per token.
+// `apiCost` (provider.reportApiCost) keeps pi-ai's list prices instead, so pi
+// reports what the same tokens would cost on the API.
+function listPrice(cost: any) {
+	const price = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+	return { input: price(cost?.input), output: price(cost?.output), cacheRead: price(cost?.cacheRead), cacheWrite: price(cost?.cacheWrite) };
+}
+
+export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[], options: { apiCost?: boolean } = {}) {
 	return piAiModels
 		.filter((m) => typeof m.id === "string" && !isDatedAlias(m.id))
 		.sort((a, b) => {
@@ -46,12 +54,12 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 		})
 		// Forward thinkingLevelMap so pi-ai's per-model overrides (e.g. opus-4-8
 		// mapping xhigh→xhigh and max→max) are visible to the effort lookup.
-		.map(({ id, name, reasoning, input, contextWindow, maxTokens, thinkingLevelMap }) => ({
+		.map(({ id, name, reasoning, input, contextWindow, maxTokens, thinkingLevelMap, cost }) => ({
 			id,
 			name,
 			reasoning, input, contextWindow, maxTokens,
 			thinkingLevelMap,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			cost: options.apiCost ? listPrice(cost) : listPrice(undefined),
 		}));
 }
 

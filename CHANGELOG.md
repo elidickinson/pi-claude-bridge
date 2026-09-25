@@ -4,6 +4,7 @@
 
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
+- **Add: `provider.reportApiCost` prices usage at API list prices** — every model registers with zero cost, since a subscription is not billed per token, so pi's cost displays (`/session`, footer themes) always read $0. With the option set, models keep pi-ai's catalog prices and the per-message `usage.cost` the bridge already computes reflects what the same tokens would cost on the API. Off by default. Covered by `tests/unit-models.mjs`.
 
 ## 0.9.1 — 2026-09-30
 
