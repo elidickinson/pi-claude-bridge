@@ -4,6 +4,7 @@
 
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
+- **Add: 200K twins of every 1M model** — each model registered at 1M also appears as `claude-200k-<model>` (e.g. `claude-bridge/claude-200k-opus-5-5`), registered at 200K, so a 1M coordinator and 200K workers can share one pi install without `provider.forceTwoHundredK`, which pins the model for every session. A twin sends the bare id with `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` in Claude Code's env: Opus 5.5 serves 1M from the bare id alone (pinned in `tests/int-cc-contracts.mjs`). The tag sits after `claude-` rather than at the end so pi's own partial `--model opus` match, which takes the highest id, still picks the base; the bridge's shortcuts skip twins unless the input contains `200k`. Plan-gated models get a twin only when the plan grants 1M, and `forceTwoHundredK` drops the twin with its base's 1M.
 
 ## 0.9.1 — 2026-09-30
 
