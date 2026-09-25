@@ -33,6 +33,8 @@ The model list comes from pi-ai's Anthropic catalog automatically — when pi-ai
 
 **1M Context:** 1M is enabled for an explicit list: Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5. Opus 5.5 was measured on Max with Extra Usage off, where the bare id and `[1m]` both serve 1M; on Pro it is still unmeasured and rests on [Anthropic's documentation](https://code.claude.com/docs/en/model-config#extended-context) for Opus 4.7 and later (see `diag/CONTEXT-SIZE.md`). Other models on the list were verified through the SDK. A new model appearing from pi-ai starts at 200K context until explicitly added, to avoid sending unsupported `[1m]` requests. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
 
+**200K twins:** every model that gets 1M is also listed as a 200K twin with `200k` after `claude-`, e.g. `claude-bridge/claude-200k-opus-5-5`, so one session can run a model at 1M while subagents run it at 200K. A twin sends the bare model id and sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, because Opus 4.7 and 5.5 serve 1M from the bare id alone. Shortcuts such as `opus` never select a twin; name it exactly, or with a partial id containing `200k` (e.g. `200k-opus`).
+
 ## AskClaude Tool
 
 Opt-in: set `askClaude.enabled` to `true` (see [Configuration](#configuration)). Available when using any non-claude-bridge provider. Pi's LLM can delegate tasks to Claude Code and wait for it to answer a question or perform a task. Examples of how to use:
