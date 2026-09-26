@@ -15,7 +15,7 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
+import { claudeCodeSettings, loadConfig, markStartupNoticeShown, resolveInheritAnthropicEnv, type Config } from "./config.js";
 import {
 	collectPromptSkills,
 	projectPromptCapture,
@@ -53,6 +53,26 @@ const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
 } as const;
+
+// Ambient ANTHROPIC_* credentials that must NOT reach the Claude Code child.
+// ANTHROPIC_BASE_URL/API_KEY/AUTH_TOKEN exported for another gateway (corporate
+// proxy, LiteLLM) would redirect CC too — options.env REPLACES the whole child
+// environment (sdk.d.ts:1577-1594) — and every turn would fail with that
+// gateway's auth error. Only these three: other ANTHROPIC_* variables carry
+// legitimate runtime configuration (model overrides, Bedrock/Vertex wiring) and
+// stay. Escape hatch: provider.inheritAnthropicEnv=true restores full
+// pass-through for users who deliberately route Claude Code itself through a
+// proxy. Resolved at activation; see resolveInheritAnthropicEnv.
+const AMBIENT_ANTHROPIC_AUTH_VARS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+let inheritAnthropicEnv = false;
+
+function buildChildEnv(): Record<string, string> {
+	const env: Record<string, string> = { ...process.env };
+	if (!inheritAnthropicEnv) {
+		for (const key of AMBIENT_ANTHROPIC_AUTH_VARS) delete env[key];
+	}
+	return { ...env, ...CC_CHILD_ENV };
+}
 
 // Pi owns context files on the provider path, so Claude Code must not load its
 // own on top: otherwise a project CLAUDE.md arrives twice, and the user's
@@ -544,7 +564,7 @@ async function runIsolatedSummary(
 			prompt: promptText,
 			options: {
 				cwd,
-				env: { ...process.env, ...CC_CHILD_ENV },
+				env: buildChildEnv(),
 				settings: { autoMemoryEnabled: false },
 				tools: [],
 				strictMcpConfig: true,
@@ -1027,6 +1047,8 @@ export const __test = {
 	deliverToolResults,
 	drainForAbort,
 	CC_CHILD_ENV,
+	buildChildEnv,
+	setInheritAnthropicEnv(value: boolean) { inheritAnthropicEnv = value; },
 	buildMcpServers,
 	branchSummaryOutcome,
 	applyMidToolChanges,
@@ -2090,7 +2112,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// also autocompact would double-flush the prompt cache and races pi's
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ...CC_CHILD_ENV };
+	const childEnv = buildChildEnv();
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
@@ -2357,7 +2379,7 @@ async function promptAndWait(
 		prompt,
 		options: {
 			cwd,
-			env: { ...process.env, ...CC_CHILD_ENV },
+			env: buildChildEnv(),
 			permissionMode: "bypassPermissions",
 			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 			skills: [],
@@ -2473,6 +2495,9 @@ export default function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
+	// Auth fire-walling for the CC child: validate here so a bad value fails at
+	// activation rather than silently meaning its default on every spawn.
+	inheritAnthropicEnv = resolveInheritAnthropicEnv(providerSettings.inheritAnthropicEnv);
 	// We need these settings to know if we're eligible for 1M context on certain models
 	// Validate at the boundary: a non-array here would throw inside every
 	// claudeCodeModelId call and brick the extension at activation.
