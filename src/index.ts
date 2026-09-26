@@ -551,7 +551,28 @@ async function runIsolatedSummary(
 				settingSources: [] as SettingSource[],
 				skills: [],
 				persistSession: false,
-				systemPrompt: context.systemPrompt,
+				// The summary's own system prompt text as a bare string would be a
+				// CUSTOM prompt lane query — Anthropic classifies custom prompts as
+				// third-party app usage: extra usage at API rates, rejected without
+				// balance (live-probed 2026-09-26, SDK 0.3.280). These summaries fire
+				// automatically on compaction/tree/bug even in default append mode, so
+				// they must stay on the subscription-preserving preset+append lane like
+				// the main provider. The preset's instructions are designed to be
+				// appended to; pi's summary system prompt is data-plus-task ("ONLY output
+				// the summary, do NOT continue the conversation"), so appending it keeps
+				// the same instruction content. Direct construction, not
+				// projectPromptCapture's guard — the guard protects the projection built
+				// from pi-harness text with extraction heuristics, while pi's own
+				// verbatim summary prompt must reach CC unmodified (see README note).
+				systemPrompt: {
+					type: "preset" as const,
+					preset: "claude_code" as const,
+					append: context.systemPrompt,
+					// Summary runs are one-shot with persistSession:false (no later
+					// request in this conversation to go stale); snapshot:false matches
+					// the main provider so a per-summary append is rendered fresh.
+					snapshot: false,
+				},
 				model: cliModel,
 				maxTurns: 1,
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
@@ -2599,7 +2620,9 @@ export default function (pi: ExtensionAPI) {
 	// compaction runs
 	// through the agent stream fn and is safe on a bridge model: pi's native compaction
 	// summary prompt matches the dedicated-summary discriminator and the provider routes
-	// it to the isolated CC summary path (streamClaudeAgentSdk below), the same fence /bug
+	// it to the isolated CC summary path (streamClaudeAgentSdk below) — appended to the
+	// claude_code preset there, keeping automatic summaries on the same subscription lane
+	// as ordinary turns — the same fence /bug
 	// summarization already goes through.
 	//
 	// The takeover did carry one real fix worth keeping: pi's native
