@@ -26,6 +26,7 @@ import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
+import { fingerprintProjectedPriors } from "./priors-fingerprint.js";
 
 // --- Debug logging ---
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to ~/.pi/agent/claude-bridge.log
@@ -195,6 +196,21 @@ interface SessionState {
 	// navigation) or after an abort left the JSONL in an indeterminate state.
 	// REBUILD wipes and rewrites the file to match pi's current history.
 	needsRebuild?: boolean;
+	// Content fingerprint of the priors that built the current CC session (roles,
+	// block types, contents, images, tool ids/names/args/results; timestamps,
+	// usage/cost and other metadata excluded). Fingerprint-based sync relies on
+	// it; it rides along with sessionId/cursor everywhere the state is replaced.
+	fingerprint?: string;
+	// Identity of the pi session this shared state belongs to (pi's own session
+	// id, forwarded on every stream call via StreamOptions.sessionId). Same-owner
+	// decisions (rewrites of the shared history vs. a foreign session arriving
+	// mid-query, e.g. a subagent child routed through the pinned stream fn) are
+	// made by comparing ids — NOT by "a query is active somewhere", which a
+	// concurrent child's dispatch cannot be told apart from a same-owner
+	// continuation. Undefined only for states created by callers with no session
+	// identity (AskClaude cold start) or legacy pre-identity state; those keep
+	// the conservative length-based guards.
+	ownerSessionId?: string;
 	// Set ONLY after an abort. The killed CC subprocess may still be flushing
 	// a late "[Request interrupted by user]" record to the session JSONL.
 	// Reusing the same sessionId/path would race that orphan write into our
@@ -390,6 +406,61 @@ function newAssistantOutput(model: Model<any>, text: string, stopReason: Assista
 	};
 }
 
+/** Positive discriminator for pi's dedicated summary prompts.
+ *
+ *  cacheRetention:"none" is a cache preference, not a purpose marker
+ *  (@earendil-works/pi-ai 0.86.x types.d.ts:132-136) — pi may set it on ordinary
+ *  inference too, so routing on the flag alone destroyed history/tools for those
+ *  calls. Instead route to the isolated summary path only when a call's prompt
+ *  matches one of pi 0.87.1's four summarization shapes, pinned here to the
+ *  installed dist:
+ *
+ *  - native compaction summary + update (PI/dist/core/compaction/compaction.js:
+ *    400 SUMMARIZATION_PROMPT, 432 UPDATE_SUMMARIZATION_INSTRUCTIONS, 468
+ *    UPDATE_SUMMARIZATION_PROMPT) and turn-prefix (compaction.js:684
+ *    TURN_PREFIX_SUMMARIZATION_PROMPT)
+ *  - branch summary (PI/dist/core/compaction/branch-summarization.js:153
+ *    BRANCH_SUMMARY_PROMPT)
+ *  - bug report (PI/dist/core/bug-report.js:220 BUG_SUMMARY_INSTRUCTIONS)
+ *
+ *  The user-text markers are version-pinned literals; the shared system prompt is
+ *  recognized by its exact text with the trailing-paragraph tolerance described
+ *  at matchesSummarySystemPrompt. cacheRetention:"none" WITHOUT a shape match is
+ *  ordinary no-cache traffic and takes the normal path with full history+tools;
+ *  because the shapes above are every completeSummarization caller in the
+ *  installed pi, any unrecognized no-cache call is treated the same (truthful
+ *  diagnostic, no history destruction). */
+const SUMMARY_SYSTEM_PROMPTS: readonly string[] = [
+	// pi-ai normalizeContext folds this into the leading system message; exact prefixes.
+	"You are a context summarization assistant.", // utils.js:139 SUMMARIZATION_SYSTEM_PROMPT (compaction, update, turn prefix, branch)
+	"You are helping a user file a bug report about pi", // bug-report.js:217 BUG_SUMMARY_SYSTEM_PROMPT
+];
+
+function matchesSummarySystemPrompt(systemPrompt: string | undefined): boolean {
+	return typeof systemPrompt === "string" && SUMMARY_SYSTEM_PROMPTS.some((prefix) => systemPrompt.startsWith(prefix));
+}
+
+const SUMMARY_PROMPT_MARKERS: readonly string[] = [
+	"The messages above are a conversation to summarize.", // compaction.js:400 SUMMARIZATION_PROMPT
+	"<previous-summary>", // compaction.js:468 UPDATE_SUMMARIZATION_PROMPT (previous summary folded into the user prompt)
+	"The messages above are earlier context from an ongoing conversation.", // compaction.js:684 TURN_PREFIX_SUMMARIZATION_PROMPT
+	"\n\n# Instructions\n", // compaction.js:752 prompt body wrapper (turn prefix)
+	"Create a structured summary of this conversation branch", // branch-summarization.js:153 BRANCH_SUMMARY_PROMPT
+	"Summary of that exploration:", // branch-summarization.js:148 BRANCH_SUMMARY_PREAMBLE (cumulative)
+	"<conversation>", // compaction.js:546 / branch-summarization.js:211 serialize the transcript into this tag
+	"Write the bug report in Markdown with these sections:", // bug-report.js:220 BUG_SUMMARY_INSTRUCTIONS
+	"<user-report>", // bug-report.js:260 optional user hint tag
+];
+
+function matchesSummaryPromptText(promptText: string): boolean {
+	return SUMMARY_PROMPT_MARKERS.some((marker) => promptText.includes(marker));
+}
+
+/** Definition of the discriminator, exposed for the unit test's shape pins. */
+export function isDedicatedSummaryCall(context: Context): boolean {
+	return matchesSummarySystemPrompt(context.systemPrompt) && matchesSummaryPromptText(extractUserPrompt(context.messages) ?? "");
+}
+
 function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
 	if (messages.length !== 1 || messages[0].role !== "user") {
 		throw new Error(
@@ -457,15 +528,11 @@ async function runIsolatedSummary(
 	};
 
 	try {
-		// One-off summarizer calls (compaction, branch summary, turn prefix, bug report —
-		// anything routed through pi's completeSummarization) are marked cacheRetention:
-		// "none". Any of them may appear in a future pi release without a bridge change,
-		// so route on the marker, not on which summarizer is calling. Non-summarizer calls
-		// must still match the [system,user] compaction shape exactly.
-		const isOneOffSummary = options?.cacheRetention === "none";
-		const promptText = isOneOffSummary
-			? extractUserPrompt(context.messages)
-			: extractIsolatedSummaryPrompt(context.messages);
+		// This path only runs for calls the provider already discriminated as
+		// dedicated summaries (compaction summary/update, branch summary, turn
+		// prefix, bug report). Callers without their system prompt re-derivable
+		// from the transcript fall back to extractUserPrompt.
+		const promptText = extractUserPrompt(context.messages) ?? extractIsolatedSummaryPrompt(context.messages);
 		if (!promptText) throw new Error("runIsolatedSummary: one-off summary without a user prompt (last message is not user?)");
 		const cwd = process.cwd();
 		const compactProviderSettings = loadConfig(cwd).provider;
@@ -575,9 +642,47 @@ interface SyncResult {
 	preserveSharedSession?: boolean;
 }
 
+/** Active-query completion reconstruction of the shared-session state
+ *  ({sessionId, cursor, cwd}). Previously this wholesale replacement dropped a
+ *  pending needsRebuild set while the query was running (pi mutating history
+ *  mid-turn) — the stale state it marked quietly resurrected. The pending flag
+ *  survives, and the fingerprint is refreshed to the history CC actually has
+ *  (the stored digest is bound to the cursor written beside it).
+ *  Extracted so unit tests pin the reconstruction contract. */
+function reconstructCompletedSession(
+	previous: SessionState | null,
+	sessionId: string,
+	cursor: number,
+	cwd: string,
+	nonSystemContext: ReadonlyArray<object>,
+	ownerSessionId?: string,
+): SessionState {
+	const carriedNeedsRebuild = previous?.needsRebuild ?? false;
+	const carriedFingerprint = fingerprintProjectedPriors(
+		nonSystemContext.slice(0, cursor),
+	).hash;
+	// The completing query's identity is authoritative; an unidentified caller
+	// keeps the stored owner. Never adopt a foreign completion's stored identity.
+	const completedOwner = ownerSessionId !== undefined ? ownerSessionId : previous?.ownerSessionId;
+	return {
+		sessionId,
+		cursor,
+		cwd,
+		fingerprint: carriedFingerprint,
+		...(completedOwner !== undefined ? { ownerSessionId: completedOwner } : {}),
+		...(carriedNeedsRebuild ? { needsRebuild: true } : {}),
+	};
+}
+
 /**
  * Ensure the shared session has all messages up to (but not including) the last user message.
  * Returns session ID to resume from, or null if no resume needed.
+ *
+ * preserveSharedSession semantics on a null sessionId:
+ *  - undefined (falsy): genuine clean start — the caller owns history; nothing
+ *    was open, and the shared session state is gone (root rewind).
+ *  - true: another owner ran a fresh session while the shared one stays — the
+ *    completion handler discards the ephemeral session and keeps shared state.
  */
 // Read the session file we just wrote and sanity-check it. Warns instead of
 // throwing — CC may be more tolerant than our checks, so a false positive
@@ -656,48 +761,156 @@ function syncSharedSession(
 	cwd: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
+	// Ownership identity: pi's session id for this stream call (StreamOptions
+	// .sessionId — pi 0.87.1 constructs its Agent with sessionId from the session
+	// manager and the agent loop forwards it on every streamSimple call).
+	//  - Matching the stored state's ownerSessionId: the same conversation is
+	//    calling again — a shortened-priors sync is that owner rewriting its own
+	//    history and must be fully rebuilt with import (issue: #30).
+	//  - Different id: a foreign session (a subagent child dispatched through the
+	//    pinned stream fn while the owner's query is still live) — isolation, no
+	//    matter how long its priors are; the shared session must never be
+	//    rebuilt, cleared, or resumed for it.
+	//  - undefined (default, e.g. AskClaude cold start) or a legacy state without
+	//    a stored id: ownership is unknown — fall back to the conservative
+	//    length-based guard (shorter priors = another owner, clean start).
+	ownerSessionId?: string,
 ): SyncResult {
+	// Proven foreign owner: both sides have a session id and they differ (a
+	// subagent child dispatched through the pinned stream fn while the owner's
+	// query is still live, or any other distinct pi session in this process).
+	// Callers with no id to compare are NOT foreign — they keep the legacy
+	// length-based guard below.
+	const foreignOwner = sharedSession !== null
+		&& sharedSession.ownerSessionId !== undefined
+		&& ownerSessionId !== undefined
+		&& sharedSession.ownerSessionId !== ownerSessionId;
+
 	// System messages are pi's transcript representation of prompt and tool state, not
 	// conversation history — they are never imported into a CC session, so exclude them from
 	// the history space (priorMessages, cursor, missed) everywhere below (issue #106).
 	const history = nonSystemMessages(messages);
 	const priorMessages = history.slice(0, turnStart(history)); // everything before the current user turn
 
-	// REUSE path
+	// REUSE path (content fingerprints + explicit ownership)
 	//
-	// Guard on priorMessages.length >= cursor: a shorter incoming context cannot
-	// be a continuation of the cached session. This is the general invariant for
-	// pi-side history rewrites such as /compact and session_tree: without it,
-	// missed = [].slice(cursor) can falsely hit REUSE and resume an unrelated
-	// longer CC session. See issue #25.
-	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length >= sharedSession.cursor) {
+	// What replaced the old count-vs-cursor check: message COUNT alone cannot
+	// tell a removed or rewritten prior from a matching one (issue: probe —
+	// count collision [recall1,user1] vs [user1,assistant1] → false REUSE), so
+	// the durability guard is now a content fingerprint of the projected priors
+	// must match what built the session. Any disappearance or rewrite of a
+	// prior — pi-context-prune removing a mid-history message, an extension's
+	// injected pre-last-user text vanishing or changing at
+	// the next request — changes the hash at the SAME count and forces rebuild
+	// acceptance covered by tests/unit-sync-shared-session-fingerprints.mjs).
+	//
+	// Ownership: pi's session identity discriminates the shortened-context case
+	// (issue #30). For the same owner (same pi session id — a steer or follow-up
+	// while a query is live) a shorter priors is that owner pruning its own
+	// history — full rebuild importing the retained priors. A different or
+	// unstated owner with shorter priors is a RE-run of another agent's ask —
+	// the subagent isolation guard below keeps the shared session intact and
+	// starts fresh. "A query is active somewhere" is deliberately NOT used: a
+	// concurrent subagent child's dispatch runs in the parent's module state and
+	// would be indistinguishable from a same-owner continuation by that signal.
+	const sameOwner = sharedSession !== null
+		&& sharedSession.ownerSessionId !== undefined
+		&& ownerSessionId !== undefined
+		&& sharedSession.ownerSessionId === ownerSessionId;
+	if (sharedSession && !sharedSession.needsRebuild && !foreignOwner) {
+		// The stored fingerprint is ALWAYS the digest of the history prefix the
+		// cursor points at — [0, cursor) at the last sync, optionally extended by
+		// the one trailing assistant message CC records on its own after pi's
+		// stream returned (and which only reaches pi's history at the NEXT sync).
+		// Compare the same prefix region of the incoming priors: identical content
+		// → reuse; ANY change inside the prefix (an edit, a removed or rewritten
+		// injected message) with count out of the cursor → rebuild.
 		const missed = priorMessages.slice(sharedSession.cursor);
 		const trailingAssistantOnly =
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
-		if (missed.length === 0 || trailingAssistantOnly) {
-			if (trailingAssistantOnly) {
-				sharedSession = { ...sharedSession, cursor: priorMessages.length, cwd };
-			}
-			debug(`Case 3: ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
+		// Only two benign shapes may ride the stored session: an exact prefix
+		// (nothing unseen) or exactly one trailing assistant message (the one CC
+		// appends on its own after the stream returned). Multiple unseen messages
+		// past the cursor mean pi's history moved while the bridge state was
+		// parked — reuse here would keep the old CC session and silently drop
+		// those turns from its context. Fall through to the rebuild, which
+		// imports the full retained priors and realigns cursor + fingerprint.
+		const reuseAllowed = missed.length === 0 || trailingAssistantOnly;
+		const prefixMatched = sharedSession.fingerprint !== undefined
+			? fingerprintProjectedPriors(priorMessages.slice(0, sharedSession.cursor)).hash === sharedSession.fingerprint
+			// Legacy state without a fingerprint: fall back to the old count-based
+			// allowance for exactly the benign trailing-assistant shape (one churn
+			// max on upgrade; the first reuse/rebuild stores a fingerprint).
+			: trailingAssistantOnly;
+		if (reuseAllowed && priorMessages.length >= sharedSession.cursor && prefixMatched) {
+			// New fingerprint bounds at the cursor we are about to store.
+			const digest = fingerprintProjectedPriors(priorMessages).hash;
+			// CC already recorded the trailing assistant; advance its cursor and
+			// fingerprint together without importing that message again.
+			sharedSession = {
+				...sharedSession,
+				cursor: trailingAssistantOnly ? priorMessages.length : sharedSession.cursor,
+				cwd,
+				fingerprint: digest,
+				...(sharedSession.ownerSessionId === undefined ? { ownerSessionId } : {}),
+			};
+			debug(`Case 3: fingerprint match (${digest.slice(0, 12)}), ${trailingAssistantOnly ? "advanced cursor past trailing assistant, " : ""}resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
 			debug(`syncResult: path=reuse sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
 			return { sessionId: sharedSession.sessionId };
 		}
+		// No fingerprint match (content changed, shrank, or this state predates
+		// fingerprints): fall through. Reentrant ownership proceeds to REBUILD
+		// importing retained priors; any other owner with shorter priors hits the
+		// isolation guard below.
 	}
-	// This is what keeps a reentrant subagent from taking over the parent's
-	// session: a subagent starts with priors of its own, shorter than the parent's
-	// cursor, so it lands here, gets a fresh session, and the ephemeral session it
-	// captures is deleted once its query completes (see preserveSharedSession in
-	// the completion handler). Remove this branch and a subagent resumes — then
-	// overwrites — the parent's session. The non-isolated AskClaude path reaches it
-	// the same way.
+
+	// This is what keeps a subagent from taking over the parent's session: a
+	// child dispatched while the parent's query is live (or a foreign session
+	// arriving any other way) lands here, gets a fresh (or ephemeral-imported)
+	// session, and the ephemeral session it captures is deleted once its query
+	// completes (see preserveSharedSession in the completion handler). Remove
+	// this branch and a subagent resumes — then overwrites — the parent's
+	// session. The non-isolated AskClaude path reaches it the same way.
 	//
 	// It is NOT, despite an earlier comment here, the isolated compact-summary
 	// path: runIsolatedSummary never calls syncSharedSession at all.
 	//
-	// Only reachable when needsRebuild is false — user-facing history rewrites
-	// (/compact, session_tree, /new, fork) always set needsRebuild or clear
-	// sharedSession before the next syncSharedSession call.
-	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
+	// Reachable with needsRebuild pending ONLY for the proven same owner (its
+	// legitimate pending rebuild) or an unknown-ownership caller (legacy
+	// behavior); a proven-foreign caller is isolated unconditionally above.
+	//
+	// issue #30: NOT purely length-based. Ownership is pi's session identity: a
+	// proven-foreign caller (different sessionId) is isolated however long its
+	// priors are — it must never rebuild, clear, or resume the shared session.
+	// For callers with no identity to compare (AskClaude) the old conservative
+	// length-based guard still applies (shorter priors = another owner). A
+	// proven SAME owner (same sessionId) skips the guard entirely: a tool
+	// continuation / steer on a live query that arrives with shortened priors
+	// is that owner pruning its own history and must rebuild importing retained
+	// priors.
+	// A proven-foreign caller is isolated UNCONDITIONALLY — even while a
+	// needsRebuild is pending. needsRebuild can be marked while the owner's
+	// query is still live (steer-missed, /compact, /tree, abort), and a
+	// background subagent continuation can dispatch into that window; without
+	// this gate the child would take the rebuild/clear path, delete the
+	// owner's live session file (or null the shared state), and adopt its own
+	// ownerSessionId onto shared state. A proven SAME owner skips the guard
+	// entirely so its legitimate needsRebuild rebuild still happens.
+	if (sharedSession && !sameOwner
+		&& (foreignOwner || (!sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor))) {
+		// Real child WITH priors of its own: it still gets its own isolated
+		// ephemeral session, but the priors it holds are imported into it (they
+		// are that child's authoritative conversation) instead of being dropped —
+		// the old behavior resumed nothing and served the turn with no history.
+		if (priorMessages.length > 0) {
+			const ephemeral = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, ...(modelId ? { model: modelId } : {}) });
+			convertAndImportMessages(ephemeral, priorMessages, customToolNameToSdk);
+			ephemeral.save();
+			verifyWrittenSession(ephemeral.jsonlPath, ephemeral.sessionId, ephemeral.records.length, cwd);
+			debug(`Case 1 synthetic: ephemeral isolated session ${ephemeral.sessionId.slice(0, 8)} importing ${priorMessages.length} own priors, shared session ${sharedSession.sessionId.slice(0, 8)} preserved (cursor=${sharedSession.cursor})`);
+			debug(`syncResult: path=isolated-ephemeral sessionId=${ephemeral.sessionId} priors=${priorMessages.length}`);
+			return { sessionId: ephemeral.sessionId, preserveSharedSession: true };
+		}
 		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
 		debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
 		return { sessionId: null, preserveSharedSession: true };
@@ -707,7 +920,30 @@ function syncSharedSession(
 	if (priorMessages.length === 0) {
 		debug(`Case 1: clean start, ${history.length} total messages`);
 		debug(`syncResult: path=clean-start`);
-		return { sessionId: null };
+		// Root rewind: zero retained priors start a genuinely fresh history, so the
+		// old session state (cursor, fingerprint) must not survive for the max()
+		// carryover in the completion handler — a stale max(oldCursor, newLen) is
+		// exactly the stale-cursor defect that made later short turns resume an unrelated
+		// longer CC session.
+		const clearOwnState = sameOwner
+			// The pending-rebuild term is owner-gated: a foreign caller must never
+			// clear shared state even when the owner left a needsRebuild pending (the
+			// foreign path is unreachable here — the guard above isolates it — but
+			// the gate is stated at the owner of the rule, not relied on accidentally).
+			|| (sharedSession !== null && Boolean(sharedSession.needsRebuild) && !foreignOwner);
+		if (sharedSession && clearOwnState) {
+			// Same owner (tool continuation or a pending rebuild on this conversation)
+			// arriving with an empty history: the owner root-rewound — same rebuild
+			// semantics as any other pruning. Dropping the whole state clears the
+			// stale cursor AND fingerprint; the completion handler replaces it from
+			// capturedSessionId.
+			debug(`Case 1: root rewind — clearing stale session state ${sharedSession.sessionId.slice(0, 8)} (cursor ${sharedSession.cursor}) on clean start`);
+			sharedSession = null;
+		}
+		// Otherwise (another owner — child / AskClaude shared-resume, shared state
+		// intact): preserveSharedSession so the completion handler discards the
+		// ephemeral session and keeps the shared state.
+		return { sessionId: null, preserveSharedSession: Boolean(sharedSession) && !clearOwnState ? true : undefined };
 	}
 	const previousSessionId = sharedSession?.sessionId;
 	const previousCursor = sharedSession?.cursor ?? 0;
@@ -733,7 +969,7 @@ function syncSharedSession(
 	// records, not messages: `messages` filters out the attachment records that
 	// carrying an `@file` expansion across a rebuild writes into the same file.
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
-	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
+	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd, fingerprint: fingerprintProjectedPriors(priorMessages).hash, ...(ownerSessionId !== undefined ? { ownerSessionId } : {}) };
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.records.length} records`);
 	} else if (preserveId) {
@@ -772,6 +1008,9 @@ export const __test = {
 	CC_CHILD_ENV,
 	buildMcpServers,
 	branchSummaryOutcome,
+	applyMidToolChanges,
+	fingerprintProjectedPriors,
+	reconstructCompletedSession,
 	get promptCaptures() {
 		return promptCaptures;
 	},
@@ -1446,8 +1685,11 @@ function steerBlocks(messages: Context["messages"]): ContentBlockParam[] | null 
 }
 
 /** A steer that never made it into CC's session. The cursor has already counted
- *  it, so count-based sync would skip it forever — rebuild instead, which
- *  re-imports the message from pi's context. */
+ *  it and the stored fingerprint covers content that was never delivered to CC.
+ *  Fingerprint-based sync would catch the content mismatch at the next sync,
+ *  but the explicit needsRebuild flag marks the definite case now instead of
+ *  paying the divergence until then — the rebuild re-imports the message
+ *  directly from pi's context. */
 function steerMissedSession(text: string): void {
 	if (!sharedSession) return;
 	sharedSession = { ...sharedSession, needsRebuild: true };
@@ -1467,6 +1709,82 @@ function steerMissedSession(text: string): void {
  *
  *  Both the post-tool-call drain and the FIFO ordering are CC CLI internals,
  *  not SDK contract — tests/int-tool-message.mjs is the tripwire if they move. */
+/** Query handle shape we only use through the streaming-input setter surface
+ *  (sdk.d.ts:2843 Query). Narrowly typed so tests can substitute a stub. */
+interface MidToolQueryHandle {
+	setModel(model?: string): Promise<void>;
+	applyFlagSettings(settings: { [k: string]: unknown }): Promise<void>;
+}
+
+/** Per-context last model/effort applied to the running CC query, for the
+ *  mid-tool change detection at the tool-result boundary. Implemented as a
+ *  WeakMap so QueryContext stays free of streaming-minute state it does not
+ *  otherwise need. */
+const midToolAppliedState = new WeakMap<QueryContext, { model: string; effort?: string }>();
+
+/** Apply mid-tool model/effort changes to a live CC query (small staged
+ *  subset).
+ *
+ *  Pi re-supplies model and reasoning effort on every provider callback. On a
+ *  tool continuation the CC subprocess is mid-turn, so a change goes through
+ *  the documented setModel()/applyFlagSettings() streaming-input setters
+ *  (sdk.d.ts:2887-2944 — applyFlagSettings({effortLevel}); NEVER the
+ *  deprecated setMaxThinkingTokens). When the change cannot be applied — the
+ *  query is not a live streaming-input handle, or the setter rejects — a
+ *  WARNING lands in the debug log and the turn continues; silently dropping a
+ *  model change is exactly the divergence this diagnostic exists to surface.
+ *  Returns a promise so tests can await the outcome; the production caller
+ *  fires it detached.
+ */
+async function applyMidToolChanges(
+	c: QueryContext,
+	desired: { model: string; effort?: string },
+): Promise<void> {
+	const applied = midToolAppliedState.get(c);
+	if (applied && applied.model === desired.model && applied.effort === desired.effort) return;
+	const q = c.activeQuery as MidToolQueryHandle | null;
+	if (!q || typeof q.setModel !== "function" || typeof q.applyFlagSettings !== "function") {
+		debug(`WARNING: mid-tool state change could not be applied — no live streaming-input query (model=${desired.model} effort=${desired.effort ?? "default"}); the change takes effect on the next fresh query`);
+		midToolAppliedState.set(c, { ...desired });
+		return;
+	}
+	try {
+		if (!applied || applied.model !== desired.model) {
+			await q.setModel(desired.model);
+			debug(`provider: mid-tool setModel(${desired.model}) applied to running query`);
+		}
+	} catch (error) {
+		debug(`WARNING: mid-tool setModel(${desired.model}) failed:`, error);
+	}
+	try {
+		if (desired.effort && (!applied || applied.effort !== desired.effort)) {
+			await q.applyFlagSettings({ effortLevel: desired.effort });
+			debug(`provider: mid-tool applyFlagSettings(effortLevel=${desired.effort}) applied to running query`);
+		}
+	} catch (error) {
+		debug(`WARNING: mid-tool applyFlagSettings(effortLevel=${desired.effort}) failed:`, error);
+	}
+	midToolAppliedState.set(c, { ...desired });
+}
+
+/** Mid-tool wrapper: derive the desired model/effort from pi's callback state
+ *  and apply. Called detached at the tool-result boundary — delivery of tool
+ *  results must not wait on CC's control plane. */
+function applyMidToolQueryState(
+	c: QueryContext,
+	model: Model<any>,
+	options: SimpleStreamOptions | undefined,
+): void {
+	const cliModel = claudeCodeModelId(model, longContextSettings);
+	const mapped = options?.reasoning ? model.thinkingLevelMap?.[options.reasoning] : undefined;
+	const effort = options?.reasoning
+		? mapped === undefined
+			? REASONING_TO_EFFORT[options.reasoning]
+			: VALID_EFFORTS.has(mapped as EffortLevel) ? mapped as EffortLevel : undefined
+		: undefined;
+	void applyMidToolChanges(c, { model: cliModel, effort });
+}
+
 async function deliverToolResults(
 	c: QueryContext,
 	results: McpResult[],
@@ -1535,15 +1853,23 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// prompt-capture lookup below assumes (issue #106).
 	context = toBridgeContext(context);
 
-	// One-off summarizer calls arrive HERE too, not only via isolatedStreamFn: /bug report
+	// Dedicated summary calls also arrive HERE, not only via isolatedStreamFn: /bug report
 	// (summarizeForBugReport) routes through agent.streamFunction -> streamSimple, with no
-	// takeover hook. pi marks every one-off summarizer with cacheRetention:"none" in
-	// completeSummarization, so route on the marker: their prompt is never recorded by the
-	// capture boundaries and resolveOrDerive would throw. Hand them to the isolated path
+	// takeover hook. Route on the positive purpose discriminator (pi 0.87.1 summary shapes,
+	// version-pinned above) — NOT on the cacheRetention flag, which is a cache preference
+	// (pi-ai types.d.ts:132-136) that ordinary no-cache inference also carries; a flag-only
+	// route here destroyed history/tools for those calls. Their prompt is never recorded by
+	// the capture boundaries and resolveOrDerive would throw. They go to the isolated path
 	// (separate persistSession:false CC process, no session sync needed).
-	if (options?.cacheRetention === "none") {
-		debug(`provider: one-off summarizer call (cacheRetention none) routed to isolated summary, msgs=${context.messages.length}`);
+	if (isDedicatedSummaryCall(context)) {
+		debug(`provider: dedicated summary call routed to isolated summary, msgs=${context.messages.length}, cacheRetention=${options?.cacheRetention ?? ""}`);
 		return isolatedStreamFn(model, context, options);
+	}
+	if (options?.cacheRetention === "none") {
+		// Ordinary no-cache inference (first turn, multi-turn, tool-result continuation):
+		// keep the normal path with full history and tools. Logged so unrecognized future
+		// shapes are visible instead of silently reclassified either way.
+		debug(`provider: cacheRetention none without a known summary shape — ordinary path, msgs=${context.messages.length}`);
 	}
 
 	const stream = createAssistantMessageEventStream();
@@ -1567,6 +1893,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	if (resultCtx) {
 		claimCurrentPiStream(stream, "tool-result", resultCtx);
 		resultCtx.resetTurnState(model);
+		// Mid-tool state changes (small staged subset): pi re-derives model
+		// and effort at this turn boundary (PI/dist/core/agent-session.js:379-413
+		// supplies refreshed state each turn); the running CC query used to never
+		// hear about them. Apply through the documented streaming-input setters;
+		// when the query cannot take them, say so truthfully instead of silently
+		// dropping the change. NOT applied here: tools/prompt/history rebase
+		// (full boundary rebase remains out of scope) and setMcpServers.
+		applyMidToolQueryState(resultCtx, model, options);
 		// User messages (steer/followUp) pi injected into context during the
 		// active query: a steer sent while a tool was executing, drained by pi at
 		// the turn boundary and appended alongside the tool result.
@@ -1579,7 +1913,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// delivering its own results would drag it to that subagent's message count
 		// — observed pulling a parent from 5 back to 3, which cost the parent's next
 		// turn a full rebuild and a flushed prompt cache.
-		if (sharedSession && resultCtx === ctx()) sharedSession.cursor = context.messages.length;
+		if (sharedSession && resultCtx === ctx()) {
+			// Cursor writes ride a fingerprint refresh — the stored fingerprint is
+			// always the digest of the history prefix the cursor points at, so the
+			// next sync compares content, not just counts.
+			sharedSession.cursor = context.messages.length;
+			sharedSession.fingerprint = fingerprintProjectedPriors(nonSystemMessages(context.messages)).hash;
+		}
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
 		return stream;
 	}
@@ -1590,7 +1930,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const lastMsg = context.messages[context.messages.length - 1];
 	if (lastMsg?.role === "toolResult") {
 		debug(`provider: orphaned tool result after abort, emitting end_turn`);
-		if (sharedSession && activeQueryContexts.size === 0) sharedSession.cursor = context.messages.length;
+		if (sharedSession && activeQueryContexts.size === 0) {
+			sharedSession.cursor = context.messages.length;
+			sharedSession.fingerprint = fingerprintProjectedPriors(nonSystemMessages(context.messages)).hash;
+		}
 		// No query owns this result, so there is no context to reset: resetTurnState
 		// on the top-level ctx() would replace a live parent's turnOutput mid-stream,
 		// stranding the blocks it had already emitted. A throwaway context just
@@ -1647,7 +1990,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel);
+	// Ownership: pi's session id rides on every stream call (StreamOptions
+	// .sessionId — pi builds its Agent with sessionId from the session manager
+	// and the agent loop forwards it). This — NOT "a query is active somewhere"
+	// — is the same-owner signal: a subagent child dispatched while this query
+	// is live carries a DIFFERENT sessionId and must be treated as a foreign
+	// owner, while this session's own mid-query calls match. activeQuery only
+	// routes per-query state (QueryContext); it cannot discriminate owner.
+	const ownerSessionId = options?.sessionId;
+	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, ownerSessionId);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1728,8 +2079,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// includeGitInstructions:false drops the gitStatus block from the preset.
 		// That block is the trailing suffix of the cached system block, and a
 		// git-state transition (new file, staging, commit) rewrites it — busting
-		// the prompt cache for the whole conversation from there on (see
-		// diag/probe-git-cache.mjs). The bridge re-invokes CC per turn, so this
+		// the prompt cache for the whole conversation from there on 		// diag/probe-git-cache.mjs). The bridge re-invokes CC per turn, so this
 		// hit on every transition. Cost here is nil: the setting also strips
 		// CC's git-workflow guidance from its Bash tool prompt, but the provider
 		// path runs CC with `tools: []`, so those definitions never ship.
@@ -1738,10 +2088,20 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			...claudeCodeSettings(providerSettings),
 			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
 			includeGitInstructions: false,
+			// Pi executes tools — the provider child runs with tools: [] — so hooks
+			// configured in the same settings.json files that legitimately supply
+			// env/apiKeyHelper must not fire commands inside the CC child. Managed
+			// (policy) hooks stay enabled (sdk.d.ts:4133-4151); this is not a
+			// complete sandbox. AskClaude keeps native tools and does not set this.
+			disableAllHooks: true,
 		},
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend ? systemPromptAppend : undefined,
+			// SDK records the first prompt when snapshot is omitted/true and ignores
+			// later append changes until compaction/new session — stale for a bridge
+			// that re-invokes CC per turn. Render fresh instead.
+			snapshot: false,
 		},
 		extraArgs,
 		...(effort ? { effort } : {}),
@@ -1760,6 +2120,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
 	const sdkQuery = query({ prompt: promptStream.stream, options: queryOptions });
+	// Seed the mid-tool change detector: the query was started WITH this/effort, so
+	// the first tool-continuation comparison starts from reality, not omission.
+	midToolAppliedState.set(queryCtx, { model: cliModel, effort });
 	queryCtx.activeQuery = sdkQuery;
 	activeQueryContexts.add(queryCtx);
 
@@ -1813,8 +2176,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
 			} else if (sessionId) {
 				const cursor = Math.max(context.messages.length, queryCtx.latestCursor, sharedSession?.cursor ?? 0);
-				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-				sharedSession = { sessionId, cursor, cwd };
+				debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}${sharedSession?.needsRebuild ? ", preserving pending needsRebuild" : ""}`);
+				sharedSession = reconstructCompletedSession(
+					sharedSession,
+					sessionId,
+					cursor,
+					cwd,
+					nonSystemMessages(context.messages),
+					options?.sessionId,
+				);
 			}
 
 			if (!isReentrant && queryCtx.activeQuery === sdkQuery) {
@@ -1906,7 +2276,16 @@ async function promptAndWait(
 			// Any missed messages from other providers were already handled by the provider's Case 4
 			resumeSessionId = sharedSession.sessionId;
 		} else {
-			// No provider session yet — create one from pi's context
+			// No provider session yet — create one from pi's context.
+			// ownerSessionId: omitted, deliberately. AskClaude from a pi tool
+			// execution is by construction a DIFFERENT owner from the provider's
+			// conversation (it spawns its own CC process reading the shared context,
+			// and its result is not replayed into the shared history), so no session
+			// identity is claimed: the shortened-priors isolation guard stays armed
+			// (unknown owner = conservative length-based guard) and any state this
+			// sync creates carries no ownerSessionId, so the provider's next call
+			// never treats it as its own without a fingerprint match. When there is
+			// no shared session at all, the guard cannot matter (sync sees none).
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
 			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel);
 			resumeSessionId = sync.sessionId;
@@ -2119,9 +2498,35 @@ export default function (pi: ExtensionAPI) {
 	// Code's preset carries its own tool and permission guidance that the bridge
 	// still depends on, so both flags are forwarded as an append.
 	//
-	// The options (custom/append/contextFiles/skills) are pi config, stable across a
-	// turn; only the auto-generated tool list in the rendered prompt varies. Stash them
-	// at before_agent_start so the agent_start recording below can reuse them.
+	// The options (custom/append/contextFiles/skills/guidelines/sections) are pi config,
+	// stable across a turn; only the auto-generated tool list in the rendered prompt
+	// varies. Stash them at before_agent_start so the agent_start recording below can
+	// reuse them.
+	// pi-owned tools are excluded from snippet/guideline restore: their text describes
+	// pi's builtin/SDK tooling, which the Claude Code child does not run. Extension
+	// tools are what the append projection restores.
+	// Computed lazily: getAllTools needs a live session, first reached at the first
+	// before_agent_start — and if it is unavailable there, nothing is filtered rather
+	// than losing the record (the restores are additive text and still pass the
+	// extraction guard).
+	let piOwnedToolNames: Set<string> | undefined;
+	const extensionOnly = <V>(map: Record<string, V> | undefined): Record<string, V> | undefined => {
+		if (!map) return undefined;
+		if (!piOwnedToolNames) {
+			piOwnedToolNames = new Set();
+			try {
+				for (const tool of pi.getAllTools()) {
+					if (tool.sourceInfo?.source === "builtin" || tool.sourceInfo?.source === "sdk") {
+						piOwnedToolNames.add(tool.name);
+					}
+				}
+			} catch (error) {
+				debug(`prompt-capture: getAllTools unavailable, not filtering tool snippets/guidelines: ${error}`);
+			}
+		}
+		const result = Object.fromEntries(Object.entries(map).filter(([name]) => !piOwnedToolNames!.has(name)));
+		return Object.keys(result).length > 0 ? result : undefined;
+	};
 	type RecordOptions = Parameters<typeof recordSystemPrompt>[2];
 	let lastSystemPromptOptions: RecordOptions | undefined;
 	function recordSystemPrompt(source: string, systemPrompt: string | undefined, options: {
@@ -2130,6 +2535,11 @@ export default function (pi: ExtensionAPI) {
 		contextFiles?: { path: string; content: string }[];
 		skills?: Parameters<typeof promptCaptures.record>[1]["skills"];
 		selectedTools?: string[];
+		promptGuidelines?: string[];
+		toolSnippets?: Record<string, string>;
+		toolGuidelines?: Record<string, string[]>;
+		sections?: Record<string, string>;
+		forceSystemPrompt?: string;
 	} | undefined) {
 		if (!systemPrompt) return;
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
@@ -2138,6 +2548,11 @@ export default function (pi: ExtensionAPI) {
 			append: options?.appendSystemPrompt,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
+			promptGuidelines: options?.promptGuidelines,
+			toolSnippets: extensionOnly(options?.toolSnippets),
+			toolGuidelines: extensionOnly(options?.toolGuidelines),
+			sections: options?.sections,
+			forced: options?.forceSystemPrompt ? "forceSystemPrompt" : undefined,
 		}, source);
 	}
 	pi.on("before_agent_start", (event) => {
@@ -2182,9 +2597,9 @@ export default function (pi: ExtensionAPI) {
 	// that completed summary. Returning undefined lets another handler's result
 	// stand when it produced one; when no handler provides a result, native
 	// compaction runs
-	// through the agent stream fn and is safe on a bridge model: pi marks its
-	// summarizer calls cacheRetention:"none" and the provider routes those to the
-	// isolated CC summary path (streamClaudeAgentSdk below), the same fence /bug
+	// through the agent stream fn and is safe on a bridge model: pi's native compaction
+	// summary prompt matches the dedicated-summary discriminator and the provider routes
+	// it to the isolated CC summary path (streamClaudeAgentSdk below), the same fence /bug
 	// summarization already goes through.
 	//
 	// The takeover did carry one real fix worth keeping: pi's native

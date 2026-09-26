@@ -27,7 +27,8 @@
   ],
   "scripts": {
     "test:unit": "node --import tsx --import ./tests/lib/setup.mjs --test tests/unit-*.mjs",
-    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
+    "test:unit:wired": "node --experimental-test-module-mocks --import tsx --import ./tests/lib/setup.mjs --test tests/mock-provider-wiring.mjs",
+    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && npm run test:unit:wired && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
     "test:usage": "tests/usage-test.sh",
     "typecheck": "tsc --noEmit"
   },

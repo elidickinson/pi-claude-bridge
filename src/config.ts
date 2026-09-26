@@ -88,5 +88,6 @@ export function loadConfig(cwd: string): Config {
 		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
 		askClaude: { ...global.askClaude, ...project.askClaude },
 		provider: { ...global.provider, ...project.provider },
-	};
+		};
 }
+
