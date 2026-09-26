@@ -58,7 +58,18 @@ describe("syncSharedSession", () => {
 				{ role: "user", content: "Next", timestamp: Date.now() },
 			], cwd);
 
-			assert.equal(result.sessionId, sessionId, "2 priors at cursor 2 must resume, not rebuild");
+			// Fingerprint-based sync: a legacy state carries no digest, so the first
+			// same-count sync REBUILD once (in place — same id, correct history) to
+			// establish it; the next identical-content sync resumes via the match.
+			assert.equal(result.sessionId, sessionId, "2 priors at cursor 2 must end back on the same session id");
+			assert.ok(__test.getSharedSession()?.fingerprint, "the sync stores a priors fingerprint for the next comparison");
+			const result2 = __test.syncSharedSession([
+				{ role: "user", content: "Hi", timestamp: Date.now() },
+				{ role: "assistant", content: [{ type: "text", text: "Hello." }], timestamp: Date.now() },
+				{ role: "system", content: "", toolsAdded: [{ name: "grep", description: "", parameters: {} }], timestamp: Date.now() },
+				{ role: "user", content: "Next", timestamp: Date.now() },
+			], cwd);
+			assert.equal(result2.sessionId, sessionId, "identical content at the same count resumes via fingerprint match");
 			assert.equal(__test.getSharedSession()?.cursor, 2, "cursor counts non-system messages only");
 			const session = openSession({ sessionId, projectPath: cwd });
 			assert.deepEqual(

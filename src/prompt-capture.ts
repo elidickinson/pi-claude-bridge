@@ -10,6 +10,22 @@ export type PromptCaptureInput = {
 	append?: string;
 	contextFiles: { path: string; content: string }[];
 	skills: Skill[];
+	/** Extension-contributed guideline bullets (pi's `promptGuidelines`), previously
+	 *  discarded by the append projection. */
+	promptGuidelines?: string[];
+	/** Extension-registered tools' prompt snippets and guidelines, keyed by tool name.
+	 *  Pi builtin/SDK tools are filtered out at record time: their snippets/guidelines
+	 *  describe pi's own tooling, which Claude Code does not run. */
+	toolSnippets?: Record<string, string>;
+	toolGuidelines?: Record<string, string[]>;
+	/** Custom XML sections contributed via before_agent_start (pi's
+	 *  `systemPromptOptions.sections`), raw content; the projection re-tags each like
+	 *  pi's buildSystemPromptSections does. */
+	sections?: Record<string, string>;
+	/** Set when pi's structured prompt was wholesale-replaced (pi's `forceSystemPrompt`:
+	 *  a before_agent_start handler returned a full replacement). Append mode cannot
+	 *  forward it; the projection must fail naming this instead of silently dropping it. */
+	forced?: string;
 };
 
 type InheritedPrompt = {
@@ -84,6 +100,13 @@ export class PromptCaptures {
 
 		capture.custom = input.custom;
 		capture.append = input.append;
+		capture.promptGuidelines = input.promptGuidelines ? [...input.promptGuidelines] : undefined;
+		capture.toolSnippets = input.toolSnippets ? { ...input.toolSnippets } : undefined;
+		capture.toolGuidelines = input.toolGuidelines
+			? Object.fromEntries(Object.entries(input.toolGuidelines).map(([name, rules]) => [name, [...rules]]))
+			: undefined;
+		capture.sections = input.sections ? { ...input.sections } : undefined;
+		capture.forced = input.forced ?? undefined;
 		capture.contextFiles = input.contextFiles.map((file) => ({ ...file }));
 		capture.skills = [...input.skills];
 		capture.source = source;
@@ -307,6 +330,14 @@ function projectCapture(
 ): string | undefined {
 	if (visiting.has(capture)) throw new Error("Cyclic prompt inheritance");
 	visiting.add(capture);
+	if (capture.forced) {
+		throw new Error([
+			`prompt-capture: append mode cannot send this turn's system prompt: it was wholesale-replaced by pi's \`${capture.forced}\` policy`,
+			`  (an extension's before_agent_start handler returned a full replacement; its own prose cannot sit under Claude Code's preset,`,
+			"  and silently downgrading to just the portable parts would drop the turn's instructions).",
+			`  Remove the forcing extension. Last record source: ${capture.source ?? "unknown"}.`,
+		].join("\n"));
+	}
 	try {
 		const inheritedSkillPaths = new Set(
 			capture.inherited.flatMap((edge) => collectPromptSkills(edge.parent).map((skill) => skill.filePath)),
@@ -326,8 +357,28 @@ function projectCapture(
 		if (context) parts.push({ label: "the project context block", text: context });
 		const skills = renderSkillsBlock(ownSkills, options.skillReadTool);
 		if (skills) parts.push({ label: "the skills block", text: skills });
+		// Restored structured-extension pieces: pi folds an extension tool's
+		// promptSnippet/promptGuidelines into its tools/rules sections and re-renders
+		// extension sections as <name>-tagged blocks; the projection previously dropped
+		// all three, so extension tool guidance never reached Claude Code.
+		const guidelines = new Set<string>();
+		for (const rules of [capture.promptGuidelines ?? [], ...Object.values(capture.toolGuidelines ?? {})]) {
+			for (const rule of rules) {
+				const trimmed = rule.trim();
+				if (trimmed) guidelines.add(trimmed);
+			}
+		}
+		if (guidelines.size > 0) parts.push({ label: "the extension guidelines", text: [...guidelines].map((rule) => `- ${rule}`).join("\n") });
+		const snippets = Object.entries(capture.toolSnippets ?? {});
+		if (snippets.length > 0) {
+			parts.push({ label: "the custom tool snippets", text: snippets.map(([name, snippet]) => `- ${name}: ${snippet}`).join("\n") });
+		}
 		if (custom) parts.push({ label: "the custom prompt", text: custom });
 		if (capture.append) parts.push({ label: "the appended instructions", text: capture.append });
+		// Custom sections render last, matching pi's buildSystemPromptSections ordering.
+		for (const [name, content] of Object.entries(capture.sections ?? {})) {
+			if (content) parts.push({ label: `the ${name} system-prompt section`, text: `<${name}>\n${content}\n</${name}>` });
+		}
 		assertSendablePrompt(parts, capture);
 		return parts.length > 0 ? parts.map((part) => part.text).join("\n\n") : undefined;
 	} finally {

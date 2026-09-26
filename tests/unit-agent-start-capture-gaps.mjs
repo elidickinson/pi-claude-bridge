@@ -35,6 +35,12 @@ function activateWithMockPi(activateFn) {
 		on: (event, handler) => handlers.set(event, handler),
 		registerProvider: () => {},
 		registerTool: () => {},
+		// pi's getAllTools() is how the bridge tells pi-owned tools (builtin/sdk) from
+		// extension-registered tools when restoring snippets/guidelines into projection.
+		getAllTools: () => [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "recall", sourceInfo: { source: "/ext/example-recall/recall.ts" } },
+		],
 	});
 	return handlers;
 }
@@ -110,19 +116,25 @@ describe("agent_start capture — documented gaps", () => {
 		);
 	});
 
-	it("does capture a handler-returned wholesale replacement: it resolves via the agent_start key", () => {
+	it("fails clearly when a wholesale replacement is recorded: append mode names the forced policy", () => {
 		const handlers = activateWithMockPi();
-		handlers.get("before_agent_start")({ systemPrompt: "pi rendered prompt", systemPromptOptions: {} });
 		// A before_agent_start handler that RETURNS a system prompt forces it as the request
-		// head, and pi renders ctx.getSystemPrompt() as exactly that forced text
-		// (buildSystemPromptState returns forceSystemPrompt verbatim).
+		// head (pi sets systemPromptOptions.forceSystemPrompt). The bridge sees the same
+		// options object at its before_agent_start record and again at agent_start.
+		const forcedOptions = { forceSystemPrompt: "forced replacement prompt owning the request head" };
+		handlers.get("before_agent_start")({ systemPrompt: "pi rendered prompt", systemPromptOptions: forcedOptions });
 		handlers.get("agent_start")({}, { getSystemPrompt: () => "forced replacement prompt owning the request head" });
 
 		const capture = __test.promptCaptures.resolve("forced replacement prompt owning the request head");
 		assert.ok(capture, "the forced text becomes a capture key at agent_start");
-		// Caveat pinned by design: only the portable parts are projected for Claude Code;
-		// the forced text's own novel prose is not forwarded (forwarding pi-harness-shaped
-		// prose would trip the server's third-party gate).
+		// Decided behavior: append mode cannot forward a wholesale replacement that
+		// owns the request head, and must fail naming the policy rather than silently
+		// projecting only the portable parts.
+		assert.throws(
+			() => projectPromptCapture(capture, { skillReadTool: "none" }),
+			/forceSystemPrompt/,
+			"forced replacement must fail naming the policy, not silently project the portable parts",
+		);
 	});
 
 	it("does not rescue a prompt composed outside the before_agent_start pipeline (#102 shape)", () => {
@@ -154,5 +166,60 @@ describe("agent_start capture — documented gaps", () => {
 			/no capture/,
 			"post-turn_start rewrites are seen by no recording boundary",
 		);
+	});
+
+	it("restores extension guidelines, tool snippets and custom sections into the append projection", () => {
+		// Concrete casualty: a recall-style extension tool registers promptSnippet and
+		// promptGuidelines; pi folds them into the rendered rules/tools sections, which the
+		// append projection previously discarded wholesale.
+		const handlers = activateWithMockPi();
+		const key = "pi rendered prompt with extension tools";
+		handlers.get("before_agent_start")({
+			systemPrompt: key,
+			systemPromptOptions: {
+				promptGuidelines: [" Use recall — literal text/regex search of the session history ", "", "Use recall — literal text/regex search of the session history"],
+				toolSnippets: {
+					read: "pi's own builtin read snippet that must NOT reappear",
+					recall: "Literal text/regex search across session history",
+				},
+				toolGuidelines: { recall: [" Prefer recall over re-reading files ", " ", "Use recall — literal text/regex search of the session history"] },
+				sections: { recall_tips: "Compaction summaries are searchable too." },
+			},
+		});
+		handlers.get("agent_start")({}, { getSystemPrompt: () => key });
+
+		const capture = __test.promptCaptures.resolve(key);
+		assert.ok(capture, "the prompt is a capture key");
+		const projected = projectPromptCapture(capture, { skillReadTool: "none" });
+		assert.ok(projected, "guidelines alone are enough to project");
+		assert.match(projected, /Use recall/, "session-level extension guidelines are restored");
+		assert.match(projected, /- recall: Literal text\/regex search/, "extension tool snippets are restored");
+		assert.match(projected, /Prefer recall over re-reading files/, "extension tool guidelines are restored");
+		assert.match(projected, /<recall_tips>[\s\S]*Compaction summaries/, "custom sections render tagged like pi's buildSystemPromptSections");
+		assert.doesNotMatch(projected, /builtin read snippet/, "pi builtin tool snippets stay out of the projection");
+		assert.equal(projected, [
+			"- Use recall — literal text/regex search of the session history\n- Prefer recall over re-reading files",
+			"- recall: Literal text/regex search across session history",
+			"<recall_tips>\nCompaction summaries are searchable too.\n</recall_tips>",
+		].join("\n\n"), "projection preserves exact bytes, first-seen guideline order, trimming and deduplication");
+	});
+
+	it("appends a restored guidelines/sections block after the captured portable parts", () => {
+		const handlers = activateWithMockPi();
+		const key = "pi rendered prompt with guidelines and append text";
+		handlers.get("before_agent_start")({
+			systemPrompt: key,
+			systemPromptOptions: {
+				appendSystemPrompt: "The appended instructions first.",
+				sections: { tips: "Tips after the append." },
+			},
+		});
+		handlers.get("agent_start")({}, { getSystemPrompt: () => key });
+		const capture = __test.promptCaptures.resolve(key);
+		const projected = projectPromptCapture(capture, { skillReadTool: "none" });
+		const appendOffset = projected.indexOf("The appended instructions first.");
+		const sectionsOffset = projected.indexOf("Tips after the append.");
+		assert.ok(appendOffset > -1 && sectionsOffset > -1, "both parts present");
+		assert.ok(sectionsOffset > appendOffset, "restored sections come after the captured append");
 	});
 });

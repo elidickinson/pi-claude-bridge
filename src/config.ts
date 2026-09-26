@@ -35,6 +35,9 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Default false: strip ANTHROPIC_BASE_URL/API_KEY/AUTH_TOKEN from the child
+		// env (see buildChildEnv). true restores full ambient pass-through.
+		inheritAnthropicEnv?: boolean;
 	};
 }
 
@@ -89,4 +92,12 @@ export function loadConfig(cwd: string): Config {
 		askClaude: { ...global.askClaude, ...project.askClaude },
 		provider: { ...global.provider, ...project.provider },
 	};
+}
+
+/** Resolve provider.inheritAnthropicEnv. Anything but true|false (and undefined)
+ *  fails loudly naming the key, per the strict config style. */
+export function resolveInheritAnthropicEnv(value: boolean | undefined): boolean {
+	if (value === undefined) return false;
+	if (value === true || value === false) return value;
+	throw new Error(`claude-bridge: provider.inheritAnthropicEnv must be true or false (got ${JSON.stringify(value)})`);
 }
