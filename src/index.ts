@@ -310,7 +310,7 @@ function convertAndImportMessages(
 	// importMessages reads. Attachments are links in CC's uuid chain, so they have
 	// to be written in order with the messages, not appended afterwards.
 	const placed = carried?.length
-		? placeCarriedAttachments(carried, repaired as unknown as { role: string; content: unknown }[])
+		? placeCarriedAttachments(carried, repaired as unknown as { role: string; content: unknown }[], sanitizedIds)
 		: undefined;
 	if (placed?.skipped.length) {
 		debug(`convertAndImportMessages: dropped ${placed.skipped.length} carried attachment(s): ${placed.skipped.join("; ")}`);
