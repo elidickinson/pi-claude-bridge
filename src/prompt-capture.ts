@@ -165,6 +165,17 @@ export class PromptCaptures {
 		// it belongs below this block.
 		const embedded = this.findInheritedPrompts(systemPrompt, systemPrompt);
 		if (embedded.length === 0) {
+			// pi-subagents (nicobailon/pi-subagents) tags every child prompt with this marker
+			// (src/runs/shared/child-launch.js). For `systemPromptMode: replace` it becomes the
+			// entire raw system-prompt override — Pi's harness is never in the picture, so this
+			// process's captures were never going to match or embed it. It is not an unaccounted
+			// Pi prompt; it is a complete prompt from a source that was never going to record
+			// here, so there is nothing to project into it — send it through untouched. A prompt
+			// merely *lacking* Pi's preamble is not enough on its own: an extension that strips
+			// the preamble while mangling the rest must still hit the throw below.
+			if (ACTIVE_AGENT_TAG.test(systemPrompt)) {
+				return { assembledPrompt: systemPrompt, custom: systemPrompt, contextFiles: [], skills: [], inherited: [] };
+			}
 			const matches = this.closestKnown(systemPrompt);
 			this.onDiagnose({ systemPrompt, matches });
 			throw new Error(
@@ -249,6 +260,13 @@ export class PromptCaptures {
  *  forwarding it makes Claude Code's subscription path read the request as a
  *  third-party app. */
 export const PI_PREAMBLE = "You are an expert coding assistant operating inside pi";
+
+/** How pi-subagents (nicobailon/pi-subagents, src/runs/shared/child-launch.js) tags every
+ *  child prompt, `<active_agent name="..."/>` followed by a blank line. For
+ *  `systemPromptMode: replace` this becomes the entire raw system-prompt override, with
+ *  none of Pi's own harness in it — a reliable sign the prompt was never going to be one
+ *  of ours to capture. */
+const ACTIVE_AGENT_TAG = /^<active_agent name="[^"]*"\/>\n/;
 
 /** Both doc paths from pi's documentation-routing line. Anthropic's subscription gate
  *  rejects a system prompt carrying both, while either alone passes (issues #883, #88). */
