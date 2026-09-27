@@ -2,7 +2,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { collectPromptSkills, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { collectPromptSkills, projectPromptCapture, PromptCaptures, PI_PREAMBLE } from "../src/prompt-capture.js";
 
 const PI_HARNESS = "You are an expert coding assistant operating inside pi. Pi documentation: pi packages (docs/packages.md).";
 const PARENT_KEY = `${PI_HARNESS}\n\n<project_context>raw parent context</project_context>\nCurrent working directory: /parent`;
@@ -112,6 +112,31 @@ describe("PromptCaptures", () => {
 		);
 		// No prompt at all is not a loss — there is nothing to forward.
 		assert.equal(captures.resolveOrDerive(undefined), undefined);
+	});
+
+	it("still throws for an unaccounted prompt that carries Pi's own harness", () => {
+		const captures = new PromptCaptures();
+		captures.record(PARENT_KEY, capture({ contextFiles: [{ path: "/AGENTS.md", content: "parent rules" }] }));
+
+		// Merely lacking Pi's preamble isn't the signal the fix below relies on — a
+		// mangled-but-still-Pi-derived prompt (the real instruction-loss case) must still throw.
+		assert.throws(
+			() => captures.resolveOrDerive(`${PI_PREAMBLE} but a completely different rendering than anything recorded`),
+			/no capture for this .* system prompt/,
+		);
+	});
+
+	it("forwards a pi-subagents `systemPromptMode: replace` prompt as-is, instead of throwing", () => {
+		const captures = new PromptCaptures();
+		captures.record(PARENT_KEY, capture({ contextFiles: [{ path: "/AGENTS.md", content: "parent rules" }] }));
+
+		// pi-subagents (child-launch.js) tags every child prompt this way; for `replace`
+		// mode this literal string becomes the entire system-prompt override, with none of
+		// Pi's own harness in it — built entirely from the agent's own frontmatter/body.
+		const standalone = '<active_agent name="lane-reviewer"/>\n\nYou are `lane-reviewer`: a disciplined review subagent.\n\n<sub_agent_context>reviewer rules</sub_agent_context>';
+		const derived = captures.resolveOrDerive(standalone);
+		assert.equal(projectPromptCapture(derived, { skillReadTool: "mcp" }), standalone);
+		assert.equal(captures.resolve(standalone), undefined, "a derived standalone capture is not retained");
 	});
 
 	it("reports the closest known capture when a prompt matches nothing", () => {
