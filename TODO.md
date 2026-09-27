@@ -27,17 +27,13 @@ that does not exist yet, or on someone else's repo.
    (`src/index.ts:1056`) turns a 1.1% invisible loss into a number, which is the
    prerequisite for ever explaining it.
 
-3. **Delete `reasoningText`** (`src/index.ts:825`): `reasoning=` appears in 0 of
-   14,994 `usage:` lines, so the SDK never supplies the field. Right now it reads
-   as a working diagnostic. Delete it or record why it stays.
-
-4. **Fail an int run that logs `BUG:` or an unexpected `WARNING:`.** Those lines
+3. **Fail an int run that logs `BUG:` or an unexpected `WARNING:`.** Those lines
    mean a real defect and the int suite can emit them while passing — the
    stuck-handler bug shipped exactly that way. `diag/audit-warnings.mjs` already
    parses them; the gap is that no test consults it. Needs an explicit allowlist
    for the tests that induce one on purpose.
 
-5. **Stop the benchmark harness manufacturing the phantom-tool-call condition.**
+4. **Stop the benchmark harness manufacturing the phantom-tool-call condition.**
    Replay calls the conversion without a populated `customToolNameToSdk` map, so
    pi's `bash` is rebuilt as Claude Code's builtin `Bash` — the prompt condition
    behind the deadlock fixed in 122914dd. A benchmark run can therefore reproduce
@@ -45,7 +41,7 @@ that does not exist yet, or on someone else's repo.
    recorded tool list through to `convertPiMessages`. Production is unaffected
    (verified over 86,652 real pi messages).
 
-6. **Mirror `eli/lifecycle-coverage-gaps.md` into a tracked file** — the
+5. **Mirror `eli/lifecycle-coverage-gaps.md` into a tracked file** — the
    QueryContext lifecycle × sync-path coverage map is in a gitignored directory, so
    nobody else gets it. Belongs in `docs/` or as a section of `diag/AUDIT.md`. (The
    provenance rule is already in `AGENTS.md`.)

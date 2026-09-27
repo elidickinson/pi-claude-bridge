@@ -251,6 +251,35 @@ test("includePartialMessages yields the stream_event shapes processStreamEvent d
 	}
 });
 
+test("message_delta usage carries thinking tokens nested under output_tokens_details", { timeout: 120_000 }, async () => {
+	// The bridge maps this onto pi's `usage.reasoning`. The nesting is the whole
+	// contract: updateUsage previously read a flat `usage.thinking_tokens` plus a
+	// `usage.reasoning_tokens` that exists in no SDK version, so it silently reported
+	// nothing on every thinking turn. If CC ever flattens or renames the field, this
+	// fails here instead of going quiet again.
+	const deltaUsages = [];
+	for await (const message of query({
+		prompt: "Think briefly about what 17 * 23 is, then state just the number.",
+		options: providerOptions({ includePartialMessages: true, effort: "medium", maxTurns: 1, persistSession: false }),
+	})) {
+		if (message.type === "stream_event" && message.event?.type === "message_delta" && message.event.usage) {
+			deltaUsages.push(message.event.usage);
+		}
+	}
+
+	assert.ok(deltaUsages.length > 0, "no message_delta carried usage");
+	const withThinking = deltaUsages.filter((u) => typeof u.output_tokens_details?.thinking_tokens === "number");
+	assert.ok(withThinking.length > 0,
+		`no message_delta reported output_tokens_details.thinking_tokens — got ${JSON.stringify(deltaUsages)}`);
+	for (const usage of withThinking) {
+		assert.ok(usage.output_tokens_details.thinking_tokens > 0, "a thinking turn must report a positive count");
+		assert.ok(usage.output_tokens_details.thinking_tokens <= usage.output_tokens,
+			`thinking_tokens must stay a subset of output_tokens: ${JSON.stringify(usage)}`);
+		assert.equal(usage.thinking_tokens, undefined, "a flat thinking_tokens would mean the shape changed");
+		assert.equal(usage.reasoning_tokens, undefined, "reasoning_tokens has never existed; a value means the shape changed");
+	}
+});
+
 test("a streamed prompt keeps the query open past result until the input generator ends", { timeout: 120_000 }, async () => {
 	// Passing an AsyncIterable makes isSingleUserTurn false, so the SDK no longer
 	// closes the CLI's stdin on the first result. That parked generator is what

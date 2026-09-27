@@ -6,3 +6,5 @@ eli/.DS_Store
 eli/
 capture-out.jsonl
 prompt-too-long-fable.jsonl
+# Local Pi runtime state
+.atl/
