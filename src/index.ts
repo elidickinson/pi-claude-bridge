@@ -1255,7 +1255,6 @@ function processStreamEvent(
 				debug(`processStreamEvent: skipping tool_use for unserved tool ${event.content_block.name} [${event.content_block.id}] — CC rejects it and retries`);
 				return;
 			}
-			c.turnSawToolCall = true;
 			c.turnToolCallIds.push(event.content_block.id);
 			c.turnBlocks.push({
 				type: "toolCall", id: event.content_block.id,
@@ -1318,7 +1317,10 @@ function processStreamEvent(
 		return;
 	}
 
-	if (event?.type === "message_stop") c.turnStreamOpen = false;
+	if (event?.type === "message_stop") {
+		dropUnfinishedStreamBlocks(c, `message_stop for ${c.turnStreamMessageId}`);
+		c.turnStreamOpen = false;
+	}
 
 	if (event?.type === "message_stop" && c.turnSawToolCall) {
 		// Tool call complete — end this pi stream. The SDK will still yield an
@@ -1342,10 +1344,39 @@ function processStreamEvent(
 	}
 }
 
-/** Remove the blocks a stream Claude Code abandoned mid-message. They never got a
- *  message_stop, so a thinking block has no signature and a tool call is one CC will
- *  never dispatch; left in, pi would run the tool and the turn would wait on a
- *  handler that never comes, or the next request would replay a broken block.
+/** Remove the blocks of the message that just stopped which never got their own
+ *  content_block_stop, because the stream was cut inside them. A tool call left
+ *  that way carries whatever JSON survived the cut — `{}` when no delta landed at
+ *  all — under an id Claude Code drops from its own conversation before resuming
+ *  the turn, so it will never dispatch that id and nothing could answer a result
+ *  keyed to it; pi would reject the call, and its result would sit unmatched while
+ *  the resumed call waited in a handler. A thinking block left that way has no
+ *  signature.
+ *
+ *  Per block rather than per message: Claude Code keeps the blocks that did
+ *  complete, tool calls included, and one it dispatched while pi was never told is
+ *  the same deadlock the other way round. Nothing here ends the pi turn — with no
+ *  finished tool call left the resume is more of this same turn, and a turn ended
+ *  here would leave the real call with no stream to arrive on. */
+function dropUnfinishedStreamBlocks(c: QueryContext, why: string): void {
+	const dropped: string[] = [];
+	for (let i = c.turnBlocks.length - 1; i >= c.turnStreamBlockStart; i--) {
+		// `index` is deleted at content_block_stop, so it marks a block that never closed.
+		if (c.turnBlocks[i].index === undefined) continue;
+		dropped.push(`${c.turnBlocks[i].type}${c.turnBlocks[i].id ? `[${c.turnBlocks[i].id}]` : ""}`);
+		c.turnBlocks.splice(i, 1);
+	}
+	if (!dropped.length) return;
+	debug(`dropUnfinishedStreamBlocks: ${why}; dropped ${dropped.reverse().join(",")}`);
+	c.turnToolCallIds = c.turnBlocks.filter((b: any) => b.type === "toolCall").map((b: any) => b.id);
+	c.turnSawToolCall = c.turnBlocks.some((b: any) => b.type === "toolCall");
+}
+
+/** Remove the blocks a stream Claude Code abandoned mid-message. Their own
+ *  content_block_stop never came, so a thinking block has no signature and a tool
+ *  call is one CC will never dispatch; left in, pi would run the tool and the turn
+ *  would wait on a handler that never comes, or the next request would replay a
+ *  broken block.
  *  The fallback then restarts those indices. pi's normal provider path tolerates that;
  *  pi-agent-core's experimental harness frame encoder keys blocks by contentIndex and
  *  rejects a repeated start, so it would need a change there to drive this provider. */
