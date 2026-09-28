@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown } from "../src/config.js";
+import { claudeCodeSettings, loadConfig, markStartupNoticeShown, providerSettingSourcesOption } from "../src/config.js";
 
 function withTempHome(fn) {
 	const oldHome = process.env.HOME;
@@ -27,6 +27,21 @@ describe("claudeCodeSettings", () => {
 
 	it("allows auto-memory to be enabled", () => {
 		assert.deepEqual(claudeCodeSettings({ autoMemoryEnabled: true }), { autoMemoryEnabled: true });
+	});
+});
+
+describe("providerSettingSourcesOption", () => {
+	it("leaves settingSources at the SDK default when unset", () => {
+		assert.deepEqual(providerSettingSourcesOption(), {});
+		assert.deepEqual(providerSettingSourcesOption({}), {});
+	});
+
+	it("leaves settingSources at the SDK default when loadClaudeSettings is true", () => {
+		assert.deepEqual(providerSettingSourcesOption({ loadClaudeSettings: true }), {});
+	});
+
+	it("disables every setting source when loadClaudeSettings is false", () => {
+		assert.deepEqual(providerSettingSourcesOption({ loadClaudeSettings: false }), { settingSources: [] });
 	});
 });
 
