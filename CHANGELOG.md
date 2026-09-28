@@ -3,6 +3,7 @@
 ## UNRELEASED
 
 - **Fix: apply tool changes within the current prompt** — Restart parked Claude queries when Pi adds, removes, or updates tool definitions, preserving completed tool calls and results. Loader tools such as `subagents_enable` can now expose tools for immediate use without a second user message or eager-loading flag. Restarts rebuild the session and may reduce prompt-cache reuse.
+- **Tests: isolate config fixtures inside Pi** — Ignore the inherited agent-directory override in temporary-home tests so fixture writes cannot overwrite the user's bridge settings.
 
 ## 0.9.0 — 2026-09-27
 

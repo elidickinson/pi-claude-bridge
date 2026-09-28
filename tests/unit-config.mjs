@@ -9,13 +9,19 @@ import { claudeCodeSettings, loadConfig, markStartupNoticeShown } from "../src/c
 
 function withTempHome(fn) {
 	const oldHome = process.env.HOME;
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const home = mkdtempSync(join(tmpdir(), "claude-bridge-home-"));
 	try {
 		process.env.HOME = home;
+		// Pi exports this override when launching tools. Do not let it bypass
+		// the temporary HOME and send fixture writes into the user's config.
+		delete process.env.PI_CODING_AGENT_DIR;
 		return fn(home);
 	} finally {
 		if (oldHome === undefined) delete process.env.HOME;
 		else process.env.HOME = oldHome;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
 		rmSync(home, { recursive: true, force: true });
 	}
 }
