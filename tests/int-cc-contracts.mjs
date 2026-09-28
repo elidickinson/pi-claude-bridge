@@ -594,3 +594,44 @@ test("includeGitInstructions:false strips gitStatus and keeps the preset static 
 		rmSync(repo, { recursive: true, force: true });
 	}
 });
+
+// --- Resuming a session that ends at a tool result ---
+
+test("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1 stops CC resuming an imported turn as interrupted", { timeout: 120_000 }, async () => {
+	// A rebuild after a terminating tool, or after a parked query was discarded
+	// under a compaction, imports a session ending at a tool result. CC reads that
+	// as an interrupted turn and inserts a meta "Continue from where you left off."
+	// user message ahead of the bridge's prompt. src/index.ts CC_CHILD_ENV sets the
+	// bound; pin both sides so a CC change to either is caught here.
+	const requests = [];
+	const api = await stubApi(requests);
+	const resumePrompt = "Continue from where you left off.";
+	const run = async (extraEnv) => {
+		const sessionId = randomUUID();
+		const session = createSession({ sessionId, projectPath: CWD, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
+		session.importMessages([
+			{ role: "user", content: "Compact now." },
+			{ role: "assistant", content: [{ type: "tool_use", id: "toolu_compact_1", name: "mcp__custom-tools__compact", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_compact_1", content: "Compaction scheduled." }] },
+		]);
+		session.save();
+		await collect(query({
+			prompt: "PI-RESUME-NOTE",
+			options: providerOptions({ resume: sessionId, maxTurns: 1, env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", ...extraEnv } }),
+		}));
+		const body = requests.filter((b) => JSON.stringify(b.messages).includes("PI-RESUME-NOTE")).at(-1);
+		assert.ok(body, "the resumed query never reached the stub API");
+		return body.messages.filter((m) => m.role === "user").flatMap((m) => typeof m.content === "string" ? [m.content] : m.content.filter((b) => b.type === "text").map((b) => b.text));
+	};
+
+	try {
+		const control = await run({});
+		assert.ok(control.some((text) => text.includes(resumePrompt)),
+			`CC no longer inserts its resume prompt without the bound — this guard may be obsolete: ${JSON.stringify(control)}`);
+		const bounded = await run({ CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1" });
+		assert.ok(!bounded.some((text) => text.includes(resumePrompt)),
+			`CC still inserted its resume prompt with the bound set: ${JSON.stringify(bounded)}`);
+	} finally {
+		api.close();
+	}
+});

@@ -10,10 +10,11 @@ import assert from "node:assert/strict";
 const { __test } = await import("../src/index.js");
 
 describe("Claude Code child environment", () => {
-	it("disables auto-compaction and claude.ai MCP servers", () => {
+	it("disables auto-compaction, claude.ai MCP servers and interrupted-turn resume", () => {
 		assert.deepEqual(__test.CC_CHILD_ENV, {
 			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 			DISABLE_AUTO_COMPACT: "1",
+			CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
 		});
 	});
 

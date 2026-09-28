@@ -48,9 +48,16 @@ const RECORD_STREAM_PATH = process.env.CLAUDE_BRIDGE_RECORD_STREAM;
 //   out of a pi session, which serves its own tools.
 // - DISABLE_AUTO_COMPACT=1: pi owns compaction; CC compacting its own copy would
 //   diverge from pi's history, which is the source of truth for every rebuild.
+// - CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1: a resumed session ending at a
+//   tool result reads to CC as an interrupted turn, and CC answers that by
+//   inserting a meta "Continue from where you left off." user message ahead of
+//   our prompt. A rebuild after a terminating tool or a discarded parked query
+//   ends exactly there, and pi supplies the next prompt itself, so every imported
+//   turn is stale by this bound and CC resumes none of them.
 const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
+	CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
 } as const;
 
 // Pi owns context files on the provider path, so Claude Code must not load its

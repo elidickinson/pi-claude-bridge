@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: no fake "Continue from where you left off." prompt after a rebuild that ends at a tool result** — a tool returning `terminate: true` or a parked query discarded after compaction leaves the rebuilt session ending at a tool result, which Claude Code resumes as an interrupted turn by inserting that meta user message before the real prompt. Claude Code subprocesses now get `CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1`, so no imported turn counts as interrupted. Claude Code's own "No response requested." filler between the tool result and the prompt remains. Pinned in `tests/int-cc-contracts.mjs`.
+
 ## 0.9.0 — 2026-09-27
 
 - **Bump: require pi ≥0.86.1 and drop pre-0.86 compat** — This breaks support for pi <0.86.1. Use pi-ai's transcript helpers and update dev peers to `^0.87.1` and the Agent SDK to `^0.3.280`; the API now rejects older Claude Code clients.
