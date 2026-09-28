@@ -25,6 +25,9 @@ export interface Config {
 	provider?: {
 		strictMcpConfig?: boolean;
 		autoMemoryEnabled?: boolean;
+		// Set to false to stop the provider's Claude Code subprocess from loading
+		// user/project/local settings (hooks, plugins, env, apiKeyHelper).
+		loadClaudeSettings?: boolean;
 		pathToClaudeCodeExecutable?: string;
 		// Subscription plan tier. Setting to "max" enables Opus 4.6 at 1M context
 		plan?: "pro" | "max";
@@ -50,6 +53,12 @@ export function tryParseJson(path: string): Partial<Config> {
 
 export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMemoryEnabled: boolean } {
 	return { autoMemoryEnabled: provider.autoMemoryEnabled ?? false };
+}
+
+/** Provider-path `settingSources` override. Absent keeps the SDK default (all sources);
+ *  `loadClaudeSettings: false` passes an empty list so no settings files are loaded. */
+export function providerSettingSourcesOption(provider: Config["provider"] = {}): { settingSources?: [] } {
+	return provider.loadClaudeSettings === false ? { settingSources: [] } : {};
 }
 
 export function globalConfigPath(): string {
