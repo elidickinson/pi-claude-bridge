@@ -15,7 +15,7 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
+import { claudeCodeSettings, loadConfig, markStartupNoticeShown, providerSettingSourcesOption, type Config } from "./config.js";
 import {
 	collectPromptSkills,
 	projectPromptCapture,
@@ -1918,7 +1918,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
 	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
 	// programmatically and ignore filesystem MCP entries — applied unconditionally because
-	// settingSources is left at CC's default, which loads all sources.
+	// settingSources is left at CC's default (all sources) unless loadClaudeSettings is false.
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1960,6 +1960,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		tools: [],
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
+		// Opt-out of Claude Code user/project/local settings. Pi already owns hooks and
+		// extensions, so reloading CC's hooks/plugins per turn is pure overhead for users
+		// who don't need settings-sourced env or apiKeyHelper.
+		...providerSettingSourcesOption(providerSettings),
 		// includeGitInstructions:false drops the gitStatus block from the preset.
 		// That block is the trailing suffix of the cached system block, and a
 		// git-state transition (new file, staging, commit) rewrites it — busting
