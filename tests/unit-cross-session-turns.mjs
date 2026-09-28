@@ -22,6 +22,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { getSessionPath } from "cc-session-io";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 // Before importing the module: the bridge resolves config and CC paths at import
 // time, and the fake model below exercises claudeCodeModelId's pricing lookup —
@@ -75,7 +77,7 @@ const toolCall = (id) => asst([{ type: "toolCall", id, name: "read", arguments: 
 const toolResult = (id) => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "file" }], isError: false, timestamp: clock++ });
 const say = (text) => asst([{ type: "text", text }]);
 
-const call = (sessionId, messages) => streamSimple(model, { messages, tools: [] }, { sessionId });
+const call = (sessionId, messages, tools = []) => streamSimple(model, { messages, tools }, { sessionId });
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
 beforeEach(() => {
@@ -85,7 +87,7 @@ beforeEach(() => {
 	setQuery(({ options }) => {
 		const script = scripts.shift();
 		if (!script) throw new Error("no fake script queued");
-		calls.push({ label: script.label, resume: options.resume });
+		calls.push({ label: script.label, resume: options.resume, mcpServers: options.mcpServers });
 		const gen = (async function* () {
 			for (const step of script.steps) {
 				if (typeof step === "function") { await step(); continue; }
@@ -103,6 +105,71 @@ afterEach(() => {
 });
 
 describe("cross-session conversation isolation", () => {
+	for (const change of ["add", "remove", "schema", "description"]) {
+		it(`restarts only the owning parked query when tools change: ${change}`, async () => {
+			const read = { name: "read", description: "Read", parameters: { type: "object", properties: {} } };
+			const added = { name: "subagent", description: "Delegate", parameters: { type: "object", properties: {} } };
+			const before = change === "remove" ? [read, added] : [read];
+			const after = change === "add" ? [read, added] : change === "remove" ? []
+				: [{ ...read, ...(change === "schema" ? { parameters: { type: "object", properties: { path: { type: "string" } } } } : { description: "Updated read" }) }];
+			const parentGate = gate(), childGate = gate(), replacementGate = gate();
+			const u = user("load tools and continue");
+			scripts.push({ label: "parent", steps: [init("cc-dynamic"), ...toolUse("dynamic-read"), parentGate.wait, { ...result("stale error"), is_error: true }] });
+			const first = await call("dynamic-parent", [u], before).result();
+			assert.equal(first.stopReason, "toolUse");
+			const parent = [...__test.activeQueryContexts].find((c) => c.piSessionId === "dynamic-parent");
+			const oldQuery = parent.activeQuery;
+			scripts.push({ label: "child", steps: [init("cc-other"), childGate.wait, result("child done")] });
+			const child = call("dynamic-child", [user("independent child")], before);
+			await settle();
+			const sibling = [...__test.activeQueryContexts].find((c) => c.piSessionId === "dynamic-child");
+			const siblingQuery = sibling.activeQuery;
+			let released;
+			parent.pendingToolCalls.set("dynamic-read", { toolName: "read", resolve: (value) => { released = value; } });
+			scripts.push({ label: "replacement", steps: [init("cc-replacement"), replacementGate.wait, result("continued")] });
+			const continuation = call("dynamic-parent", [u, first, toolResult("dynamic-read")], after);
+			assert.ok(__test.isQueryAbandoned(oldQuery));
+			assert.ok(released, "the old MCP handler was released");
+			assert.equal(sibling.activeQuery, siblingQuery);
+			assert.ok(!__test.isQueryAbandoned(siblingQuery));
+			const options = calls.at(-1);
+			assert.equal(options.label, "replacement");
+			const history = readFileSync(getSessionPath(options.resume, process.cwd(), claudeDir), "utf8");
+			const blocks = history.trim().split("\n").flatMap((line) => JSON.parse(line).message?.content ?? []);
+			assert.equal(blocks.filter((block) => block.type === "tool_use" && block.id === "dynamic-read").length, 1);
+			assert.equal(blocks.filter((block) => block.type === "tool_result" && block.tool_use_id === "dynamic-read").length, 1);
+			if (after.length) {
+				const client = new Client({ name: "test", version: "1" });
+				const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+				await options.mcpServers["custom-tools"].instance.connect(serverTransport);
+				await client.connect(clientTransport);
+				assert.deepEqual((await client.listTools()).tools, after.map(({ name, description, parameters }) => ({ name, description, inputSchema: parameters })));
+				await client.close();
+			} else assert.equal(options.mcpServers, undefined);
+			parentGate.open();
+			await settle();
+			replacementGate.open();
+			const completed = await continuation.result();
+			assert.equal(completed.stopReason, "stop");
+			assert.equal(completed.errorMessage, undefined, "late events from the discarded query cannot fail its replacement");
+			assert.equal(getSharedSession("dynamic-parent").sessionId, options.resume);
+			childGate.open();
+			await child.result();
+		});
+	}
+
+	it("keeps a parked query when equivalent tools are reordered", async () => {
+		const read = { name: "read", description: "Read", parameters: { type: "object" } };
+		const other = { ...read, name: "other" };
+		const g = gate(), u = user("read");
+		scripts.push({ label: "unchanged", steps: [init("cc-unchanged"), ...toolUse("same-read"), g.wait, result("done")] });
+		const first = await call("unchanged", [u], [read, other]).result();
+		const continuation = call("unchanged", [u, first, toolResult("same-read")], structuredClone([other, read]));
+		assert.equal(calls.length, 1);
+		g.open();
+		assert.equal((await continuation.result()).stopReason, "stop");
+	});
+
 	it("a foreground child in the parent's first turn cannot claim the parent's conversation", async () => {
 		const P = "pi-parent", C = "pi-child";
 		const u1 = user("research X"), a1 = toolCall("toolu_P1"), tr1 = toolResult("toolu_P1"), a2 = say("parent answer"), u2 = user("now fix it");

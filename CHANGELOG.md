@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: apply tool changes within the current prompt** — Restart parked Claude queries when Pi adds, removes, or updates tool definitions, preserving completed tool calls and results. Loader tools such as `subagents_enable` can now expose tools for immediate use without a second user message or eager-loading flag. Restarts rebuild the session and may reduce prompt-cache reuse.
+
 ## 0.9.0 — 2026-09-27
 
 - **Bump: require pi ≥0.86.1 and drop pre-0.86 compat** — This breaks support for pi <0.86.1. Use pi-ai's transcript helpers and update dev peers to `^0.87.1` and the Agent SDK to `^0.3.280`; the API now rejects older Claude Code clients.
