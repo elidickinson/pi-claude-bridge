@@ -1654,10 +1654,8 @@ function drainForAbort(c: QueryContext, promptStream: PromptStream): void {
 	c.releasePendingToolCalls("Operation aborted");
 }
 
-/** Queries pi's history moved out from under. Their completion must not touch
- *  `sharedSession` or the pi stream: the query that took over the turn has
- *  already rebuilt both from the new history, and this one's session id names the
- *  conversation pi just discarded. */
+/** Queries discarded after history or tool changes. Late events and completion
+ *  must not touch the session or pi stream now owned by their replacement. */
 const abandonedQueries = new WeakSet<object>();
 
 /** The prompt a continuation query is opened with: the pi turn goes on, but its
@@ -1667,8 +1665,11 @@ const CONTINUE_AFTER_REWRITE_PROMPT =
 	"[Your context was compacted. What precedes this is a summary plus the most recent messages, "
 	+ "ending with the tool result you were waiting for. Continue the task from there.]";
 
-/** Drop a Claude Code query parked at a tool boundary whose conversation pi has
- *  since rewritten (/compact, tree navigation).
+const CONTINUE_AFTER_TOOLS_CHANGED_PROMPT =
+	"[The available tools have changed. Continue the task from the recorded tool results using the current tools. Do not repeat completed tool calls.]";
+
+/** Drop a Claude Code query parked at a tool boundary after pi changes its
+ *  history (/compact, tree navigation) or tool definitions.
  *
  *  Delivering the turn's tool result into that query hands Claude Code the
  *  context pi just shrank: one pi turn is one CC query, and the query keeps its
@@ -1746,12 +1747,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const currentToolDefinitions = toolDefinitions(mcpTools);
 	const toolsChanged = Boolean(resultCtx && resultCtx.toolDefinitions !== currentToolDefinitions);
 
-	// pi rewrote its history while this query sat parked at a tool boundary, so the
-	// query answers about a conversation that no longer exists. Discard it and let
-	// this tool result carry the turn into a fresh query over the rewritten history.
-	// The staleness mark is per pi session: a subagent's compaction (its own
-	// AgentSession, sharing this process) must not discard the parent's parked
-	// query, and vice versa.
+	// Restart with current history and tools when either changed while parked.
+	// Only discard the query owning these results; a sibling session's parked
+	// query must remain untouched.
 	const rewrittenUnderQuery = Boolean(resultCtx?.historyStale);
 	const restartQuery = rewrittenUnderQuery || toolsChanged;
 	if (resultCtx && restartQuery) {
@@ -1892,8 +1890,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// we do. The rebuilt session already ends with the tool result, placed after
 	// the tool call it answers.
 	if (restartQuery && !promptText && !promptBlocks) {
-		promptText = rewrittenUnderQuery ? CONTINUE_AFTER_REWRITE_PROMPT
-			: "[The available tools have changed. Continue the task from the recorded tool results using the current tools. Do not repeat completed tool calls.]";
+		promptText = rewrittenUnderQuery ? CONTINUE_AFTER_REWRITE_PROMPT : CONTINUE_AFTER_TOOLS_CHANGED_PROMPT;
 		debug(`provider: continuing the turn after a query restart, ${context.messages.length} msgs rebuilt`);
 	}
 

@@ -113,7 +113,7 @@ When filing a bug about a session-resume failure (e.g. "No conversation found"),
 
 ## Compatibility with other extensions
 
-Tools activated by an extension during a prompt are available on the next model request within that same prompt. The bridge restarts the parked Claude query when tool definitions change, retaining completed tool calls and results. This supports loaders such as `pi-subagents`' `subagents_enable` without an extra user message or eager-loading flag. A restart rebuilds the session and may reduce prompt-cache reuse.
+Tools activated during a prompt (for example, by `subagents_enable`) are available on the next model request without another user message. The bridge restarts the parked query with completed results preserved, which may reduce prompt-cache reuse.
 
 Other extensions can change the system prompt. When the result still contains pi's built-in system prompt text, or the two documentation paths that Anthropic looks for (`docs/custom-provider.md` in the same prompt with `docs/packages.md`), the bridge stops the turn instead of sending it, since Anthropic may otherwise bill these requests as Extra Usage. Fix the source extension before retrying; `CLAUDE_BRIDGE_DEBUG=1` writes the full prompt to `~/.pi/agent/claude-bridge.log` when this happens.
 

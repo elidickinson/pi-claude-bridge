@@ -84,10 +84,11 @@ beforeEach(() => {
 	resetSharedSession();
 	calls.length = 0;
 	scripts.length = 0;
-	setQuery(({ options }) => {
+	setQuery(({ options, prompt }) => {
 		const script = scripts.shift();
 		if (!script) throw new Error("no fake script queued");
 		calls.push({ label: script.label, resume: options.resume, mcpServers: options.mcpServers });
+		if (script.capturePrompt) script.capturePrompt(prompt);
 		const gen = (async function* () {
 			for (const step of script.steps) {
 				if (typeof step === "function") { await step(); continue; }
@@ -157,6 +158,43 @@ describe("cross-session conversation isolation", () => {
 			await child.result();
 		});
 	}
+
+	it("restarts a reentrant child's tools with a steer without disturbing its parked parent", async () => {
+		const read = { name: "read", description: "Read", parameters: { type: "object" } };
+		const other = { ...read, name: "other" };
+		const parentGate = gate(), childGate = gate();
+		const parentUser = user("parent task"), childUser = user("child task");
+		scripts.push({ label: "parent", steps: [init("cc-parked-parent"), ...toolUse("parent-read"), parentGate.wait, result("parent done")] });
+		const parentFirst = await call("parked-parent", [parentUser], [read]).result();
+		const parent = [...__test.activeQueryContexts].find((c) => c.piSessionId === "parked-parent");
+		const parentQuery = parent.activeQuery;
+		scripts.push({ label: "child", steps: [init("cc-changing-child"), ...toolUse("child-read"), childGate.wait, result("stale child")] });
+		const childFirst = await call("changing-child", [childUser], [read]).result();
+		const child = [...__test.activeQueryContexts].find((c) => c.piSessionId === "changing-child");
+		const childQuery = child.activeQuery;
+		let sentPrompt;
+		scripts.push({ label: "replacement", capturePrompt: (prompt) => { sentPrompt = prompt[Symbol.asyncIterator]().next(); },
+			steps: [init("cc-child-replacement"), result("child continued")] });
+		const messages = [childUser, childFirst, toolResult("child-read"), user("use the new tool instead")];
+		const completed = await call("changing-child", messages, [read, other]).result();
+		assert.equal(completed.stopReason, "stop");
+		assert.deepEqual((await sentPrompt).value.message.content, [{ type: "text", text: "use the new tool instead" }]);
+		assert.ok(__test.isQueryAbandoned(childQuery));
+		assert.equal(parent.activeQuery, parentQuery);
+		assert.ok(!__test.isQueryAbandoned(parentQuery));
+		const history = readFileSync(getSessionPath(calls.at(-1).resume, process.cwd(), claudeDir), "utf8");
+		const blocks = history.trim().split("\n").flatMap((line) => JSON.parse(line).message?.content ?? []);
+		assert.equal(blocks.filter((block) => block.type === "tool_use" && block.id === "child-read").length, 1);
+		assert.equal(blocks.filter((block) => block.type === "tool_result" && block.tool_use_id === "child-read").length, 1);
+		assert.ok(!history.includes("parent-read"));
+		assert.ok(!history.includes("use the new tool instead"), "the trailing steer is sent as the prompt, not duplicated into history");
+		childGate.open();
+		await settle();
+		const parentContinuation = call("parked-parent", [parentUser, parentFirst, toolResult("parent-read")], [read]);
+		assert.equal(calls.length, 3, "the parent's query is still reusable");
+		parentGate.open();
+		assert.equal((await parentContinuation.result()).stopReason, "stop");
+	});
 
 	it("keeps a parked query when equivalent tools are reordered", async () => {
 		const read = { name: "read", description: "Read", parameters: { type: "object" } };
