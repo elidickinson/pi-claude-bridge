@@ -342,11 +342,18 @@ commit-spanning breaks (24 modules, 268 boundaries), 83 breaks land exactly on i
 and 15 land elsewhere, so re-serialization can account for at most ~15% of
 residual boundary breaks.
 
-**Thinking blocks are untested, not exonerated.** The obvious log-side proxy does
-not exist: `reasoning=` appears in **0** of 14,994 `usage:` lines, so the SDK never
-reports reasoning tokens to the bridge and `src/index.ts:825`'s `reasoningText` is
-dead in practice. The transcript-join fallback (match the 8-char `resume=` prefix
-to a surviving `.jsonl`, then look at CC-authored records inside the previous
+**Thinking blocks are untested, not exonerated.** The obvious log-side proxy did not
+exist when this was written: `reasoning=` appears in **0** of 14,994 `usage:` lines.
+The cause was a bridge defect, not a missing SDK field. `updateUsage` read
+`usage.reasoning_tokens` (absent from every version of `@anthropic-ai/sdk`) and a flat
+`usage.thinking_tokens`, but the count is nested at
+`usage.output_tokens_details.thinking_tokens` — so every value CC sent was dropped, and
+the recorded fixtures under `tests/fixtures/sdk-streams/` turned out to carry populated
+counts all along. Fixed in `src/index.ts`, so `reasoning=` now appears on turns that
+think and this proxy is available for a *fresh* run. Every `usage:` line counted above
+predates the fix; do not reread that window for it. The transcript-join fallback
+(match the 8-char `resume=` prefix to a surviving `.jsonl`, then look at
+CC-authored records inside the previous
 query's time window) only lands 20 of 263 boundaries — most sessions have since
 been deleted and rewritten by a rebuild — and the cells are n=1–2. Underpowered;
 do not read a result into it. Images are likewise untestable here: zero boundaries
