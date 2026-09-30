@@ -4,6 +4,7 @@
 
 - **Tests: add PR CI** — Run unit tests on GitHub Actions without Claude credentials.
 - **Bump: Claude Sonnet 5.5** — Should appear in `/model` with 1M context once pi-ai ships the new catalog entry. Agent SDK bumped to ^0.3.284 (Claude Code 2.1.284).
+- **Add: subscription usage published on a shared provider-usage bus** — Claude Code streams a `rate_limit_event` per turn (5-hour, weekly and per-model weekly windows, utilization and reset time, under `unifiedWindows` on current builds), which the bridge only used for warnings. It now records the latest sample per window and publishes a snapshot on `globalThis[Symbol.for("pi.provider-usage.bus.v1")]` (`register`/`adapters`/`subscribe`/`publish`; adapter id `claude-bridge`, usage provider `claude`), so quota dashboards and status bars can show the plan windows without reading credentials or calling any endpoint. The bridge draws nothing itself; the bus is created only when no other extension already published one. Covered by `tests/unit-usage-bus.mjs`.
 
 ## 0.9.0 — 2026-09-27
 
