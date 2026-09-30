@@ -17,8 +17,6 @@
 //   - DISABLE_AUTO_COMPACT=1 stops CC-side autocompaction. Provoking it needs a
 //     near-full context window, which no cheap probe can build. Rests on the CC
 //     source only.
-//   - `priority: "next"` steers are drained at CC's next tool boundary.
-//     tests/int-tool-message.mjs is the tripwire for that one.
 //   - rate_limit_event / rate_limit_info shape: needs a real rate limit.
 //
 // Requires: ANTHROPIC_API_KEY or CC logged in. Must run OUTSIDE the sandbox —
@@ -480,11 +478,12 @@ test("--thinking-display summarized is still an accepted flag value", { timeout:
 	assert.equal(result?.subtype, "success", `CC rejected --thinking-display summarized: ${JSON.stringify(result)}`);
 });
 
-// --- The gitStatus cache pinning ---
+// --- Stub API contracts ---
 
-/** One-turn stub API: records every /v1/messages body, answers a canned "OK" SSE.
+/** Stub API: records every /v1/messages body, answers a canned "OK" SSE.
+ *  Optionally calls firstTool on the first request to exercise a tool boundary.
  *  Lets a contract assert on the exact request CC builds, at zero API cost. */
-function stubApi(requests) {
+function stubApi(requests, firstTool) {
 	const server = createServer((req, res) => {
 		const chunks = [];
 		req.on("data", (c) => chunks.push(c));
@@ -492,15 +491,16 @@ function stubApi(requests) {
 			if (req.method === "POST" && req.url.startsWith("/v1/messages")) {
 				const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 				requests.push(body);
+				const tool = requests.length === 1 ? firstTool : undefined;
 				const event = (name, obj) => `event: ${name}\ndata: ${JSON.stringify(obj)}\n\n`;
 				res.writeHead(200, { "content-type": "text/event-stream" });
 				res.end(
 					event("message_start", { type: "message_start", message: { id: `msg_stub_${requests.length}`, type: "message", role: "assistant", content: [], model: body.model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } })
-					+ event("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+					+ event("content_block_start", { type: "content_block_start", index: 0, content_block: tool ? { type: "tool_use", id: "toolu_stub", name: tool, input: {} } : { type: "text", text: "" } })
 					+ event("ping", { type: "ping" })
-					+ event("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } })
+					+ event("content_block_delta", { type: "content_block_delta", index: 0, delta: tool ? { type: "input_json_delta", partial_json: "{}" } : { type: "text_delta", text: "OK" } })
 					+ event("content_block_stop", { type: "content_block_stop", index: 0 })
-					+ event("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } })
+					+ event("message_delta", { type: "message_delta", delta: { stop_reason: tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } })
 					+ event("message_stop", { type: "message_stop" }));
 			} else {
 				res.writeHead(404).end();
@@ -512,6 +512,68 @@ function stubApi(requests) {
 		close: () => server.close(),
 	})));
 }
+
+test("queued slash-prefixed text is held back unless followed by a text note", { timeout: 60_000 }, async (t) => {
+	const path = "  /tmp/cc-slash-steer-probe.png";
+	for (const appendNote of [false, true]) {
+		await t.test(appendNote ? "with trailing note" : "bare path", async () => {
+			const requests = [];
+			const api = await stubApi(requests, "mcp__custom-tools__alpha");
+			let toolStarted, steerWritten, finish;
+			const started = new Promise((resolve) => { toolStarted = resolve; });
+			const written = new Promise((resolve) => { steerWritten = resolve; });
+			const finished = new Promise((resolve) => { finish = resolve; });
+			const steer = [{ type: "text", text: path }];
+			if (appendNote) steer.push({ type: "text", text: "(Sent while you were working.)" });
+			const message = (content) => ({ type: "user", message: { role: "user", content }, parent_tool_use_id: null });
+			async function* prompt() {
+				yield message("Call alpha once, then say OK.");
+				await started;
+				yield { ...message(steer), priority: "next" };
+				// The SDK resumes the generator only after writing the steer to stdin.
+				// Release the MCP result afterwards, on the same FIFO, with no sleeps.
+				steerWritten();
+				await finished;
+			}
+			const server = new McpServer({ name: "custom-tools", version: "1.0.0" }, { capabilities: { tools: {} } });
+			server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [noArgTool("alpha")] }));
+			server.server.setRequestHandler(CallToolRequestSchema, async () => {
+				toolStarted();
+				await written;
+				return { content: [{ type: "text", text: "alpha-VALUE" }] };
+			});
+			const q = query({
+				prompt: prompt(),
+				options: providerOptions({
+					persistSession: false,
+					env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
+					mcpServers: { "custom-tools": { type: "sdk", name: "custom-tools", instance: server } },
+				}),
+			});
+			try {
+				let result;
+				for await (const msg of q) {
+					if (msg.type === "result") { result = msg; break; }
+				}
+				assert.equal(result?.is_error, false, "CC did not complete the stubbed turn");
+				assert.ok(requests.length >= 2, "CC never continued after the tool result");
+				// Inspect the very next API request, not a later replay of the steer.
+				const continuation = requests[1].messages;
+				const toolResults = continuation.filter((m) => m.role === "user").flatMap((m) => Array.isArray(m.content) ? m.content : []).filter((b) => b.type === "tool_result");
+				assert.ok(toolResults.some((b) => b.tool_use_id === "toolu_stub" && JSON.stringify(b.content).includes("alpha-VALUE")),
+					"the continuation did not include our MCP result");
+				assert.equal(JSON.stringify(continuation).includes(path.trim()), appendNote,
+					appendNote ? "CC held back the steer despite the trailing note" : "CC no longer holds back slash-prefixed steers");
+			} finally {
+				toolStarted();
+				steerWritten();
+				finish();
+				q.close();
+				api.close();
+			}
+		});
+	}
+});
 
 /** cache_control markers are breakpoint directives, not cache-keyed content — CC 2.1.280
  *  moves them (and a 1h ttl) between turns, so payload comparisons strip them. */
