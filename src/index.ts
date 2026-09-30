@@ -895,6 +895,7 @@ export const __test = {
 	finalizeCurrentStream,
 	resultErrorText,
 	deliverToolResults,
+	foldableSteer,
 	drainForAbort,
 	CC_CHILD_ENV,
 	buildMcpServers,
@@ -1572,6 +1573,16 @@ function steerBlocks(messages: Context["messages"]): ContentBlockParam[] | null 
 	return text ? [{ type: "text", text }] : null;
 }
 
+/** CC holds a queued steer back at the tool boundary when its last block is
+ *  text starting with "/" once trimmed, as with a pasted file path. A trailing
+ *  note keeps it foldable without changing the user's text or images.
+ *  Pinned in tests/int-cc-contracts.mjs. */
+function foldableSteer(blocks: ContentBlockParam[]): ContentBlockParam[] {
+	const last = blocks.at(-1);
+	if (last?.type !== "text" || !last.text.trim().startsWith("/")) return blocks;
+	return [...blocks, { type: "text", text: "(Sent while you were working.)" }];
+}
+
 /** A steer that never made it into CC's session. The cursor has already counted
  *  it, so count-based sync would skip it forever — rebuild instead, which
  *  re-imports the message from pi's context. */
@@ -1608,7 +1619,7 @@ async function deliverToolResults(
 			steerMissedSession(c, text);
 		} else {
 			try {
-				await c.promptStream.push(userMessage(steer, "next"));
+				await c.promptStream.push(userMessage(foldableSteer(steer), "next"));
 				debug(`provider: steer written to CC stdin before tool result: ${text.slice(0, 60)}`);
 			} catch (error) {
 				// The query is ending — pushing further input would wedge tool-result

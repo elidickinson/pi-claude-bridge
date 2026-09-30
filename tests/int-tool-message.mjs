@@ -140,6 +140,27 @@ describe("tool-message integration", () => {
 			`steer never reached CC's session — dropped between the parallel tool results`);
 	});
 
+	it("steer that starts with a path is drained at the tool boundary", { timeout: TEST_TIMEOUT }, async () => {
+		// A pasted file path looks like a slash command to CC, which holds it back
+		// instead of draining it at the tool boundary. Assert delivery, not whether
+		// the model follows the steer.
+		const mark = logMark();
+		const path = "/tmp/pi-bridge-slash-steer-probe.png";
+		await send({
+			type: "prompt",
+			message: "Call SlowTool with seconds=4. Then reply with exactly what it returned.",
+		});
+		await waitForEvent("tool_execution_start");
+		await send({ type: "prompt", message: path, streamingBehavior: "steer" });
+		await waitForEvent("agent_end");
+
+		const records = readSessionRecords(sessionIdFrom(logSince(mark)));
+		assert.ok(records.some((r) => r.attachment?.type === "queued_command" && JSON.stringify(r.attachment.prompt ?? "").includes(path)),
+			"the path steer was not drained at the tool boundary — CC held it back as a slash command");
+		assert.ok(!records.some((r) => JSON.stringify(r.message?.content ?? "").includes("interrupted before a result was received")),
+			"a tool call came back interrupted");
+	});
+
 	it("steer during text response (no tool call) completes both turns", { timeout: TEST_TIMEOUT }, async () => {
 		// Steer during text-only streaming: the assistant is generating text (no tool
 		// calls), a steer arrives, and pi delivers it after the current turn ends.

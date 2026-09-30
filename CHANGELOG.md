@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: slash-prefixed steers reach the running turn** — Append a short note when a steer's last block is slash-prefixed text, so Claude Code drains pasted file paths at the tool boundary instead of holding them back as slash commands. The user's text and images stay unchanged.
 - **Tests: add PR CI** — Run unit tests on GitHub Actions without Claude credentials.
 - **Bump: Claude Sonnet 5.5** — Should appear in `/model` with 1M context once pi-ai ships the new catalog entry. Agent SDK bumped to ^0.3.284 (Claude Code 2.1.284).
 

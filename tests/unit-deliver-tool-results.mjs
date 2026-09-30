@@ -89,6 +89,27 @@ describe("deliverToolResults", () => {
 		assert.deepStrictEqual(sent[0].message.content, withImage);
 	});
 
+	it("appends a note to a steer that would look like a slash command to CC", async () => {
+		const sent = [];
+		const c = new QueryContext();
+		c.promptStream = { push: (msg) => { sent.push(msg); return Promise.resolve(); } };
+		const path = [{ type: "text", text: "  /var/folders/x/pi-clipboard-1.png" }];
+
+		await __test.deliverToolResults(c, [], path, 4);
+
+		assert.deepStrictEqual(sent[0].message.content, [...path, { type: "text", text: "(Sent while you were working.)" }]);
+		assert.deepStrictEqual(path, [{ type: "text", text: "  /var/folders/x/pi-clipboard-1.png" }]);
+	});
+
+	it("only folds steers whose last block is slash-prefixed text", () => {
+		const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBOR" } };
+		const path = { type: "text", text: "/tmp/x" };
+		for (const blocks of [[], steerText, [{ type: "text", text: "see /tmp/x" }], [path, ...steerText], [path, image], [image]]) {
+			assert.strictEqual(__test.foldableSteer(blocks), blocks);
+		}
+		assert.deepStrictEqual(__test.foldableSteer([image, path]), [image, path, { type: "text", text: "(Sent while you were working.)" }]);
+	});
+
 	// The caller has already advanced the session cursor past the steer, so a steer
 	// that never reached CC would be skipped forever by count-based sync.
 	it("marks the session for rebuild when the push is rejected, and still delivers results", async () => {
