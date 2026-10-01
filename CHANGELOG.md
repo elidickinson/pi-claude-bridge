@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: `provider.allowExtensionSystemPrompts` to serve extensions' one-off calls** — A call with its own system prompt, no tools and one user message (e.g. `@mzwing/pi-permission-auto-review`'s reviewer) matches no prompt capture and throws. Opted in, it runs on the isolated path with its prompt as-is; the throw now names the option. The harness guard still applies, and session turns are unaffected. Off by default. Covered by `tests/unit-standalone-completion.mjs`.
+
 ## 0.9.1 — 2026-09-30
 
 - **Bump: Claude Sonnet 5.5 and pi-ai 0.99.1** — pi-ai update brings `claude-sonnet-5-5` with 1M context. Agent SDK now requires `^0.3.284`.

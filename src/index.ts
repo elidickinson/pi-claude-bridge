@@ -17,6 +17,7 @@ import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
 import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
 import {
+	assertSendableStandalonePrompt,
 	collectPromptSkills,
 	projectPromptCapture,
 	sharedPromptCaptures,
@@ -496,6 +497,25 @@ function newAssistantOutput(model: Model<any>, text: string, stopReason: Assista
 	};
 }
 
+/** A one-shot call rather than an agent turn: a system prompt, no tools, one user message. */
+function isStandaloneCompletion(context: Context): context is Context & { systemPrompt: string } {
+	return Boolean(context.systemPrompt)
+		&& !context.tools?.length
+		&& context.messages.length === 1
+		&& context.messages[0].role === "user";
+}
+
+/** Whether this call takes the standalone route. */
+function servesAsStandalone(context: Context, enabled: boolean): context is Context & { systemPrompt: string } {
+	return enabled
+		&& isStandaloneCompletion(context)
+		&& !promptCaptures.accountsFor(context.systemPrompt);
+}
+
+function allowsExtensionSystemPrompts(): boolean {
+	return providerSettings.allowExtensionSystemPrompts === true;
+}
+
 function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
 	if (messages.length !== 1 || messages[0].role !== "user") {
 		throw new Error(
@@ -890,6 +910,8 @@ export const __test = {
 	setPiUI(ui: ExtensionUIContext | null) {
 		piUI = ui;
 	},
+	isStandaloneCompletion,
+	servesAsStandalone,
 	toBridgeContext,
 	syncSharedSession,
 	extractUserPromptBlocks,
@@ -1719,6 +1741,18 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// (separate persistSession:false CC process, no session sync needed).
 	if (options?.cacheRetention === "none") {
 		debug(`provider: one-off summarizer call (cacheRetention none) routed to isolated summary, msgs=${context.messages.length}`);
+		return isolatedStreamFn(model, context, options);
+	}
+
+	// An extension's standalone completion (a permission reviewer, say) carries its own
+	// system prompt, which no agent boundary recorded. With no tools and a lone user
+	// message there is no agent context for projection to lose, so when the user has
+	// dropped Claude Code's preset, send the prompt as-is on the isolated path instead of
+	// throwing. Checked before reentrancy: such calls typically arrive while the agent's
+	// own query is parked at a tool boundary.
+	if (servesAsStandalone(context, allowsExtensionSystemPrompts())) {
+		assertSendableStandalonePrompt(context.systemPrompt);
+		debug(`provider: standalone completion (${context.systemPrompt.length}-char unrecorded prompt, no tools) routed to isolated path`);
 		return isolatedStreamFn(model, context, options);
 	}
 

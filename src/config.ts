@@ -35,6 +35,9 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// true: serve an extension's one-off call (its own system prompt, no tools, one
+		// user message) with that prompt as-is instead of refusing it as unrecorded.
+		allowExtensionSystemPrompts?: boolean;
 	};
 }
 

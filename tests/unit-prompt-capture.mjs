@@ -114,6 +114,17 @@ describe("PromptCaptures", () => {
 		assert.equal(captures.resolveOrDerive(undefined), undefined);
 	});
 
+	it("accountsFor agrees with resolveOrDerive", () => {
+		const captures = new PromptCaptures();
+		captures.record(PARENT_KEY, capture());
+		captures.record("other", capture());
+
+		assert.equal(captures.accountsFor(PARENT_KEY), true, "exact key");
+		assert.equal(captures.accountsFor(`wrapper\n\n${PARENT_KEY}`), true, "embeds a known prompt");
+		assert.equal(captures.accountsFor("a reviewer's own policy"), false);
+		assert.throws(() => captures.resolveOrDerive("a reviewer's own policy"));
+	});
+
 	it("reports the closest known capture when a prompt matches nothing", () => {
 		const diagnostics = [];
 		const captures = new PromptCaptures(64, (d) => diagnostics.push(d));

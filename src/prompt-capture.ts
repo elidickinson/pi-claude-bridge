@@ -191,7 +191,8 @@ export class PromptCaptures {
 				+ `Claude Code would receive none of this turn's context files, skills or custom instructions. `
 				+ `The usual cause is an extension loaded after claude-bridge that rewrites the system prompt from before_agent_start — `
 				+ `one that wraps it is fine, one that rebuilds or strips it leaves nothing to match. `
-				+ `(Also possible: pi rebuilt the prompt outside before_agent_start — a late-registered tool or fresh resource discovery.)`,
+				+ `(Also possible: pi rebuilt the prompt outside before_agent_start — a late-registered tool or fresh resource discovery.) `
+				+ `If this is an extension's own one-off call (no tools, one user message), set provider.allowExtensionSystemPrompts to send its prompt as-is.`,
 			);
 		}
 
@@ -199,6 +200,14 @@ export class PromptCaptures {
 		// projectCustom substitutes the embedded captures in place and preserves every
 		// byte between and around them.
 		return { assembledPrompt: systemPrompt, custom: systemPrompt, contextFiles: [], skills: [], inherited: embedded };
+	}
+
+	/** Whether `resolveOrDerive` would resolve this prompt instead of throwing. Leaves
+	 *  recency alone: asking is not a use. */
+	accountsFor(systemPrompt: string): boolean {
+		return this.captures.has(systemPrompt)
+			|| this.reachableCaptures().some((node) => node.assembledPrompt === systemPrompt)
+			|| this.findInheritedPrompts(systemPrompt, systemPrompt).length > 0;
 	}
 
 	get size(): number {
@@ -352,7 +361,12 @@ function projectCapture(
 	}
 }
 
-function assertSendablePrompt(parts: readonly PromptPart[], capture: PromptCapture): void {
+/** Applies the projected-capture refusal to a prompt that reaches Claude Code as-is. */
+export function assertSendableStandalonePrompt(systemPrompt: string): void {
+	assertSendablePrompt([{ label: "the standalone prompt", text: systemPrompt }]);
+}
+
+function assertSendablePrompt(parts: readonly PromptPart[], capture?: PromptCapture): void {
 	const findings: string[] = [];
 	for (const { label, text } of parts) {
 		const offset = preambleAtLineStart(text);
@@ -371,7 +385,9 @@ function assertSendablePrompt(parts: readonly PromptPart[], capture: PromptCaptu
 		"  carrying pi's harness, or the phrase pair its subscription gate rejects, as a third-party",
 		"  app: it fails with 400 or is billed as extra usage.",
 		...findings.map((finding) => `  Found: ${finding}.`),
-		`  Capture: ${capture.source ?? "unknown"}, ${capture.inherited.length} inherited capture(s) substituted.`,
+		...(capture
+			? [`  Capture: ${capture.source ?? "unknown"}, ${capture.inherited.length} inherited capture(s) substituted.`]
+			: []),
 		"  If this came from an inherited pi prompt, see README \"Compatibility with other extensions\".",
 		"  If it is your own text, reword or remove it. CLAUDE_BRIDGE_DEBUG=1 writes the full prompt to",
 		`  ${DEBUG_LOG_PATH}.`,
