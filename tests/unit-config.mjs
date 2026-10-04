@@ -5,20 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown } from "../src/config.js";
+import { claudeCodeSettings, globalConfigPath, loadConfig, markStartupNoticeShown } from "../src/config.js";
 
-function withTempHome(fn) {
-	const oldHome = process.env.HOME;
-	const home = mkdtempSync(join(tmpdir(), "claude-bridge-home-"));
-	try {
-		process.env.HOME = home;
-		return fn(home);
-	} finally {
-		if (oldHome === undefined) delete process.env.HOME;
-		else process.env.HOME = oldHome;
-		rmSync(home, { recursive: true, force: true });
-	}
-}
+import { withTempHome, assertOwnedPath, testRoot } from "./lib/setup.mjs";
+
+// Check the effective directory before any config fixture writes.
+assertOwnedPath(testRoot, getAgentDir(), "runner getAgentDir");
 
 describe("claudeCodeSettings", () => {
 	it("disables auto-memory by default", () => {
@@ -34,7 +26,7 @@ describe("loadConfig", () => {
 	it("loads project config from Pi's configured project directory", () => withTempHome(() => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
 		try {
-			const configDir = join(cwd, CONFIG_DIR_NAME);
+			const configDir = assertOwnedPath(cwd, join(cwd, CONFIG_DIR_NAME), "project fixture config");
 			mkdirSync(configDir, { recursive: true });
 			writeFileSync(join(configDir, "claude-bridge.json"), JSON.stringify({
 				provider: { plan: "max" },
@@ -54,8 +46,9 @@ describe("loadConfig", () => {
 	it("merges project config over global config", () => withTempHome((home) => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
 		try {
-			const globalDir = getAgentDir();
-			const projectDir = join(cwd, CONFIG_DIR_NAME);
+			const globalDir = assertOwnedPath(home, getAgentDir(), "merge fixture agent");
+			const projectDir = assertOwnedPath(cwd, join(cwd, CONFIG_DIR_NAME), "merge fixture project");
+			assertOwnedPath(home, globalConfigPath(), "merge fixture global config");
 			mkdirSync(globalDir, { recursive: true });
 			mkdirSync(projectDir, { recursive: true });
 			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
@@ -77,12 +70,12 @@ describe("loadConfig", () => {
 		}
 	}));
 
-	it("markStartupNoticeShown records today's date without dropping existing settings", () => withTempHome(() => {
+	it("markStartupNoticeShown records today's date without dropping existing settings", () => withTempHome((home) => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
 		try {
-			const globalDir = getAgentDir();
+			const globalDir = assertOwnedPath(home, getAgentDir(), "startup fixture agent");
+			const path = assertOwnedPath(home, globalConfigPath(), "startup fixture config");
 			mkdirSync(globalDir, { recursive: true });
-			const path = join(globalDir, "claude-bridge.json");
 			writeFileSync(path, JSON.stringify({
 				askClaude: { enabled: false },
 				provider: { strictMcpConfig: false },
@@ -99,10 +92,10 @@ describe("loadConfig", () => {
 		}
 	}));
 
-	it("markStartupNoticeShown leaves an unparseable config untouched", () => withTempHome(() => {
-		const globalDir = getAgentDir();
+	it("markStartupNoticeShown leaves an unparseable config untouched", () => withTempHome((home) => {
+		const globalDir = assertOwnedPath(home, getAgentDir(), "malformed fixture agent");
+		const path = assertOwnedPath(home, globalConfigPath(), "malformed fixture config");
 		mkdirSync(globalDir, { recursive: true });
-		const path = join(globalDir, "claude-bridge.json");
 		const malformed = '{ "askClaude": { "enabled": true }, }';
 		writeFileSync(path, malformed);
 
@@ -110,9 +103,10 @@ describe("loadConfig", () => {
 		assert.equal(readFileSync(path, "utf-8"), malformed, "a typo must not cost the user their config");
 	}));
 
-	it("markStartupNoticeShown creates the config when there is none", () => withTempHome(() => {
+	it("markStartupNoticeShown creates the config when there is none", () => withTempHome((home) => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
 		try {
+			assertOwnedPath(home, globalConfigPath(), "new config fixture");
 			assert.equal(loadConfig(cwd).startupNoticeShown, undefined);
 			markStartupNoticeShown();
 			assert.match(loadConfig(cwd).startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
@@ -121,12 +115,14 @@ describe("loadConfig", () => {
 		}
 	}));
 
-	it("resolves global config via PI_CODING_AGENT_DIR override, not hardcoded ~/.pi/agent", () => withTempHome(() => {
+	it("resolves global config via PI_CODING_AGENT_DIR override, not hardcoded ~/.pi/agent", () => withTempHome((home) => {
 		const agentDir = mkdtempSync(join(tmpdir(), "claude-bridge-agent-"));
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
 		const oldEnv = process.env.PI_CODING_AGENT_DIR;
 		try {
 			process.env.PI_CODING_AGENT_DIR = agentDir;
+			assertOwnedPath(home, getAgentDir(), "override fixture agent");
+			assertOwnedPath(home, globalConfigPath(), "override fixture config");
 			writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({
 				provider: { plan: "max" },
 			}));
