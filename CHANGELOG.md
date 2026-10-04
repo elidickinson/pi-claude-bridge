@@ -3,6 +3,7 @@
 ## UNRELEASED
 
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
+- **Fix: overflow recovery stopped after compacting (issue #154)** — A turn that failed with "Prompt is too long" could end at a tool result. pi's compact-and-retry for that turn was handled like a tool result orphaned by an abort, so the run ended with an empty reply. The retry now starts a fresh query over the compacted history and continues from that tool result.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
 
 ## 0.9.1 — 2026-09-30
