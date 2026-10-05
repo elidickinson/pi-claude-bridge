@@ -4,6 +4,7 @@
 
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
+- **Fix: tool-using turns under hosts that abort each request's signal (omo)** — omo gives every provider call its own AbortController and aborts it once the call's stream ends, toolUse included. The bridge bound the whole Claude Code query to the first call's signal, so that cleanup killed the query parked at the tool boundary, the tool result took the orphaned-result path, and the turn came back as an empty end_turn: omo reported "Model returned an empty response twice" on every tool-using turn. An abort that fires while no pi stream is live is now deferred: dropped when the tool result arrives (whose own call's signal then takes over), run when the same pi session sends a new prompt instead. Covered by `tests/unit-per-request-abort.mjs`.
 
 ## 0.9.1 — 2026-09-30
 

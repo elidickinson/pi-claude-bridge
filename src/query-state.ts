@@ -51,6 +51,16 @@ export class QueryContext {
 	/** A steer never reached CC. A first query has no session mirror yet, so
 	 *  completion must carry this into the mirror it creates. */
 	missedSteer = false;
+	/** Kills this query (interrupt + close the CLI, release parked handlers).
+	 *  Set at fresh-query setup so later tool-result deliveries can bind their own
+	 *  call's abort signal to the query. */
+	abortQuery: (() => void) | null = null;
+	/** An abort signal fired while this query sat parked at a tool boundary.
+	 *  Hosts that give every provider request its own AbortController (omo) abort
+	 *  it as cleanup once the toolUse stream ends, so the abort is held until the
+	 *  next call shows whether the turn goes on (tool result: drop it) or not (a
+	 *  new prompt in the same pi session: run it). */
+	deferredAbort: (() => void) | null = null;
 
 	// Per-turn (reset together)
 	turnOutput: AssistantMessage | null = null;
