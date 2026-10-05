@@ -27,6 +27,35 @@ import { messageContentToText } from "./convert.js";
 // `agent_listing_delta`, `mcp_instructions_delta`, …) and loses nothing.
 const CONTENT_BEARING = new Set(["file"]);
 
+// Session-start context CC attaches once, to the first prompt, and renders into
+// that prompt's request (the `<system-reminder>` context block and the
+// `# Environment` system message, which carries the history cache breakpoint).
+// CC does NOT rewrite these every turn: dropped on a rebuild, CC re-attaches them
+// to the NEWEST prompt instead, so the rebuilt request differs from the cached
+// one at messages[0] and the whole history is re-written to the prompt cache.
+// Carried at their original position, the rebuilt request keeps the same message
+// prefix (text-identical; one message may switch list/string form, as it does on
+// any live turn) and the history is read from cache: measured 26,417 read / 875
+// written vs 12,722 / 14,423 without, on the same rebuild.
+//
+// `instructions` is the memory/instruction-file block (auto-memory MEMORY.md, and
+// project instruction files when CC loads them). It only exists when the folder has
+// such files, so a test folder without a memory dir never exercises it; dropped, it
+// moves to the newest prompt like the rest. Carrying replays exactly what the model
+// saw at session start. If the file changes mid-session CC appends a fresh copy to
+// a later prompt, as it does in a session that was never rebuilt.
+const SESSION_CONTEXT = new Set([
+	"environment",
+	"model",
+	"output_style_instructions",
+	"total_tokens_reminder",
+	"output_style",
+	"session_context",
+	"date",
+	"credential_org",
+	"instructions",
+]);
+
 export type CarriedAttachment = {
 	attachment: { type: string; [key: string]: unknown };
 	/** Position of the parent among the session's text-bearing user records. */
@@ -87,7 +116,7 @@ export function collectCarriedAttachments(records: readonly JsonlRecord[]): Carr
 		textOf.set(record.uuid as string, textOf.get(parent)!);
 
 		const attachment = record.attachment as { type: string; [key: string]: unknown } | undefined;
-		if (!attachment || !CONTENT_BEARING.has(attachment.type)) continue;
+		if (!attachment || !(CONTENT_BEARING.has(attachment.type) || SESSION_CONTEXT.has(attachment.type))) continue;
 		carried.push({ attachment, userOrdinal: inherited, parentText: textOf.get(parent)! });
 	}
 	return carried;

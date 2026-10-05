@@ -154,7 +154,7 @@ Requires the following in `~/.pi/agent/subagents.json`:
 
 ## Known issues
 
-**A session rebuild re-sends the whole conversation.** The bridge rewrites Claude Code's session from pi's history whenever the two diverge — after an abort, `/compact`, tree navigation, an API error, or on returning to a session — and the next request usually misses the prompt cache for everything past the system prompt. Abort-heavy sessions cost noticeably more.
+**A session rebuild can re-send the conversation.** The bridge rewrites Claude Code's session from pi's history whenever the two diverge: after an abort, `/compact`, tree navigation, an API error, or on returning to a session. After an abort or on returning to a session, the rebuild carries Claude Code's session-start context in place, so the next request still reads the history from the prompt cache (measured: about 800 tokens written instead of the whole history). After `/compact` or tree navigation the history itself changes, so the request misses the cache from the point of change. After an API error the effect has not been measured.
 
 **Files Claude Code edits are not carried across a rebuild.** The edit itself survives in the history as a tool call and result — what's lost is the post-edit file snapshot. `@file` expansions *are* carried.
 

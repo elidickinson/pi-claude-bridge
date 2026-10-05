@@ -40,6 +40,35 @@ describe("collectCarriedAttachments", () => {
 		assert.equal(carried[0].parentText, "review @a.js");
 	});
 
+	it("keeps session-start context in its original position, so a rebuilt prefix stays cacheable", () => {
+		// Dropped, CC re-attaches these to the NEWEST prompt on the rebuilt session,
+		// so the request differs at messages[0] and the whole history misses the
+		// prompt cache. Carried, they stay on the first prompt as in the live session.
+		const kinds = ["environment", "model", "output_style_instructions", "total_tokens_reminder",
+			"output_style", "instructions", "session_context", "date", "credential_org"];
+		const records = [user("u1", "first")];
+		let parent = "u1";
+		kinds.forEach((k, i) => { records.push(attach(`c${i}`, parent, k)); parent = `c${i}`; });
+		records.push(attach("snap", parent, "prompt_snapshot"));
+		const carried = collectCarriedAttachments(records);
+		assert.deepEqual(carried.map((c) => c.attachment.type), kinds);
+		assert.ok(carried.every((c) => c.userOrdinal === 0 && c.parentText === "first"));
+	});
+
+	it("carries the instruction-file block whole, so the rebuilt prompt shows the model the same memory", () => {
+		// Only present in folders with a memory dir or instruction files; before it was
+		// carried, CC re-attached it after credential_org on the newest prompt and the
+		// rebuilt history missed the cache (live: 12,776 read / 14,677 written).
+		const files = [{ path: "/p/memory/MEMORY.md", type: "AutoMem", content: "# Memory Index\n- [Fact](fact.md)" }];
+		const carried = collectCarriedAttachments([
+			user("u1", "first"),
+			{ type: "attachment", uuid: "i1", parentUuid: "u1", attachment: { type: "instructions", files } },
+		]);
+		assert.equal(carried.length, 1);
+		assert.deepEqual(carried[0].attachment, { type: "instructions", files });
+		assert.equal(carried[0].userOrdinal, 0);
+	});
+
 	it("ignores an attachment whose parent is not a prompt", () => {
 		const carried = collectCarriedAttachments([
 			user("u1", "first"),

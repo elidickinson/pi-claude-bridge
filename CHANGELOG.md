@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: session rebuilds re-wrote the whole conversation to the prompt cache** — A rebuild (after an abort, or in a new pi process) dropped the session-start attachments Claude Code wrote after the first prompt (`environment`, `session_context`, `date`, the `instructions` block that holds auto-memory and instruction files, ...), so Claude Code re-attached them to the newest prompt and the rebuilt request no longer matched the cached prefix. They are now carried in place like `@file` attachments, and the pi→CC session link is persisted in `<agentDir>/claude-bridge-sessions.json` so a new process can carry them too. Measured on a 6K-token history: the turn after a rebuild wrote ~800 cache tokens instead of ~14K. In a folder with a memory dir (Sonnet 5.5, one run each): abort 1,115 written instead of 14,677; restart 783 and 150 instead of ~13.5K. Covered by `tests/unit-attachments.mjs` and `tests/unit-session-links.mjs`.
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
 
