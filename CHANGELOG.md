@@ -2,6 +2,8 @@
 
 ## UNRELEASED
 
+- **Fix: queued steering keeps MCP tools connected** — Keep the input channel open until steering messages finish, including when Claude Code runs them in a later turn. Steering absorbed into the current turn still closes normally.
+
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
 

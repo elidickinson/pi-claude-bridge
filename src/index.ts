@@ -7,6 +7,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
+import { randomUUID } from "node:crypto";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { DEBUG_LOG_PATH, DIAG_LOG_PATH } from "./log-paths.js";
 import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
@@ -1457,11 +1458,18 @@ async function consumeQuery(
 		//   ended empty.
 		// - rate-limit events: notifications to the user, which are most likely to
 		//   fire during exactly the long tool-using turns the guard was skipping.
+		if (message.type === "user" && message.parent_tool_use_id === null && "isReplay" in message && message.isReplay === true) {
+			// For fresh steer UUIDs, replay marks incorporation into the turn, not
+			// completion. Its MCP calls still need stdin until the following result.
+			queryCtx.pendingSteerUuids.delete(message.uuid);
+		}
 		let resultError: string | undefined;
 		if (message.type === "result") {
-			queryCtx.promptStream?.end();
 			logServedContextWindow("result", message, model);
 			resultError = resultErrorText(message);
+			// A result ends a turn, not necessarily the query: steers not yet replayed
+			// can start a later turn even when queued_turn_count is zero.
+			if (resultError !== undefined || queryCtx.pendingSteerUuids.size === 0) queryCtx.promptStream?.end();
 			if (resultError !== undefined) {
 				// Consume the rejection alongside the failure it caused, so a later
 				// unrelated failure on this query doesn't inherit the label.
@@ -1538,12 +1546,9 @@ async function consumeQuery(
 				}
 				break;
 			case "user":
-				// SDK echo of the user prompt — no stream events to emit. Note it
-				// carries only prompts and tool results: a steer CC drained at a
-				// tool boundary is recorded in its session transcript as a
-				// `queued_command` attachment and never reaches this stream, which
-				// is why the mid-turn steering tripwire has to live in the
-				// integration test.
+				// Prompt/tool-result echoes have no content events to emit. With
+				// replay-user-messages, queued steers also arrive as user replays;
+				// their lifecycle acknowledgement is handled above the stream guard.
 				break;
 			default:
 				debug("consumeQuery: unhandled SDK message type", message.type);
@@ -1601,14 +1606,18 @@ async function deliverToolResults(
 			debug(`WARNING: steer with no prompt stream, dropping: ${text.slice(0, 60)}`);
 			steerMissedSession(c, text);
 		} else {
+			const uuid = randomUUID();
+			// Register before awaiting stdin: a result can arrive during the write.
+			c.pendingSteerUuids.add(uuid);
 			try {
-				await c.promptStream.push(userMessage(steer, "next"));
+				await c.promptStream.push({ ...userMessage(steer, "next"), uuid });
 				debug(`provider: steer written to CC stdin before tool result: ${text.slice(0, 60)}`);
 			} catch (error) {
 				// The query is ending — pushing further input would wedge tool-result
 				// delivery, so the steer doesn't reach this query. It is still in
 				// pi's context, and the caller has already advanced the session
 				// cursor past it, so force a rebuild or CC would never see it.
+				c.pendingSteerUuids.delete(uuid);
 				debug(`provider: steer push rejected, delivering tool result anyway:`, error);
 				steerMissedSession(c, text);
 			}
@@ -1862,6 +1871,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	claimCurrentPiStream(stream, "fresh-query", queryCtx);
 	queryCtx.pendingToolCalls.clear();
 	queryCtx.pendingResults.clear();
+	queryCtx.pendingSteerUuids.clear();
 	// Stale ids would let a late result from the previous query route here via
 	// contextForToolResults — which now means pushing its steer into this
 	// query's stdin, not just mismatching a map.
@@ -1953,7 +1963,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			: VALID_EFFORTS.has(mapped as EffortLevel) ? mapped as EffortLevel : undefined
 		: undefined;
 
-	const extraArgs: Record<string, string | null> = { model: cliModel };
+	const extraArgs: Record<string, string | null> = { model: cliModel, "replay-user-messages": null };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
