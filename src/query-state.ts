@@ -28,6 +28,8 @@ export class QueryContext {
 	turnToolCallIds: string[] = [];
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
+	/** Steers written or awaiting a write, not yet replayed as incorporated into a turn. */
+	pendingSteerUuids = new Set<string>();
 	/** Last rate-limit rejection seen on this query. Claude Code sends it just before the
 	 *  failure it caused, which is the only thing tying the two together. */
 	rateLimitRejection: { rateLimitType?: string; resetsAt?: number } | null = null;
