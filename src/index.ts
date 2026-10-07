@@ -953,6 +953,9 @@ function mapToolArgs(
 let piUI: ExtensionUIContext | null = null;
 let piMode: ExtensionContext["mode"] | null = null;
 const activeQueryContexts = new Set<QueryContext>();
+// pi session ids whose query this process aborted. A tool result with no parked
+// query is orphaned only after one of these; after a restart it resumes instead.
+const abortedSessionIds = new Set<string>();
 
 // Defaults that silently cost the user something (no Opus 1M on Max, no
 // AskClaude tool) are announced once. Deferred to the first bridge query rather
@@ -1799,8 +1802,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// emit end_turn so pi waits for the next real user message. The discard
 	// branch above already siphoned off the stale-query case, which goes on to a
 	// rebuild instead — that one has somewhere to deliver the result to.
+	// Only after an abort this process saw: a result that arrives after a restart
+	// (a durable host resuming a run) has no parked query either, and falls
+	// through to the fresh-query path, which resumes the CC session and delivers it.
 	const lastMsg = context.messages[context.messages.length - 1];
-	if (lastMsg?.role === "toolResult" && !rewrittenUnderQuery) {
+	const abortObserved = !options?.sessionId || abortedSessionIds.has(options.sessionId);
+	if (lastMsg?.role === "toolResult" && !rewrittenUnderQuery && abortObserved) {
 		debug(`provider: orphaned tool result after abort, emitting end_turn`);
 		// With no query in flight anywhere, the top-level session this result
 		// belongs to is the one whose turn just ended: its cursor advances to
@@ -2038,6 +2045,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	};
 	const onAbort = () => {
 		wasAborted = true;
+		if (options?.sessionId) abortedSessionIds.add(options.sessionId);
 		drainForAbort(abortCtx, promptStream);
 		requestAbort();
 	};
