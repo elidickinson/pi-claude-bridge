@@ -5,6 +5,7 @@
 - **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event.
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
+- **Fix: tools activated mid-turn never reached Claude** — an extension that enables tools from inside a tool call (pi-web-access's `web_enable`) changed pi's tool set, but the bridge's MCP server was fixed at query start, so the model kept the old set until the next user message and fell back to `curl`. The bridge now replaces the served tools on the live server, sends `tools/list_changed`, and holds the tool result until Claude Code has re-listed; delivering first races the re-list and loses (`diag/probe-mid-turn-tools.mjs`). Covered by `tests/unit-queue.mjs`, `tests/unit-mcp-server.mjs` and a contract in `tests/int-cc-contracts.mjs`.
 
 ## 0.9.1 — 2026-09-30
 

@@ -8,6 +8,7 @@
 
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
+import type { ToolServer } from "./mcp-server.js";
 import type { PromptStream } from "./prompt-stream.js";
 
 export interface PendingToolCall {
@@ -28,6 +29,13 @@ export class QueryContext {
 	turnToolCallIds: string[] = [];
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
+	/** The query's MCP tool server and the pi tool names it serves. A pi tool set that
+	 *  changes mid-query (an extension activating tools) is pushed through it before
+	 *  the tool result that caused the change is delivered. */
+	toolServer: ToolServer | null = null;
+	servedToolNames: string[] = [];
+	/** The live SDK→pi name map consumeQuery reads; updated in place with the served set. */
+	toolNameToPi: Map<string, string> | null = null;
 	/** Last rate-limit rejection seen on this query. Claude Code sends it just before the
 	 *  failure it caused, which is the only thing tying the two together. */
 	rateLimitRejection: { rateLimitType?: string; resetsAt?: number } | null = null;
