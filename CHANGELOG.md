@@ -4,6 +4,7 @@
 
 - **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
+- **Fix: Claude Code runs in the pi session's cwd** — hosts serving many sessions from one process (pi-web) spawned it in the host process cwd, so it loaded that directory's AGENTS.md and mirrored the session under the wrong project.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
 - **Bump: Agent SDK `^0.3.293`** — bundles Claude Code 2.1.293, includes Haiku 5.5.
 - **Tests: fix test isolation by lazy loading log path (#164)** — log-paths resolves debug/diag paths per call instead of at import time. Fixes issues with config tests overwriting real user settings in some situations.
