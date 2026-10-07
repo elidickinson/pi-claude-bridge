@@ -1664,6 +1664,43 @@ function drainForAbort(c: QueryContext, promptStream: PromptStream): void {
 	c.releasePendingToolCalls("Operation aborted");
 }
 
+/** Abort a provider call's signal asked for. While a pi stream of this query is
+ *  live the abort is real; with none live the query is parked at a tool boundary,
+ *  where a host that aborts each request's own signal once its stream ends (omo)
+ *  fires it as cleanup. Killing the query there leaves the coming tool result
+ *  with nothing to deliver to: the bridge answers it with an empty end_turn, and
+ *  omo reports "Model returned an empty response twice". Defer it instead. */
+function abortOrDefer(c: QueryContext, abort: () => void): void {
+	if (c.currentPiStream) {
+		abort();
+	} else if (c.activeQuery) {
+		debug("provider: abort signal while parked at a tool boundary, deferring");
+		c.deferredAbort = abort;
+	}
+}
+
+/** Bind a tool-result delivery's own abort signal to the query it continues. */
+function bindContinuationAbort(c: QueryContext, signal: AbortSignal | undefined): void {
+	const abort = c.abortQuery;
+	if (!signal || !abort) return;
+	const onAbort = () => abortOrDefer(c, abort);
+	if (signal.aborted) onAbort();
+	else signal.addEventListener("abort", onAbort, { once: true });
+}
+
+/** A new prompt in this pi session means the parked turn will not continue: the
+ *  abort deferred at its tool boundary was a real cancel after all. */
+function runDeferredAborts(piSessionId: string | null): void {
+	if (piSessionId === null) return;
+	for (const c of activeQueryContexts) {
+		if (!c.deferredAbort || c.piSessionId !== piSessionId) continue;
+		const abort = c.deferredAbort;
+		c.deferredAbort = null;
+		debug("provider: running deferred abort, the parked turn was not continued");
+		abort();
+	}
+}
+
 /** Queries pi's history moved out from under. Their completion must not touch
  *  `sharedSession` or the pi stream: the query that took over the turn has
  *  already rebuilt both from the new history, and this one's session id names the
@@ -1774,6 +1811,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	if (resultCtx) {
 		claimCurrentPiStream(stream, "tool-result", resultCtx);
 		resultCtx.resetTurnState(model);
+		// The turn goes on, so an abort deferred at the tool boundary was the last
+		// request's cleanup, not a cancel. This call's own signal takes over.
+		resultCtx.deferredAbort = null;
+		bindContinuationAbort(resultCtx, options?.signal);
 		// A rewrite that armed the mark after this query parked gets copied here,
 		// though markRebuildForSession usually reaches it directly.
 		if (!resultCtx.historyStale && resultCtx.piSessionId && historyRewrittenBySession.has(resultCtx.piSessionId)) {
@@ -1796,6 +1837,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
 		return stream;
 	}
+
+	runDeferredAborts(options?.sessionId ?? null);
 
 	// --- Orphaned tool result (e.g. user aborted a tool call) ---
 	// The query is gone but pi still delivered the result. Nothing to do — just
@@ -2040,13 +2083,17 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		try { sdkQuery.close(); } catch {}
 	};
 	const onAbort = () => {
+		if (wasAborted) return;
 		wasAborted = true;
 		drainForAbort(abortCtx, promptStream);
 		requestAbort();
 	};
+	queryCtx.abortQuery = onAbort;
+	queryCtx.deferredAbort = null;
+	const onSignalAbort = () => abortOrDefer(queryCtx, onAbort);
 	if (options?.signal) {
 		if (options.signal.aborted) onAbort();
-		else options.signal.addEventListener("abort", onAbort, { once: true });
+		else options.signal.addEventListener("abort", onSignalAbort, { once: true });
 	}
 
 	// Background consumer — runs until query ends
@@ -2063,7 +2110,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			}
 
 			// --- Abort detection in normal completion path ---
-			if (wasAborted || options?.signal?.aborted) {
+			// Only wasAborted: a deferred abort leaves the signal aborted on a query
+			// that went on to finish normally.
+			if (wasAborted) {
 				// The killed subprocess may flush a late record into this session's
 				// JSONL — its own mirror's next sync must rebuild and rotate.
 				const state = sessionStateFor(queryCtx.piSessionId);
@@ -2115,7 +2164,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				debug("provider: discarded query ended in error, leaving session and stream to its replacement");
 				return;
 			}
-			if ((wasAborted || options?.signal?.aborted)) {
+			if (wasAborted) {
 				const state = sessionStateFor(queryCtx.piSessionId);
 				if (state) setSessionStateFor(queryCtx.piSessionId, { ...state, needsRebuild: true, forceRotate: true });
 			} else {
@@ -2126,7 +2175,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			}
 			promptStream.fail(error instanceof Error ? error : new Error(String(error)));
 			if (queryCtx.turnOutput) {
-				queryCtx.turnOutput.stopReason = options?.signal?.aborted ? "aborted" : "error";
+				queryCtx.turnOutput.stopReason = wasAborted ? "aborted" : "error";
 				// The SDK drops its copy of the result text if any message follows the error
 				// result, so prefer the cause consumeQuery recorded off the result itself.
 				queryCtx.turnOutput.errorMessage ??= error instanceof Error ? error.message : String(error);
@@ -2143,7 +2192,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			queryCtx.currentPiStream = null;
 		})
 		.finally(() => {
-			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
+			if (options?.signal) options.signal.removeEventListener("abort", onSignalAbort);
 			// Settle any ack still parked in the generator — the CLI is gone, so
 			// nothing will resume it. Clear the handle only if a later query
 			// hasn't already claimed the shared context.
