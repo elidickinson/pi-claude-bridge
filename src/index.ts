@@ -1752,6 +1752,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// AgentSession, sharing this process) must not discard the parent's parked
 	// query, and vice versa.
 	const rewrittenUnderQuery = Boolean(resultCtx?.historyStale);
+	// The query can also be gone before the rewrite (issue #154): a turn that dies on
+	// "Prompt is too long" leaves the routing set with its error result, then pi
+	// compacts and retries over a context ending at the tool result it was answering.
+	// Only this session's mark tells that retry apart from a result orphaned by abort.
+	const rewrittenAfterQuery = !resultCtx && Boolean(options?.sessionId && historyRewrittenBySession.has(options.sessionId));
 	if (resultCtx && rewrittenUnderQuery) {
 		discardRewrittenQuery(resultCtx);
 		resultCtx = undefined;
@@ -1798,9 +1803,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// The query is gone but pi still delivered the result. Nothing to do — just
 	// emit end_turn so pi waits for the next real user message. The discard
 	// branch above already siphoned off the stale-query case, which goes on to a
-	// rebuild instead — that one has somewhere to deliver the result to.
+	// rebuild instead — that one has somewhere to deliver the result to — and an
+	// overflow retry after compaction (rewrittenAfterQuery) rebuilds the same way.
 	const lastMsg = context.messages[context.messages.length - 1];
-	if (lastMsg?.role === "toolResult" && !rewrittenUnderQuery) {
+	if (lastMsg?.role === "toolResult" && !rewrittenUnderQuery && !rewrittenAfterQuery) {
 		debug(`provider: orphaned tool result after abort, emitting end_turn`);
 		// With no query in flight anywhere, the top-level session this result
 		// belongs to is the one whose turn just ended: its cursor advances to
@@ -1906,12 +1912,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
 
-	// A turn continuing past a discarded query ends at its tool result, not at a
-	// prompt, so say what happened rather than falling into the empty-prompt
-	// recovery below — that one is for a shape we do not expect, and this is one
-	// we do. The rebuilt session already ends with the tool result, placed after
-	// the tool call it answers.
-	if (rewrittenUnderQuery && !promptText && !promptBlocks) {
+	// A turn continuing past a discarded query, or retried after an overflow
+	// compaction, ends at its tool result, not at a prompt, so say what happened
+	// rather than falling into the empty-prompt recovery below — that one is for
+	// a shape we do not expect, and this is one we do. The rebuilt session
+	// already ends with the tool result, placed after the tool call it answers.
+	if ((rewrittenUnderQuery || rewrittenAfterQuery) && !promptText && !promptBlocks) {
 		promptText = CONTINUE_AFTER_REWRITE_PROMPT;
 		debug(`provider: continuing the turn after a rewritten history, ${context.messages.length} msgs rebuilt`);
 	}
