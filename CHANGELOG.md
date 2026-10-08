@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: one-off calls on the isolated path honour the caller's reasoning level** — Calls marked `cacheRetention: "none"` (compaction, branch summary, extension one-shots such as advisor tools) started Claude Code without `effort`, so the caller's `reasoning` was ignored and Claude Code's default applied. The isolated path now maps it with the same `thinkingLevelMap`-aware logic as the provider path (`effortForReasoning`). Compaction summaries now run at pi's session thinking level. Covered by `tests/unit-isolated-effort.mjs`.
+
 ## 0.9.2 — 2026-10-07
 
 - **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.
