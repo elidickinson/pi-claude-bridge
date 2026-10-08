@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: tools with a top-level `anyOf`/`oneOf`/`allOf` schema no longer run behind Claude's back (issue #179)** — Claude Code drops such a tool ("its input schema uses top-level anyOf, which the Anthropic API does not accept"), but the bridge still served it, so a call Claude made to it anyway ran in pi while CC answered "No such tool available" and retried under a fresh id: the tool ran twice, or the retry's handler waited forever and the turn hung. The MCP server now advertises those schemas flattened into one object, the way CC's own (gated) normalizer does, so the tool stays callable; pi still validates arguments against the full schema.
+
 ## 0.9.2 — 2026-10-07
 
 - **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.

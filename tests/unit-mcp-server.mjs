@@ -130,6 +130,56 @@ describe("MCP tool schema advertisement", () => {
 	});
 });
 
+// Claude Code drops any MCP tool whose input schema has a top-level
+// anyOf/oneOf/allOf ("its input schema uses top-level anyOf, which the Anthropic
+// API does not accept"). The bridge still maps the tool as served, so a call to it
+// reached pi and ran there while CC answered "No such tool available" and retried
+// under a fresh id: the tool ran twice, or the retry's handler waited forever.
+// Pi validates arguments against the full schema itself, so the bridge only needs
+// to advertise a flat object schema that CC accepts.
+describe("MCP tool schema with top-level combinators", () => {
+	async function listSchema(inputSchema) {
+		const server = createToolServer("custom-tools", [
+			{ name: "union_tool", description: "d", inputSchema, handler: async () => ({ content: [] }) },
+		]);
+		const { request } = await connectClient(server);
+		return (await request("tools/list", {})).result.tools[0].inputSchema;
+	}
+
+	it("flattens a top-level anyOf into one object schema CC accepts", async () => {
+		const listed = await listSchema({
+			type: "object",
+			additionalProperties: false,
+			required: ["operation"],
+			properties: { operation: { type: "string", enum: ["start", "status"] }, input: { type: "string" } },
+			anyOf: [
+				{ type: "object", properties: { operation: { type: "string", enum: ["start"] }, baseRef: { type: "string" } } },
+				{ type: "object", properties: { operation: { type: "string", enum: ["status"] } }, required: ["input"] },
+			],
+		});
+
+		for (const key of ["anyOf", "oneOf", "allOf"]) assert.ok(!(key in listed), `top-level ${key} must not reach CC`);
+		assert.strictEqual(listed.type, "object");
+		assert.strictEqual(listed.additionalProperties, false);
+		assert.deepStrictEqual(Object.keys(listed.properties).sort(), ["baseRef", "input", "operation"]);
+		assert.deepStrictEqual(listed.properties.operation.enum, ["start", "status"], "root declaration wins over a branch");
+		assert.deepStrictEqual(listed.required, ["operation"], "a branch-only requirement is not universal");
+	});
+
+	it("keeps allOf requirements, which apply to every call", async () => {
+		const listed = await listSchema({
+			type: "object",
+			properties: { a: { type: "string" } },
+			required: ["a"],
+			allOf: [{ type: "object", properties: { b: { type: "number" } }, required: ["b"] }],
+		});
+
+		assert.ok(!("allOf" in listed));
+		assert.deepStrictEqual(Object.keys(listed.properties).sort(), ["a", "b"]);
+		assert.deepStrictEqual(listed.required, ["a", "b"]);
+	});
+});
+
 describe("MCP tool invocation", () => {
 	// Two tools, so a handler picked by position rather than by name/id is visible.
 	const twoTools = (record) => [
