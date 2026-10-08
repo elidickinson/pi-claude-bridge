@@ -7,6 +7,8 @@
 // trip. That round trip is lossy below the top level: nested objects collapse
 // to open records and `anyOf`/`const` vanish, so Claude saw only the first
 // level of any tool with a nested schema — including the builtin `edit`.
+// The one exception is a top-level combinator, flattened below because Claude
+// Code drops a tool whose schema has one.
 //
 // Handlers go on the underlying protocol server rather than through
 // `McpServer.registerTool`, which is the Zod-only path. Skipping registerTool
@@ -56,6 +58,52 @@ function assertObjectSchema(tool: McpToolDef): void {
 	}
 }
 
+// Claude Code drops an MCP tool outright when its input schema has a top-level
+// anyOf/oneOf/allOf ("its input schema uses top-level anyOf, which the Anthropic
+// API does not accept"; CC's own normalizer for this is gated off for our
+// server). The tool is still in our served-name map, so a call Claude makes to it
+// anyway is forwarded to pi and runs there while CC answers "No such tool
+// available" and retries under a fresh id — the tool runs twice, or the retry's
+// handler waits forever. Advertise a flat object instead, built the way CC's
+// normalizer does: root properties win over branch ones, root `required` stays,
+// and allOf requirements join it (anyOf/oneOf ones hold only for one branch).
+// Nothing is lost: pi still validates arguments against the full schema.
+const ROOT_COMBINATORS = ["anyOf", "oneOf", "allOf"] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function flattenRootCombinators(schema: Record<string, unknown>): Record<string, unknown> {
+	const combinators = ROOT_COMBINATORS.filter((key) => key in schema);
+	if (combinators.length === 0) return schema;
+
+	const { anyOf: _anyOf, oneOf: _oneOf, allOf, ...rest } = schema;
+	const properties: Record<string, unknown> = {};
+	const required: string[] = [];
+	const addProperties = (source: unknown) => {
+		if (!isRecord(source) || !isRecord(source.properties)) return;
+		for (const [key, value] of Object.entries(source.properties)) if (!(key in properties)) properties[key] = value;
+	};
+	const addRequired = (source: unknown) => {
+		if (!isRecord(source) || !Array.isArray(source.required)) return;
+		for (const key of source.required) if (typeof key === "string" && !required.includes(key)) required.push(key);
+	};
+
+	addProperties(schema);
+	for (const key of combinators) {
+		const branches = schema[key];
+		if (Array.isArray(branches)) for (const branch of branches) addProperties(branch);
+	}
+	addRequired(schema);
+	if (Array.isArray(allOf)) for (const branch of allOf) addRequired(branch);
+
+	const flat: Record<string, unknown> = { ...rest, type: "object", properties };
+	if (required.length > 0) flat.required = required;
+	else delete flat.required;
+	return flat;
+}
+
 export function createToolServer(name: string, tools: McpToolDef[]) {
 	const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -65,7 +113,7 @@ export function createToolServer(name: string, tools: McpToolDef[]) {
 		tools: tools.map((tool) => ({
 			name: tool.name,
 			description: tool.description,
-			inputSchema: tool.inputSchema as Record<string, unknown>,
+			inputSchema: flattenRootCombinators(tool.inputSchema as Record<string, unknown>),
 		})),
 	}));
 
