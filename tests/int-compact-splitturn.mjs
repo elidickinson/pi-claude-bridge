@@ -32,7 +32,7 @@
 //     "Turn Context (split turn)" marker that compact() only emits when
 //     isSplitTurn fired, proving the race path was exercised.
 
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";

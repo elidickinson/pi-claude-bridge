@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Baseline: pi-side /compact works end-to-end through the bridge.
 //
-// Companion to int-compact-during-tools.mjs. Establishes that the harness,
-// model, and compact RPC path are healthy before asserting anything about
-// concurrency. If this fails, fix the environment/harness first — the
-// concurrency test is meaningless on top of a broken baseline.
+// Companion to int-compact-splitturn.mjs (the concurrency test). Establishes
+// that the harness, model, and compact RPC path are healthy before asserting
+// anything about concurrency. If this fails, fix the environment/harness first —
+// the concurrency test is meaningless on top of a broken baseline.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";

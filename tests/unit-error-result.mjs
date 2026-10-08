@@ -1,7 +1,8 @@
 /**
  * CC reports API failures (429 capacity, overload, prompt-too-long) as a result with
  * is_error set while subtype stays "success", after streaming the text as a <synthetic>
- * assistant message. Shape verified against claude-agent-sdk 0.2.141. Without this the
+ * assistant message. The result shape (is_error with subtype "success") is pinned
+ * live against the installed SDK in tests/int-cc-contracts.mjs. Without this the
  * turn finalizes as a normal stop and the failure never reaches pi.
  */
 import { describe, it } from "node:test";
@@ -11,6 +12,7 @@ import { QueryContext } from "../src/query-state.js";
 const { __test } = await import("../src/index.js");
 
 const fakeModel = { api: "anthropic-messages", provider: "anthropic", id: "test-model" };
+const toolMap = new Map([["mcp__custom-tools__bash", "bash"]]);
 
 function fakeStream() {
 	const events = [];
@@ -26,7 +28,7 @@ function makeCtx() {
 
 async function consume(c, messages) {
 	async function* gen() { for (const m of messages) yield m; }
-	await __test.consumeQuery(gen(), new Map(), fakeModel, () => false, c);
+	await __test.consumeQuery(gen(), toolMap, fakeModel, () => false, c);
 }
 
 const errorResult = {
@@ -126,6 +128,58 @@ describe("error results", () => {
 
 		const texts = c.turnOutput.content.filter((b) => b.type === "text");
 		assert.deepStrictEqual(texts.map((b) => b.text), [errorResult.result]);
+	});
+
+	// A consumer that fails over only before output commits, such as
+	// pi-model-fallback-alias, cannot reach the next provider if Claude Code's own
+	// failure report counts as output. Such a consumer commits on anything that is
+	// not a start or thinking event, so only that prefix may precede the terminal
+	// error.
+	it("keeps a synthetic report off the stream, so failover is still possible", async () => {
+		const c = makeCtx();
+		await consume(c, [
+			{ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: errorResult.result }] } },
+			errorResult,
+		]);
+
+		const stream = c.currentPiStream;
+		__test.finalizeCurrentStream(c, c.turnOutput.stopReason);
+
+		const beforeTerminal = stream.events.slice(0, -2);
+		assert.ok(
+			beforeTerminal.every((e) => e.type === "start" || e.type.startsWith("thinking_")),
+			`synthetic report must not commit output, got: ${stream.events.map((e) => e.type).join(",")}`,
+		);
+		assert.strictEqual(stream.events.at(-2).type, "error");
+		assert.strictEqual(stream.events.at(-2).error.errorMessage, errorResult.result);
+		// The wording still reaches pi's transcript as the failed turn's content.
+		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: errorResult.result }]);
+	});
+
+	// A stalled stream whose non-streaming retry also fails: the synthetic failure
+	// report arrives while the dead stream's partial blocks (unsigned thinking, a tool
+	// call CC will never dispatch) are still open. The report must drop them the same
+	// way the fallback path does — convertPiMessages would otherwise replay the
+	// abandoned tool call as one awaiting a result.
+	it("synthetic report after a stalled stream drops the abandoned partial blocks", async () => {
+		const c = makeCtx();
+		// A stream that reached a thinking block and the start of a tool call, then stalled.
+		const stalledStream = (id) => [
+			{ type: "stream_event", event: { type: "message_start", message: { id } } },
+			{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } },
+			{ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me look" } } },
+			{ type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", name: "mcp__custom-tools__bash", id: "toolu_dead", input: {} } } },
+			{ type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"comm" } } },
+		];
+		await consume(c, [
+			...stalledStream("msg_stalled"),
+			{ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: errorResult.result }] } },
+			errorResult,
+		]);
+
+		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: errorResult.result }]);
+		assert.strictEqual(c.turnSawToolCall, false);
+		assert.strictEqual(c.turnStreamOpen, false);
 	});
 
 	it("still streams and finalizes a successful result normally", async () => {

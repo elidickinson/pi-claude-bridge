@@ -18,7 +18,7 @@ node --import tsx diag/audit-warnings.mjs    [claude-bridge.log] [--since YYYY-M
 node --import tsx diag/replay-write-path.mjs <pi-session.jsonl>
 ```
 
-Defaults are `~/.claude/projects` and `~/.pi/agent/claude-bridge.log`.
+Defaults are `~/.claude/projects` and the bridge log in pi's agent dir (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`).
 
 **`--since` is what makes these gates rather than reports.** Everything found is
 always printed, but the exit code counts only records and log lines inside the
@@ -349,7 +349,7 @@ The cause was a bridge defect, not a missing SDK field. `updateUsage` read
 `usage.thinking_tokens`, but the count is nested at
 `usage.output_tokens_details.thinking_tokens` — so every value CC sent was dropped, and
 the recorded fixtures under `tests/fixtures/sdk-streams/` turned out to carry populated
-counts all along. Fixed in `src/index.ts`, so `reasoning=` now appears on turns that
+counts all along. Fixed in `src/usage.ts`, so `reasoning=` now appears on turns that
 think and this proxy is available for a *fresh* run. Every `usage:` line counted above
 predates the fix; do not reread that window for it. The transcript-join fallback
 (match the 8-char `resume=` prefix to a surviving `.jsonl`, then look at

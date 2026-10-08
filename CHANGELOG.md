@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.2 — 2026-10-07
+
+- **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.
+- **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
+- **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
+- **Bump: Agent SDK `^0.3.293`** — bundles Claude Code 2.1.293, includes Haiku 5.5.
+- **Tests: fix test isolation by lazy loading log path (#164)** — log-paths resolves debug/diag paths per call instead of at import time. Fixes issues with config tests overwriting real user settings in some situations.
+
+## 0.9.1 — 2026-09-30
+
+- **Bump: Claude Sonnet 5.5 and pi-ai 0.99.1** — pi-ai update brings `claude-sonnet-5-5` with 1M context. Agent SDK now requires `^0.3.284`.
+- **Tests: add PR CI** — Run unit tests on GitHub Actions without Claude credentials.
+- **Fix: write the debug and diagnostics logs into pi's agent dir (#147)** — Honour `PI_CODING_AGENT_DIR` instead of always writing to (and recreating) `~/.pi/agent`; `CLAUDE_BRIDGE_DEBUG_PATH` still overrides the debug log. Thanks @Susensio.
+- **Fix: unresolvable or refused system prompt ends the turn as a stream error (#124)** — The prompt-capture checks end the returned stream with an error event instead of throwing out of the provider call, so callers outside pi's agent loop see a failed turn too. The fallback to the freshest capture proposed in #124 is not included: an unmatched mid-query turn still fails, now as a failed turn rather than a throw. Thanks @jmtoepperwien.
+- **Add: name pi#5581 when an extension-triggered turn's prompt can't be matched (#144)** — An idle `sendMessage` with `triggerTurn` skips `before_agent_start`, so its prompt lacks that turn's extension additions. The turn still fails, but the error now says so and suggests sending a user message instead.
+- **Fix: thinking tokens never reached pi's `usage.reasoning` (#139)** — Read the SDK's nested `output_tokens_details.thinking_tokens`, as pi's own Anthropic provider does. Reasoning stays a subset of output tokens and out of cost. Thanks @cmembreno048.
+
 ## 0.9.0 — 2026-09-27
 
 - **Bump: require pi ≥0.86.1 and drop pre-0.86 compat** — This breaks support for pi <0.86.1. Use pi-ai's transcript helpers and update dev peers to `^0.87.1` and the Agent SDK to `^0.3.280`; the API now rejects older Claude Code clients.

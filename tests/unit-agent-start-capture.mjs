@@ -17,14 +17,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { activateWithMockPi } from "./lib/mock-pi.mjs";
 
-const { default: activate, __test } = await import("../src/index.js");
-
-function activateWithMockPi() {
-	const handlers = new Map();
-	activate({ on: (event, handler) => handlers.set(event, handler), registerProvider: () => {}, registerTool: () => {} });
-	return handlers;
-}
+const { __test } = await import("../src/index.js");
 
 const PRE_WIDEN = "You are pi.\n# Tools\n- read: Read a file\n\npi packages (docs/packages.md)";
 // Same prefix, then the MCP tool descriptions that only appear post-connect.
