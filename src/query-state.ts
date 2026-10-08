@@ -10,6 +10,14 @@ import type { AssistantMessage, AssistantMessageEventStream, Model } from "@eare
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
 
+/** `fromByte` is the transcript size before the CLI got the input, so an
+ *  earlier prompt with the same text cannot be taken for it. */
+export type ServedInput = { fromByte: number } & ({ kind: "prompt"; text: string } | { kind: "toolResults"; ids: string[] });
+
+/** How the CLI's turn for an input ended: a final answer whose last transcript
+ *  entry is `lastUuid`, a tool call, or anything else. */
+export type ServedReply = { kind: "answer"; lastUuid: string } | { kind: "toolUse" | "failed" };
+
 export interface PendingToolCall {
 	toolName: string;
 	resolve: (result: McpResult) => void;
@@ -20,6 +28,24 @@ export class QueryContext {
 	activeQuery: unknown | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
 	latestCursor = 0;
+	latestFingerprint: string | undefined = undefined;
+	/** Cursor and fingerprint of the history this query's CLI holds, as of its
+	 *  start or last full tool-result delivery. */
+	served: { cursor: number; fingerprint: string } | undefined = undefined;
+	/** The last input the CLI got for `served`; an isolated fork copies the
+	 *  session up to the answer to it. Undefined when that input cannot be found
+	 *  in the transcript, e.g. a steer delivered with a tool result. */
+	servedInput: ServedInput | undefined = undefined;
+	/** How the turn for each served input ended, kept past the next input. */
+	readonly servedReplies = new WeakMap<ServedInput, ServedReply>();
+	/** The uuid of the last assistant message the CLI streamed since `servedInput`,
+	 *  which is also its transcript entry's uuid. */
+	lastAssistantUuid: string | undefined = undefined;
+	/** The CC session this query runs on, from its init message. */
+	ccSessionId: string | undefined = undefined;
+	/** The session outlives the query, so a fork may copy it. False for a clean
+	 *  start, whose session is deleted when the query completes. */
+	forkable = false;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();
 	/** tool_use ids emitted this turn. Sole purpose is routing a delivered result
@@ -79,6 +105,19 @@ export class QueryContext {
 		for (const pending of this.pendingToolCalls.values()) pending.resolve({ content: [{ type: "text", text: reason }] });
 		this.pendingToolCalls.clear();
 		this.pendingResults.clear();
+	}
+
+	serve(input: ServedInput | undefined): void {
+		this.servedInput = input;
+		this.lastAssistantUuid = undefined;
+	}
+
+	/** Records how the turn for the current input ended; the first end wins. */
+	endServedTurn(kind: "answer" | "toolUse" | "failed"): void {
+		const input = this.servedInput;
+		if (!input || this.servedReplies.has(input)) return;
+		const lastUuid = this.lastAssistantUuid;
+		this.servedReplies.set(input, kind === "answer" && lastUuid ? { kind, lastUuid } : { kind: kind === "answer" ? "failed" : kind });
 	}
 
 	resetTurnState(model: Model<any>): void {

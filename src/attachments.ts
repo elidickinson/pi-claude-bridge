@@ -38,7 +38,7 @@ export type CarriedAttachment = {
 type Rec = Record<string, unknown>;
 
 /** A user record holding a prompt, as opposed to one holding tool results. */
-function userPromptText(record: Rec): string | undefined {
+export function userPromptText(record: Rec): string | undefined {
 	if (record.type !== "user") return undefined;
 	const content = (record.message as Rec | undefined)?.content;
 	if (Array.isArray(content) && content.some((b) => (b as Rec)?.type === "tool_result")) return undefined;
@@ -93,6 +93,28 @@ export function collectCarriedAttachments(records: readonly JsonlRecord[]): Carr
 	return carried;
 }
 
+/** The text of every prompt record in a session, in order. */
+export function recordPromptTexts(records: readonly JsonlRecord[]): string[] {
+	const texts: string[] = [];
+	for (const record of records) {
+		const text = userPromptText(record as Rec);
+		if (text !== undefined) texts.push(text);
+	}
+	return texts;
+}
+
+/** The prompts in a converted message array, keyed the same way as `recordPromptTexts`. */
+export function promptsOf(messages: readonly { role: string; content: unknown }[]): { index: number; text: string }[] {
+	const prompts: { index: number; text: string }[] = [];
+	messages.forEach((msg, index) => {
+		if (msg.role !== "user") return;
+		if (Array.isArray(msg.content) && msg.content.some((b) => (b as Rec)?.type === "tool_result")) return;
+		const text = messageContentToText(msg.content as never);
+		if (text) prompts.push({ index, text });
+	});
+	return prompts;
+}
+
 /**
  * Resolve each carried attachment to a position in the array about to be
  * imported — the messages *after* conversion and repair, since that is the index
@@ -108,14 +130,7 @@ export function placeCarriedAttachments(
 	carried: readonly CarriedAttachment[],
 	messages: readonly { role: string; content: unknown }[],
 ): { attachments: ImportAttachment[]; skipped: string[] } {
-	const prompts: { index: number; text: string }[] = [];
-	messages.forEach((msg, index) => {
-		if (msg.role !== "user") return;
-		if (Array.isArray(msg.content) && msg.content.some((b) => (b as Rec)?.type === "tool_result")) return;
-		const text = messageContentToText(msg.content as never);
-		if (text) prompts.push({ index, text });
-	});
-
+	const prompts = promptsOf(messages);
 	const attachments: ImportAttachment[] = [];
 	const skipped: string[] = [];
 	for (const item of carried) {

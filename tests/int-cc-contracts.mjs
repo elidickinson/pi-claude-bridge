@@ -33,7 +33,7 @@ import { createServer } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, deleteSession as deleteCcSession } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createSession, openSession, repairToolPairing } from "cc-session-io";
@@ -677,5 +677,101 @@ test("includeGitInstructions:false strips gitStatus and keeps the preset static 
 	} finally {
 		api.close();
 		rmSync(repo, { recursive: true, force: true });
+	}
+});
+
+// --- Isolated compression fork (billion-context-pi #614) ---
+
+const COMPRESS_TOOL = {
+	name: "compress",
+	description: "Replace a range of the conversation with a summary you write.",
+	inputSchema: {
+		type: "object",
+		properties: { startId: { type: "string" }, endId: { type: "string" }, summary: { type: "string" } },
+		required: ["startId", "endId", "summary"],
+	},
+};
+const BASH_TOOL = { name: "bash", description: "Run a shell command.", inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } };
+
+function seedForkSource(sessionId) {
+	const session = createSession({ sessionId, projectPath: CWD, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
+	session.importMessages(repairToolPairing([
+		{ role: "user", content: "[m00001] Please list the files in the repo." },
+		{ role: "assistant", content: [{ type: "tool_use", id: "call_ls_1", name: "mcp__custom-tools__bash", input: { command: "ls" } }] },
+		{ role: "user", content: [{ type: "tool_result", tool_use_id: "call_ls_1", content: "[m00002] README.md src tests package.json" }] },
+		{ role: "assistant", content: [{ type: "text", text: "[m00003] The repo has README.md, src, tests and package.json." }] },
+	]));
+	session.save();
+	return session.jsonlPath;
+}
+
+/** Serves `compress` capture-only and refuses every other tool; stops at the first capture. */
+function captureServer(captured, refused, onCapture) {
+	const server = new McpServer({ name: "custom-tools", version: "1.0.0" }, { capabilities: { tools: {} } });
+	server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [COMPRESS_TOOL, BASH_TOOL] }));
+	server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+		if (request.params.name === "compress") {
+			captured.push(request.params.arguments);
+			onCapture();
+			return { content: [{ type: "text", text: "Captured." }] };
+		}
+		refused.push(request.params.name);
+		return { isError: true, content: [{ type: "text", text: "Tool execution is disabled in this fork." }] };
+	});
+	return { "custom-tools": { type: "sdk", name: "custom-tools", instance: server } };
+}
+
+const FORK_NUDGE = "Context is large. Call the compress tool exactly once with startId m00001, endId m00003 and a one-sentence summary. Do not call any other tool.";
+
+async function runCaptureFork(options) {
+	const captured = [];
+	const refused = [];
+	const usage = [];
+	let sessionId = null;
+	let q;
+	q = query({ prompt: FORK_NUDGE, options: providerOptions({ maxTurns: 2, mcpServers: captureServer(captured, refused, () => q.interrupt().catch(() => {})), ...options }) });
+	try {
+		for await (const message of q) {
+			if (message.session_id) sessionId = message.session_id;
+			if (message.type === "assistant" && message.message?.usage) usage.push(message.message.usage);
+			if (captured.length > 0 && message.type === "result") break;
+		}
+	} finally {
+		q.close();
+	}
+	return { captured, refused, usage, sessionId };
+}
+
+test("an isolated compression fork copies its source under the id it names, captures compress args, executes nothing, and leaves the source untouched", { timeout: 180_000 }, async () => {
+	const created = [];
+	const sourceId = randomUUID();
+	try {
+		const sourcePath = seedForkSource(sourceId);
+		created.push(sourceId);
+		const before = readFileSync(sourcePath);
+		const lastEntry = readFileSync(sourcePath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((r) => r.uuid).at(-1).uuid;
+
+		const forkId = randomUUID();
+		created.push(forkId);
+		const fork = await runCaptureFork({ resume: sourceId, forkSession: true, sessionId: forkId, resumeSessionAt: lastEntry });
+		assert.equal(fork.sessionId, forkId, "the fork runs under the session id the bridge chose");
+		assert.deepEqual(readFileSync(sourcePath), before, "the fork modified the source transcript");
+		assert.equal(fork.captured.length, 1, `expected one captured compress call, got ${JSON.stringify(fork)}`);
+		assert.equal(fork.captured[0].startId, "m00001");
+		assert.deepEqual(fork.refused, [], "a non-compress tool was dispatched");
+
+		// A fork point the source does not have is refused without touching it.
+		const strayId = randomUUID();
+		created.push(strayId);
+		const refused = await runCaptureFork({ resume: sourceId, forkSession: true, sessionId: strayId, resumeSessionAt: randomUUID() });
+		assert.equal(refused.captured.length, 0);
+		assert.deepEqual(readFileSync(sourcePath), before);
+
+		const firstUsage = (r) => r.usage[0] ? { input: r.usage[0].input_tokens, cacheRead: r.usage[0].cache_read_input_tokens ?? 0, cacheWrite: r.usage[0].cache_creation_input_tokens ?? 0 } : null;
+		console.log("fork-probe usage", JSON.stringify({ fork: firstUsage(fork) }));
+	} finally {
+		for (const id of created) {
+			try { deleteCcSession(id, { dir: CWD }); } catch {}
+		}
 	}
 });

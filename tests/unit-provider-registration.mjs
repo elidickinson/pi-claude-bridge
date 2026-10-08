@@ -31,6 +31,7 @@ function activateWithMockPi(activateFn, options = {}) {
 			handlers.set(event, list);
 		},
 		registerProvider: (name, config) => registered.push({ name, config }),
+		events: { on: () => () => {}, emit: () => {} },
 		registerTool: () => {},
 	});
 	const emit = (event, ...args) => {
