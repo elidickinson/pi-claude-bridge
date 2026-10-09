@@ -23,6 +23,10 @@ export interface Config {
 	};
 	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
+		// Provider-path system prompt. "append" (default): CC's claude_code preset +
+		// pi's portable parts (context files, skills, custom/append). "replace": only
+		// pi's portable parts, no preset. false: neither.
+		systemPromptMode?: SystemPromptMode;
 		strictMcpConfig?: boolean;
 		autoMemoryEnabled?: boolean;
 		pathToClaudeCodeExecutable?: string;
@@ -46,6 +50,16 @@ export function tryParseJson(path: string): Partial<Config> {
 		console.error(`claude-bridge: failed to parse ${path}: ${e}`);
 		return {};
 	}
+}
+
+export type SystemPromptMode = "append" | "replace" | false;
+
+/** Validate at the boundary: a typo must not silently drop all of pi's instructions. */
+export function resolveSystemPromptMode(value: unknown): SystemPromptMode {
+	if (value === undefined) return "append";
+	if (value === "append" || value === "replace" || value === false) return value;
+	console.error(`claude-bridge: ignoring provider.systemPromptMode ${JSON.stringify(value)}; expected "append", "replace" or false`);
+	return "append";
 }
 
 export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMemoryEnabled: boolean } {
