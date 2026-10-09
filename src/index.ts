@@ -28,6 +28,7 @@ import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
+import { rateLimitResponse } from "./rate-limit.js";
 
 // --- Debug logging ---
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to the bridge log in pi's agent
@@ -523,6 +524,19 @@ function describeRateLimitFailure(rejection: { rateLimitType?: string; resetsAt?
 	const kind = rejection.rateLimitType ? ` (${rejection.rateLimitType})` : "";
 	const resets = rejection.resetsAt ? ` — resets ${new Date(rejection.resetsAt * 1000).toLocaleTimeString()}` : ""; // resetsAt: Unix seconds (unit undocumented in the SDK; observed)
 	return `Claude rate limit${kind}${resets}: ${failure}`;
+}
+
+/** Reports to the call that owns the open stream, before its next event, as pi's own
+ *  providers do. A failing consumer must not end the turn it is observing. */
+async function reportHeldRateLimit(c: QueryContext, model: Model<any>): Promise<void> {
+	const info = c.heldRateLimit;
+	if (!info || !c.currentPiStream) return;
+	c.heldRateLimit = undefined;
+	try {
+		await c.currentOnResponse?.(rateLimitResponse(info), model);
+	} catch (error) {
+		debug("rate limit: onResponse failed", error);
+	}
 }
 
 function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -1169,11 +1183,12 @@ function markStreamComplete(stream: AssistantMessageEventStream | null): void {
 	if (stream) completedStreams.add(stream as object);
 }
 
-function claimCurrentPiStream(stream: AssistantMessageEventStream, label: string, c: QueryContext): void {
+function claimCurrentPiStream(stream: AssistantMessageEventStream, label: string, c: QueryContext, options: SimpleStreamOptions | undefined): void {
 	if (c.currentPiStream && !completedStreams.has(c.currentPiStream as object)) {
 		debug(`WARNING: currentPiStream overwritten before terminal event (${label}); activeQuery=${Boolean(c.activeQuery)} pendingHandlers=${c.pendingToolCalls.size}`);
 	}
 	c.currentPiStream = stream;
+	c.currentOnResponse = options?.onResponse;
 }
 
 function ensureTurnStarted(c: QueryContext): void {
@@ -1458,6 +1473,7 @@ async function consumeQuery(
 		const recordStreamPath = process.env.CLAUDE_BRIDGE_RECORD_STREAM;
 		if (recordStreamPath) appendFileSync(recordStreamPath, `${JSON.stringify(message)}\n`);
 		if (wasAborted()) break;
+		await reportHeldRateLimit(queryCtx, model);
 		// Everything below the currentPiStream guard is content, which there is
 		// nowhere to put once a turn has ended on a tool call. These three are not
 		// content and must not share that gate:
@@ -1492,6 +1508,8 @@ async function consumeQuery(
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+			if (info) queryCtx.heldRateLimit = info;
+			await reportHeldRateLimit(queryCtx, model);
 			if (info?.status === "rejected") {
 				// Held so the failure Claude Code sends next can be named as a rate limit.
 				queryCtx.rateLimitRejection = info;
@@ -1769,7 +1787,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// (everything after the last assistant message) and match against waiting MCP
 	// handlers. Results that arrive before their handler get queued in pendingResults.
 	if (resultCtx) {
-		claimCurrentPiStream(stream, "tool-result", resultCtx);
+		claimCurrentPiStream(stream, "tool-result", resultCtx, options);
 		resultCtx.resetTurnState(model);
 		// A rewrite that armed the mark after this query parked gets copied here,
 		// though markRebuildForSession usually reaches it directly.
@@ -1872,7 +1890,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// 2. Fresh child context — constructor already gave us clean Maps and empty
 	//    arrays. For a reused top-level context, clear explicitly.
-	claimCurrentPiStream(stream, "fresh-query", queryCtx);
+	claimCurrentPiStream(stream, "fresh-query", queryCtx, options);
 	queryCtx.pendingToolCalls.clear();
 	queryCtx.pendingResults.clear();
 	// Stale ids would let a late result from the previous query route here via

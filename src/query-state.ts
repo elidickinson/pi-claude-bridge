@@ -6,9 +6,10 @@
 //
 // Extracted from index.ts so tests can import without activating the extension.
 
-import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
+import type { RateLimitInfo } from "./rate-limit.js";
 
 export interface PendingToolCall {
 	toolName: string;
@@ -19,6 +20,11 @@ export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: unknown | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
+	/** onResponse from the provider call that owns currentPiStream. */
+	currentOnResponse: SimpleStreamOptions["onResponse"] | undefined;
+	/** Latest rate_limit_event not yet reported. CC sends it after message_stop, when a
+	 *  tool call has already ended the stream, so it waits for the next call's stream. */
+	heldRateLimit: RateLimitInfo | undefined;
 	latestCursor = 0;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();

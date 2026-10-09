@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: report plan usage through pi's `after_provider_response`** — Each `rate_limit_event` from Claude Code goes to the `onResponse` of the provider call that owns the open stream, as the `anthropic-ratelimit-unified-*` headers that the event can supply, so extensions that read usage from the built-in `anthropic` provider can read it from the bridge too. The bridge still renders nothing.
+
 ## 0.9.2 — 2026-10-07
 
 - **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.
