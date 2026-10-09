@@ -1,6 +1,6 @@
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
-import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, generateBranchSummary, keyHint, type BranchSummaryResult, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
@@ -368,7 +368,7 @@ function convertAndImportMessages(
 	// importMessages reads. Attachments are links in CC's uuid chain, so they have
 	// to be written in order with the messages, not appended afterwards.
 	const placed = carried?.length
-		? placeCarriedAttachments(carried, repaired as unknown as { role: string; content: unknown }[])
+		? placeCarriedAttachments(carried, repaired as unknown as { role: string; content: unknown }[], sanitizedIds)
 		: undefined;
 	if (placed?.skipped.length) {
 		debug(`convertAndImportMessages: dropped ${placed.skipped.length} carried attachment(s): ${placed.skipped.join("; ")}`);
@@ -567,7 +567,7 @@ async function runIsolatedSummary(
 		const cliModel = claudeCodeModelId(model, longContextSettings);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
-		sdkQuery = query({
+		sdkQuery = summaryQueryImpl({
 			prompt: promptText,
 			options: {
 				cwd,
@@ -578,7 +578,14 @@ async function runIsolatedSummary(
 				settingSources: [] as SettingSource[],
 				skills: [],
 				persistSession: false,
-				systemPrompt: context.systemPrompt,
+				// Keep summary instructions on the same preset+append request shape
+				// as normal bridge traffic, without inheriting conversation state.
+				systemPrompt: {
+					type: "preset",
+					preset: "claude_code",
+					append: context.systemPrompt,
+					snapshot: false,
+				},
 				model: cliModel,
 				maxTurns: 1,
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
@@ -643,17 +650,6 @@ async function runIsolatedSummary(
 		options?.signal?.removeEventListener("abort", onAbort);
 		try { sdkQuery?.close(); } catch {}
 	}
-}
-
-function reinjectPriorCompactionFileOps(branchEntries: Array<{ type: string; details?: unknown }>, preparation: { fileOps: { read: Set<string>; edited: Set<string> } }): void {
-	const prior = [...branchEntries]
-		.reverse()
-		.find((entry): entry is CompactionEntry => entry.type === "compaction");
-	const details = prior?.details as { readFiles?: unknown; modifiedFiles?: unknown } | undefined;
-	if (!Array.isArray(details?.readFiles) || !Array.isArray(details?.modifiedFiles)) return;
-	for (const file of details.readFiles) preparation.fileOps.read.add(String(file));
-	for (const file of details.modifiedFiles) preparation.fileOps.edited.add(String(file));
-	debug(`compact takeover: re-injected prior file ops read=${details.readFiles.length} modified=${details.modifiedFiles.length}`);
 }
 
 interface SyncResult {
@@ -843,13 +839,15 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	return { sessionId: session.sessionId };
 }
 
-// The SDK's query(), or a test double (see setQuery). The compact/summary
-// path calls the real query() directly — its subprocess must never be swapped
-// out from under a real compaction.
+// Separate SDK seams keep provider-query doubles from replacing summary queries.
 let queryImpl: typeof query = query;
+let summaryQueryImpl: typeof query = query;
 
 // @internal
 export const __test = {
+	setSummaryQuery(fn: typeof query | null) {
+		summaryQueryImpl = fn ?? query;
+	},
 	setQuery(fn: typeof query | null) {
 		queryImpl = fn ?? query;
 	},
@@ -2006,6 +2004,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend ? systemPromptAppend : undefined,
+			// Pi owns the current instructions; resumed sessions must use this append.
+			snapshot: false,
 		},
 		extraArgs,
 		...(effort ? { effort } : {}),
@@ -2422,7 +2422,7 @@ export default function (pi: ExtensionAPI) {
 	// Code's preset carries its own tool and permission guidance that the bridge
 	// still depends on, so both flags are forwarded as an append.
 	//
-	// The options (custom/append/contextFiles/skills/sections) are pi config, stable across a
+	// The options (custom/append/contextFiles/skills/guidelines/snippets/sections) are pi config, stable across a
 	// turn; only the auto-generated tool list in the rendered prompt varies. Stash them
 	// at before_agent_start so the agent_start recording below can reuse them.
 	type RecordOptions = Parameters<typeof recordSystemPrompt>[2];
@@ -2434,8 +2434,22 @@ export default function (pi: ExtensionAPI) {
 		skills?: Parameters<typeof promptCaptures.record>[1]["skills"];
 		sections?: Record<string, string>;
 		selectedTools?: string[];
+		promptGuidelines?: string[];
+		toolSnippets?: Record<string, string>;
+		toolGuidelines?: Record<string, string[]>;
 	} | undefined) {
 		if (!systemPrompt) return;
+		// Read current inventory only when tool guidance exists. Builtin/SDK prose
+		// describes pi tools, not the tools provided by Claude Code's preset.
+		const piOwned = new Set(
+			(options?.toolSnippets || options?.toolGuidelines ? pi.getAllTools() : [])
+				.filter((tool) => tool.sourceInfo?.source === "builtin" || tool.sourceInfo?.source === "sdk")
+				.map((tool) => tool.name),
+		);
+		const extensionOnly = <V>(map: Record<string, V> | undefined): Record<string, V> =>
+			Object.fromEntries((options?.selectedTools ?? ["read", "bash", "edit", "write"])
+				.filter((name) => !piOwned.has(name) && map?.[name] !== undefined)
+				.map((name) => [name, map![name]]));
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
 		promptCaptures.record(systemPrompt, {
 			custom: options?.customPrompt,
@@ -2443,6 +2457,9 @@ export default function (pi: ExtensionAPI) {
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 			sections: options?.sections,
+			promptGuidelines: options?.promptGuidelines,
+			toolSnippets: extensionOnly(options?.toolSnippets),
+			toolGuidelines: extensionOnly(options?.toolGuidelines),
 		}, source);
 	}
 	pi.on("before_agent_start", (event) => {
@@ -2480,38 +2497,8 @@ export default function (pi: ExtensionAPI) {
 		clearSession("session_shutdown");
 	});
 
-	pi.on("session_before_compact", async (event, ctx) => {
-		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
-		debug(
-			`session_before_compact: takeover reason=${event.reason} willRetry=${event.willRetry} ` +
-			`isSplitTurn=${event.preparation.isSplitTurn} messages=${event.preparation.messagesToSummarize.length} ` +
-			`turnPrefix=${event.preparation.turnPrefixMessages.length}`,
-		);
-		try {
-			reinjectPriorCompactionFileOps(event.branchEntries, event.preparation);
-			const compaction = await compact(
-				event.preparation,
-				ctx.model,
-				undefined,
-				undefined,
-				event.customInstructions,
-				event.signal,
-				undefined,
-				isolatedStreamFn,
-				undefined,
-			);
-			debug(`session_before_compact: takeover complete summaryLen=${compaction.summary.length}`);
-			return { compaction };
-		} catch (err) {
-			const msg = errorMessage(err);
-			debug("session_before_compact: takeover failed; cancelling to avoid native compact fallback", err);
-			ctx.ui?.notify?.(
-				`Claude bridge compact failed (${msg}); cancelled to avoid known hang. Retry, switch model, or reduce context.`,
-				"error",
-			);
-			return { cancel: true };
-		}
-	});
+	// Pi and summary extensions own compaction; native summary calls use the
+	// isolated provider path. Observe the completed rewrite below, not its owner.
 
 	// pi /compact and session-tree navigation (rewind / fork-at-point /
 	// branch switch) both mutate pi's messages array out from under the
@@ -2539,7 +2526,7 @@ export default function (pi: ExtensionAPI) {
 	// this.agent.streamFunction`). On a bridge model that reaches this provider
 	// carrying pi's internal summarization prompt, which no `before_agent_start`
 	// ever recorded, so the prompt-capture resolver has nothing to resolve it to.
-	// Take it over the way compaction is taken over: the summary runs as its own
+	// Keep branch navigation's takeover: the summary runs as its own
 	// Claude Code subprocess, never touching the live session or the resolver.
 	pi.on("session_before_tree", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
