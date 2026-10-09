@@ -15,7 +15,7 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
+import { claudeCodeSettings, loadConfig, markStartupNoticeShown, resolveSystemPromptMode, type Config } from "./config.js";
 import {
 	collectPromptSkills,
 	projectPromptCapture,
@@ -60,6 +60,14 @@ const CC_CHILD_ENV = {
 // paths; the filename globs cover user, ancestor, project and .claude/ copies,
 // while rules need their own. Managed/policy memory is not excludable by design.
 const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"];
+
+// Provider path only: AskClaude runs CC's native tools and always needs the preset's guidance.
+// "" is the SDK's bare default (identity line only), not a fallback to the preset.
+function claudeSystemPrompt(piPart: string | undefined): NonNullable<Parameters<typeof query>[0]["options"]>["systemPrompt"] {
+	const mode = providerSettings.systemPromptMode;
+	if (mode === "append") return { type: "preset", preset: "claude_code", append: piPart || undefined };
+	return mode === "replace" ? piPart ?? "" : "";
+}
 
 // Unique per module evaluation — confirms whether subagents share module state
 const moduleInstanceId = Math.random().toString(36).slice(2, 8);
@@ -2003,10 +2011,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
 			includeGitInstructions: false,
 		},
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
+		systemPrompt: claudeSystemPrompt(systemPromptAppend),
 		extraArgs,
 		...(effort ? { effort } : {}),
 		...(mcpServers ? { mcpServers } : {}),
@@ -2371,7 +2376,7 @@ export default function (pi: ExtensionAPI) {
 
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
-	providerSettings = config.provider ?? {};
+	providerSettings = { ...config.provider, systemPromptMode: resolveSystemPromptMode(config.provider?.systemPromptMode) };
 	// We need these settings to know if we're eligible for 1M context on certain models
 	// Validate at the boundary: a non-array here would throw inside every
 	// claudeCodeModelId call and brick the extension at activation.

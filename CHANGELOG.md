@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: `provider.systemPromptMode`** — `"replace"` sends only pi's portable prompt parts (context files, skills, custom/append text) without Claude Code's `claude_code` preset; `false` sends neither; `"append"` (default) is unchanged. Provider path only — AskClaude keeps the preset. Invalid values log an error and fall back to `"append"`.
+
 ## 0.9.2 — 2026-10-07
 
 - **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.
