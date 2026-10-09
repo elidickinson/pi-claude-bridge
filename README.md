@@ -144,6 +144,10 @@ Hooks do not fire on the compact-summary side query.
 
 Other extensions can change the system prompt. When the result still contains pi's built-in system prompt text, or the two documentation paths that Anthropic looks for (`docs/custom-provider.md` in the same prompt with `docs/packages.md`), the bridge stops the turn instead of sending it, since Anthropic may otherwise bill these requests as Extra Usage. Fix the source extension before retrying; `CLAUDE_BRIDGE_DEBUG=1` writes the full prompt to the bridge log when this happens.
 
+### Plan usage for footers and quota extensions
+
+The bridge does not show plan usage itself. Claude Code sends a `rate_limit_event` when a usage window changes, and the bridge passes each one to pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers, with the names that the Anthropic API uses (for example `anthropic-ratelimit-unified-5h-utilization`). The bridge sends only the headers that it can make from the event: the status, the reset time, the representative claim, the overage status and reset, and the utilization and reset of each window. The status code is always 200. An extension that reads these headers for the built-in `anthropic` provider can also accept `claude-bridge` without other changes.
+
 ### Using claude bridge with @gotgenes/pi-subagents
 
 Requires the following in `~/.pi/agent/subagents.json`:
