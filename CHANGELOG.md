@@ -4,6 +4,7 @@
 
 - **Bump: Claude Agent SDK 0.3.308 (Claude Code 2.1.308)** — Claude Code's new per-request log in session files is turned off; it made them about a third larger.
 - **Fix: abort ignored after a terminated tool batch (#200, issue #199)** — when a run ended with Claude Code's query parked at a tool call (`terminate: true`), aborting the next run did nothing. Each run that continues the query now binds its own signal. Thanks @orshih6 and @cootue.
+- **Add: `provider.systemPromptMode`** — `"replace"` sends only pi's portable prompt parts (context files, skills, custom/append text) without Claude Code's `claude_code` preset; `false` sends neither; `"append"` (default) is unchanged. Provider path only — AskClaude keeps the preset. Invalid values log an error and fall back to `"append"`.
 
 ## 0.9.3 — 2026-10-13
 

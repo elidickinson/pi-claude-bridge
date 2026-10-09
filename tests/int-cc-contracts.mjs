@@ -600,6 +600,46 @@ test("claudeMdExcludes prevents native AGENTS.md from duplicating forwarded inst
 	}
 });
 
+// --- provider.systemPromptMode ---
+
+test("a string systemPrompt replaces the preset, and \"\" is the bare SDK default", { timeout: 120_000 }, async () => {
+	// systemPromptMode "replace" sends pi's portable parts as a plain string and
+	// false sends "". Pin that a string drops the claude_code preset entirely and
+	// that "" does not fall back to it.
+	const requests = [];
+	const api = await stubApi(requests);
+	const marker = `pi-portable-parts-${randomUUID()}`;
+	const presetAnchor = "You are an interactive agent";
+	try {
+		const systemFor = async (systemPrompt) => {
+			const { result } = await collect(query({
+				prompt: "Reply OK.",
+				options: providerOptions({
+					maxTurns: 1, persistSession: false, systemPrompt,
+					env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
+				}),
+			}));
+			assert.equal(result?.subtype, "success");
+			assert.ok(requests.at(-1), "CC sent no request");
+			return JSON.stringify(requests.at(-1).system);
+		};
+
+		const preset = await systemFor({ type: "preset", preset: "claude_code", append: marker });
+		assert.ok(preset.includes(presetAnchor), "preset anchor changed — re-point this test");
+		assert.ok(preset.includes(marker));
+
+		const replaced = await systemFor(marker);
+		assert.ok(replaced.includes(marker), "string system prompt was not sent");
+		assert.ok(!replaced.includes(presetAnchor), "a string system prompt no longer replaces the preset");
+
+		const empty = await systemFor("");
+		assert.ok(!empty.includes(presetAnchor), "\"\" fell back to the claude_code preset");
+		assert.ok(empty.length < 1000, `"" sent a ${empty.length}-char system prompt — expected the bare SDK default`);
+	} finally {
+		api.close();
+	}
+});
+
 // --- The gitStatus cache pinning ---
 
 test("includeGitInstructions:false strips gitStatus and keeps the preset static across git transitions", { timeout: 180_000 }, async () => {
