@@ -368,7 +368,7 @@ function convertAndImportMessages(
 	// importMessages reads. Attachments are links in CC's uuid chain, so they have
 	// to be written in order with the messages, not appended afterwards.
 	const placed = carried?.length
-		? placeCarriedAttachments(carried, repaired as unknown as { role: string; content: unknown }[])
+		? placeCarriedAttachments(carried, repaired as unknown as { role: string; content: unknown }[], sanitizedIds)
 		: undefined;
 	if (placed?.skipped.length) {
 		debug(`convertAndImportMessages: dropped ${placed.skipped.length} carried attachment(s): ${placed.skipped.join("; ")}`);
@@ -2006,6 +2006,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend ? systemPromptAppend : undefined,
+			// Pi owns the current instructions; resumed sessions must use this append.
+			snapshot: false,
 		},
 		extraArgs,
 		...(effort ? { effort } : {}),
@@ -2422,7 +2424,7 @@ export default function (pi: ExtensionAPI) {
 	// Code's preset carries its own tool and permission guidance that the bridge
 	// still depends on, so both flags are forwarded as an append.
 	//
-	// The options (custom/append/contextFiles/skills/sections) are pi config, stable across a
+	// The options (custom/append/contextFiles/skills/guidelines/snippets/sections) are pi config, stable across a
 	// turn; only the auto-generated tool list in the rendered prompt varies. Stash them
 	// at before_agent_start so the agent_start recording below can reuse them.
 	type RecordOptions = Parameters<typeof recordSystemPrompt>[2];
@@ -2434,8 +2436,22 @@ export default function (pi: ExtensionAPI) {
 		skills?: Parameters<typeof promptCaptures.record>[1]["skills"];
 		sections?: Record<string, string>;
 		selectedTools?: string[];
+		promptGuidelines?: string[];
+		toolSnippets?: Record<string, string>;
+		toolGuidelines?: Record<string, string[]>;
 	} | undefined) {
 		if (!systemPrompt) return;
+		// Read current inventory only when tool guidance exists. Builtin/SDK prose
+		// describes pi tools, not the tools provided by Claude Code's preset.
+		const piOwned = new Set(
+			(options?.toolSnippets || options?.toolGuidelines ? pi.getAllTools() : [])
+				.filter((tool) => tool.sourceInfo?.source === "builtin" || tool.sourceInfo?.source === "sdk")
+				.map((tool) => tool.name),
+		);
+		const extensionOnly = <V>(map: Record<string, V> | undefined): Record<string, V> =>
+			Object.fromEntries((options?.selectedTools ?? ["read", "bash", "edit", "write"])
+				.filter((name) => !piOwned.has(name) && map?.[name] !== undefined)
+				.map((name) => [name, map![name]]));
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
 		promptCaptures.record(systemPrompt, {
 			custom: options?.customPrompt,
@@ -2443,6 +2459,9 @@ export default function (pi: ExtensionAPI) {
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 			sections: options?.sections,
+			promptGuidelines: options?.promptGuidelines,
+			toolSnippets: extensionOnly(options?.toolSnippets),
+			toolGuidelines: extensionOnly(options?.toolGuidelines),
 		}, source);
 	}
 	pi.on("before_agent_start", (event) => {
