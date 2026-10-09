@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: `provider.systemPromptMode`** — `"replace"` sends only pi's portable prompt parts (context files, skills, custom/append text) without Claude Code's `claude_code` preset; `false` sends neither; `"append"` (default) is unchanged. Provider path only — AskClaude keeps the preset. Invalid values log an error and fall back to `"append"`.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
