@@ -2006,6 +2006,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend ? systemPromptAppend : undefined,
+			// Pi owns the current instructions; resumed sessions must use this append.
+			snapshot: false,
 		},
 		extraArgs,
 		...(effort ? { effort } : {}),
