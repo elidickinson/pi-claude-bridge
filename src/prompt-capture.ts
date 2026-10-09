@@ -11,6 +11,10 @@ export type PromptCaptureInput = {
 	append?: string;
 	contextFiles: { path: string; content: string }[];
 	skills: Skill[];
+	/** Registered extension guidance, excluding pi-owned tool instructions. */
+	promptGuidelines?: string[];
+	toolSnippets?: Record<string, string>;
+	toolGuidelines?: Record<string, string[]>;
 	/** Custom prompt sections from `systemPromptOptions.sections`, raw content keyed by
 	 *  section name. pi renders each one as `<name>\ncontent\n</name>` after the built-in
 	 *  sections; the projection does the same. */
@@ -89,6 +93,11 @@ export class PromptCaptures {
 
 		capture.custom = input.custom;
 		capture.append = input.append;
+		capture.promptGuidelines = input.promptGuidelines ? [...input.promptGuidelines] : undefined;
+		capture.toolSnippets = input.toolSnippets ? { ...input.toolSnippets } : undefined;
+		capture.toolGuidelines = input.toolGuidelines
+			? Object.fromEntries(Object.entries(input.toolGuidelines).map(([name, rules]) => [name, [...rules]]))
+			: undefined;
 		capture.contextFiles = input.contextFiles.map((file) => ({ ...file }));
 		capture.skills = [...input.skills];
 		// Copied, not referenced: the caller's systemPromptOptions is a live object that
@@ -352,6 +361,20 @@ function projectCapture(
 		if (context) parts.push({ label: "the project context block", text: context });
 		const skills = renderSkillsBlock(ownSkills, options.skillReadTool);
 		if (skills) parts.push({ label: "the skills block", text: skills });
+		const guidelines = new Set<string>();
+		for (const rules of [...Object.values(capture.toolGuidelines ?? {}), capture.promptGuidelines ?? []]) {
+			for (const rule of rules) {
+				const trimmed = rule.trim();
+				if (trimmed) guidelines.add(trimmed);
+			}
+		}
+		if (guidelines.size > 0) {
+			parts.push({ label: "the extension guidelines", text: [...guidelines].map((rule) => `- ${rule}`).join("\n") });
+		}
+		const snippets = Object.entries(capture.toolSnippets ?? {}).filter(([, snippet]) => snippet.trim());
+		if (snippets.length > 0) {
+			parts.push({ label: "the custom tool snippets", text: snippets.map(([name, snippet]) => `- ${name}: ${snippet}`).join("\n") });
+		}
 		if (custom) parts.push({ label: "the custom prompt", text: custom });
 		if (capture.append) parts.push({ label: "the appended instructions", text: capture.append });
 		// pi's builder renders custom sections last, after `cwd` — the one built-in section
