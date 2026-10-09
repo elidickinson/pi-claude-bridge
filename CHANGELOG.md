@@ -2,6 +2,8 @@
 
 ## UNRELEASED
 
+- **Fix: compaction ownership** — Stop taking over `session_before_compact`, allowing summary extensions and native Pi fallback to own compaction. Keep post-compaction session rebuild and parked-query invalidation; isolated native summaries use the Claude Code preset with appended summary instructions.
+
 - **Fix: extension prompt content survives prompt capture** — forward global prompt guidelines and selected extension tools’ prompt snippets and guidelines alongside the existing portable context. Snapshot mutable guidance at each capture boundary; exclude pi-owned builtin/SDK tool instructions.
 
 - **Fix: preserve edited-file snapshots across session rebuilds** — Carry `edited_text_file` attachments through matching tool results, including chained attachments. Match recorded CC IDs against converted Pi IDs and drop missing, changed, or ambiguous anchors rather than misplace snapshots.
