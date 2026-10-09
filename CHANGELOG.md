@@ -2,6 +2,8 @@
 
 ## UNRELEASED
 
+- **Fix: preserve edited-file snapshots across session rebuilds** — Carry `edited_text_file` attachments through matching tool results, including chained attachments. Match recorded CC IDs against converted Pi IDs and drop missing, changed, or ambiguous anchors rather than misplace snapshots.
+
 - **Fix: refresh provider prompt on resume** — set `snapshot: false` on the provider preset so Claude Code can use Pi's current projected instructions instead of a recorded append. AskClaude remains unchanged.
 
 ## 0.9.2 — 2026-10-07
