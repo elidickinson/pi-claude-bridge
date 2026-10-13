@@ -112,6 +112,35 @@ describe("syncSharedSession", () => {
 		}
 	});
 
+	// An extension that shrinks a session's history in place (context folding,
+	// billion-context-pi's compress) fires no rewrite event. The session's own
+	// next query must carry the shortened history, not start with none (issue #77).
+	it("rebuilds a pi session's shorter history unless the query is reentrant", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+		const piSessionId = "pi-session-77";
+		const sessionId = randomUUID();
+		const compressed = [
+			{ role: "user", content: "[summary] earlier work", timestamp: Date.now() },
+			{ role: "assistant", content: [{ type: "text", text: "Noted." }], timestamp: Date.now() },
+			{ role: "user", content: "Next", timestamp: Date.now() },
+		];
+		try {
+			__test.setSharedSession(piSessionId, { sessionId, cursor: 42, cwd });
+
+			const reentrant = __test.syncSharedSession(compressed, cwd, undefined, undefined, piSessionId, true);
+			assert.equal(reentrant.sessionId, null, "a reentrant query still starts fresh");
+			assert.equal(reentrant.preserveSharedSession, true);
+
+			const own = __test.syncSharedSession(compressed, cwd, undefined, undefined, piSessionId);
+			assert.equal(own.sessionId, sessionId, "the session's own query rebuilds in place");
+			assert.equal(__test.getSharedSession(piSessionId).cursor, 2);
+			assert.equal(openSession({ sessionId, projectPath: cwd }).messages.length, 2);
+		} finally {
+			deleteSession(sessionId, cwd);
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	// The rebuilt file holds one line per record, and a carried `@file` expansion
 	// is an `attachment` record — which `session.messages` filters out. Counting
 	// messages told every user who at-mentioned a file before switching providers
