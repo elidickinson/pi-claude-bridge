@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: name the failure when `@earendil-works/pi-ai/compat` can't be imported** — a pi install that resolves `@earendil-works/pi-ai` to a copy without the `./compat` export aborted the extension while loading, so pi logged a generic error and the `claude-bridge` provider was never registered. The `pi.extensions` entry now points at a thin guard (`src/entry.ts`) that checks the compat import and only then dynamically imports `src/index.ts`; the failure reports `needs:`, `found:`, `effect:` and `fix:` instead of dropping the provider silently. `src/index.ts` is unchanged. The compat import itself is the check, not a version read from disk, so a bridge that would load fine is never rejected; covered by `tests/unit-compat-guard.mjs`.
+
 ## 0.9.2 — 2026-10-07
 
 - **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.

@@ -56,7 +56,7 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./src/entry.ts"
     ]
   }
 }
