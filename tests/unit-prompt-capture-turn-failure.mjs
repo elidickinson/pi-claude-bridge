@@ -45,8 +45,8 @@ beforeEach(() => {
 afterEach(() => __test.setQuery(null));
 
 describe("a prompt the bridge refuses", () => {
-	it("fails the turn on the stream when no capture accounts for the prompt", async () => {
-		const result = await turn("a system prompt no capture boundary recorded").result();
+	it("fails the turn on the stream when no capture accounts for a pi-assembled prompt", async () => {
+		const result = await turn(`${PI_PREAMBLE}, but this key was never recorded at before_agent_start`).result();
 		assert.equal(result.stopReason, "error");
 		assert.match(result.errorMessage, /prompt-capture: no capture/);
 		assert.equal(queries, 0);
@@ -61,5 +61,30 @@ describe("a prompt the bridge refuses", () => {
 		assert.equal(result.stopReason, "error");
 		assert.match(result.errorMessage, /prompt-capture: refusing to send this prompt/);
 		assert.equal(queries, 0);
+	});
+});
+
+describe("unresolved non-pi system prompts", () => {
+	it("routes side-channel custom prompts to the isolated one-shot path", async () => {
+		let seen;
+		__test.setQuery(({ prompt, options }) => {
+			seen = { prompt, systemPrompt: options.systemPrompt, persistSession: options.persistSession };
+			async function* gen() {
+				yield { type: "result", subtype: "success", is_error: false, result: "advice" };
+			}
+			const q = gen();
+			q.interrupt = async () => {};
+			q.close = () => {};
+			return q;
+		});
+
+		const custom = "You are the Advisor: a senior engineer giving a brief second opinion.";
+		const result = await turn(custom).result();
+		assert.equal(result.stopReason, "stop");
+		assert.equal(seen.systemPrompt, custom);
+		assert.equal(seen.persistSession, false);
+		assert.equal(seen.prompt, "hi");
+		assert.equal(__test.activeQueryContexts.size, 0);
+		assert.ok(existsSync(join(agentDir, "claude-bridge-diag.log")));
 	});
 });

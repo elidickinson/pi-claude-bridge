@@ -18,6 +18,7 @@ import { makePromptStream, userMessage, type PromptStream } from "./prompt-strea
 import { claudeCodeSettings, loadConfig, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown, type Config } from "./config.js";
 import {
 	collectPromptSkills,
+	PI_PREAMBLE,
 	projectPromptCapture,
 	sharedPromptCaptures,
 	type PromptCapture,
@@ -1901,6 +1902,30 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			})
 			: undefined;
 	} catch (err) {
+		// Side-channel callers (pi-advisor-flow, other one-shot reviews) pass their own
+		// system prompt that was never recorded at before_agent_start. Those prompts are
+		// not pi-assembled — they do not contain PI_PREAMBLE and do not embed a known
+		// capture — so there is nothing portable to lose. Route them through the isolated
+		// persistSession:false path that already serves cacheRetention:"none" summarizers,
+		// instead of failing the turn.
+		const systemPrompt = context.systemPrompt ?? "";
+		const looksLikePiAssembled =
+			systemPrompt.startsWith(PI_PREAMBLE) || systemPrompt.includes(`\n${PI_PREAMBLE}`);
+		if (systemPrompt.length > 0 && !looksLikePiAssembled) {
+			debug(
+				`provider: unresolved non-pi system prompt (${systemPrompt.length} chars) routed to isolated one-shot`,
+			);
+			diagDump("prompt_capture_isolated_custom", {
+				promptChars: systemPrompt.length,
+				knownKeys: promptCaptures.size,
+				reentrantUserQuery: isReentrantUserQuery,
+				error: errorMessage(err),
+			});
+			// Force the one-off summarizer branch so multimodal/multi-message shapes still
+			// extract a user prompt rather than requiring the strict compaction shape.
+			return isolatedStreamFn(model, context, { ...options, cacheRetention: "none" });
+		}
+
 		// resolveOrDerive and projectPromptCapture throw to stop a turn that would lose
 		// its instructions or leak pi's harness text. Report it on the stream, as pi-ai's
 		// provider contract expects, so any caller — not only pi's agent loop, which
