@@ -114,9 +114,10 @@ describe("thinking block filtering", () => {
 				{ type: "thinking", thinking: "let me think..." },
 				{ type: "text", text: "answer" },
 			]},
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 		];
 		const result = convert(msgs);
-		assert.equal(result.length, 1);
 		assert.equal(result[0].content.length, 1);
 		assert.equal(result[0].content[0].type, "text");
 	});
@@ -142,6 +143,8 @@ describe("thinking block filtering", () => {
 				{ type: "thinking", thinking: "hmm", thinkingSignature: "sig456" },
 				{ type: "text", text: "done" },
 			]},
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 		];
 		const result = convert(msgs);
 		assert.deepEqual(result[0].content, [{ type: "text", text: "done" }]);
@@ -153,6 +156,8 @@ describe("thinking block filtering", () => {
 				{ type: "thinking", thinking: "no sig" },
 				{ type: "text", text: "answer" },
 			]},
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 		];
 		const result = convert(msgs);
 		assert.equal(result[0].content.length, 1);
@@ -164,10 +169,21 @@ describe("thinking block filtering", () => {
 			{ role: "assistant", provider: "deepseek", content: [
 				{ type: "thinking", thinking: "deep thoughts" },
 			]},
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 		];
 		const result = convert(msgs);
-		assert.equal(result.length, 1);
 		assert.equal(result[0].content[0].text, "[incompatible content omitted]");
+	});
+
+	it("unreplayable thinking in the latest assistant message drops the whole turn", () => {
+		const msgs = [
+			{ role: "assistant", provider: "deepseek", content: [
+				{ type: "thinking", thinking: "deep thoughts" },
+			]},
+		];
+		const result = convert(msgs);
+		assert.equal(result.length, 0);
 	});
 });
 
@@ -442,9 +458,17 @@ describe("aborted assistant turns", () => {
 	it("a turn whose blocks were all filtered still says so", () => {
 		const result = convert([
 			{ role: "assistant", provider: "deepseek", content: [{ type: "thinking", thinking: "deep thoughts" }] },
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 		]);
-		assert.equal(result.length, 1);
 		assert.equal(result[0].content[0].text, "[incompatible content omitted]");
+	});
+
+	it("a turn whose blocks were all filtered is dropped instead when it is the latest", () => {
+		const result = convert([
+			{ role: "assistant", provider: "deepseek", content: [{ type: "thinking", thinking: "deep thoughts" }] },
+		]);
+		assert.equal(result.length, 0);
 	});
 
 	// The prompt cache is keyed on exact prefix bytes, so a rebuild must reproduce
