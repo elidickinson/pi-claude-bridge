@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: route unresolved non-pi system prompts to the isolated path** — side-channel callers such as pi-advisor-flow pass their own system prompt through `streamSimple` without a `before_agent_start` capture. Those prompts are not pi-assembled (no `PI_PREAMBLE`), so there is nothing portable to lose; route them through the existing `cacheRetention: "none"` isolated one-shot instead of failing prompt-capture. Pi-assembled prompts that fail to match still fail the turn.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.

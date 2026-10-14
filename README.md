@@ -127,7 +127,7 @@ Hooks do not fire on isolated summary queries.
 
 ### Compaction and branch summaries
 
-pi runs compaction and branch summaries natively. The bridge routes their `cacheRetention: "none"` calls to isolated Claude Code queries, leaving the live session untouched until pi completes the history rewrite. Other extensions can provide summaries through pi's hooks.
+pi runs compaction and branch summaries natively. The bridge routes their `cacheRetention: "none"` calls to isolated Claude Code queries, leaving the live session untouched until pi completes the history rewrite. Other extensions can provide summaries through pi's hooks. Side-channel callers that pass their own non-pi system prompt (for example pi-advisor-flow) also take this isolated path when prompt capture cannot resolve them.
 
 ### System prompt rejections
 
