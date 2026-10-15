@@ -4,6 +4,7 @@
 
 - **Fix: a retried turn keeps its history** — after an error result (429, overload, 5xx) the session cursor advanced past the failed user turn, so pi's retry of the same context ran as a fresh Claude Code session holding only the prompt, which was then deleted, and the next turn resumed the old session without the retried answer. The cursor now holds on an error result and the session is rebuilt from pi's history on the retry.
 - **Fix: no Claude Code hooks on the provider path** — the child loads user, project and local settings, so every hook there and in enabled plugins ran on each bridge turn and tool call, and an opened repo's `.claude/settings.json` hooks ran without a trust prompt. The provider query now passes `disableAllHooks: true` as a flag setting; setting sources are unchanged, so `env` and `apiKeyHelper` in settings.json still apply. AskClaude is unchanged.
+- **Fix: bash calls without a timeout run without one** — the bridge injected `timeout: 120` into every pi bash call that omitted it, while pi's bash schema, which is what the model sees, says there is no default timeout, so long commands were killed at two minutes.
 
 ## 0.9.3 — 2026-10-13
 

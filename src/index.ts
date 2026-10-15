@@ -946,10 +946,6 @@ function mapToolArgs(
 		const piKey = renames?.[key] ?? key;
 		if (!(piKey in result)) result[piKey] = value; // first alias wins
 	}
-	// Pi bash has no default timeout; add a safety default
-	if (toolName.toLowerCase() === "bash" && result.timeout == null) {
-		result.timeout = 120;
-	}
 	return result;
 }
 
