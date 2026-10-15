@@ -3,8 +3,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { repairToolPairing } from "cc-session-io";
-import { sanitizeToolId, convertPiMessages } from "../src/convert.js";
+import { createSession, repairToolPairing } from "cc-session-io";
+import { sanitizeToolId, convertPiMessages, matchLiveToolResultKeyOrder } from "../src/convert.js";
 
 /** Shorthand: convert pi messages and return just the anthropic messages. */
 function convert(messages, customToolNameToSdk) {
@@ -180,15 +180,39 @@ describe("message structure", () => {
 		assert.equal(result[0].role, "user");
 		assert.equal(result[0].content[0].type, "tool_result");
 		assert.equal(result[0].content[0].tool_use_id, "id1");
-		assert.equal(result[0].content[0].content, "result text");
-		assert.equal(result[0].content[0].is_error, false);
+		assert.deepEqual(result[0].content[0].content, [{ type: "text", text: "result text" }]);
+		assert.equal("is_error" in result[0].content[0], false);
 	});
 
 	it("toolResult with isError=true", () => {
 		const msgs = [
 			{ role: "toolResult", toolCallId: "id1", content: "oh no", isError: true },
 		];
-		assert.equal(convert(msgs)[0].content[0].is_error, true);
+		// CC records a failed MCP call as a string, not a block array.
+		assert.deepEqual(convert(msgs)[0].content[0], { type: "tool_result", tool_use_id: "id1", content: "oh no", is_error: true });
+	});
+
+	// Key order is part of the serialized prompt, so of the cache key. These are
+	// the orders CC writes for live MCP results (success and isError), and what a
+	// rebuilt session has to hold after cc-session-io's importMessages.
+	it("imported tool results take Claude Code's key order", () => {
+		const session = createSession({ projectPath: "/tmp/key-order-test" });
+		session.importMessages(convert([
+			{ role: "user", content: "go" },
+			{ role: "assistant", content: [
+				{ type: "toolCall", id: "t1", name: "read", arguments: {} },
+				{ type: "toolCall", id: "t2", name: "read", arguments: {} },
+			]},
+			{ role: "toolResult", toolCallId: "t1", content: "ok", isError: false },
+			{ role: "toolResult", toolCallId: "t2", content: "oh no", isError: true },
+		]));
+		matchLiveToolResultKeyOrder(session.records);
+		const blocks = session.records.flatMap((r) => r.type === "user" && Array.isArray(r.message.content) ? r.message.content : [])
+			.filter((b) => b.type === "tool_result");
+		assert.deepEqual(blocks.map((b) => Object.keys(b)), [
+			["tool_use_id", "type", "content"],
+			["type", "content", "is_error", "tool_use_id"],
+		]);
 	});
 
 	// Claude Code puts every result for one assistant turn in a single user
@@ -207,7 +231,7 @@ describe("message structure", () => {
 		assert.equal(result[0].content.length, 2);
 		assert.equal(result[1].role, "user");
 		assert.deepEqual(result[1].content.map((b) => [b.tool_use_id, b.content]),
-			[["t1", "content a"], ["t2", "content b"]]);
+			[["t1", [{ type: "text", text: "content a" }]], ["t2", [{ type: "text", text: "content b" }]]]);
 	});
 
 	it("does not merge results across an intervening user message", () => {
@@ -298,14 +322,14 @@ describe("message structure", () => {
 		assert.equal(result[0].content[1].name, "Bash");
 	});
 
-	it("toolResult with array content extracts text", () => {
+	it("toolResult with array content keeps one block per text block", () => {
 		const msgs = [
 			{ role: "toolResult", toolCallId: "x", content: [
 				{ type: "text", text: "line 1" },
 				{ type: "text", text: "line 2" },
 			]},
 		];
-		assert.equal(convert(msgs)[0].content[0].content, "line 1\nline 2");
+		assert.deepEqual(convert(msgs)[0].content[0].content, [{ type: "text", text: "line 1" }, { type: "text", text: "line 2" }]);
 	});
 
 	// Claude Code stores screenshots as image blocks inside tool_result.content;
@@ -324,16 +348,19 @@ describe("message structure", () => {
 		]);
 	});
 
-	// The string shape is what CC writes for text-only results; switching to
-	// blocks unconditionally would diverge from it and perturb the cache key.
-	it("toolResult without an image stays a flat string", () => {
+	// Every pi tool reaches CC over MCP, and CC writes an MCP result's blocks
+	// through as an array even for plain text. A string here is a different
+	// prompt prefix, so every rebuild missed the cache from the first tool result.
+	it("toolResult without an image keeps the block array CC writes", () => {
 		const msgs = [
 			{ role: "toolResult", toolCallId: "x", content: [{ type: "text", text: "just text" }] },
 		];
-		assert.equal(convert(msgs)[0].content[0].content, "just text");
+		assert.deepEqual(convert(msgs)[0].content[0].content, [{ type: "text", text: "just text" }]);
 	});
 
-	it("toolResult keeps markers for blocks that are neither text nor image", () => {
+	// The live path sends a tool's blocks through toolResultToMcpContent, which keeps
+	// only non-empty text and images; CC never saw anything else, so neither may a rebuild.
+	it("toolResult drops blocks that are neither text nor image, as the live path does", () => {
 		const msgs = [
 			{ role: "toolResult", toolCallId: "x", content: [
 				{ type: "document" },
@@ -342,9 +369,21 @@ describe("message structure", () => {
 		];
 		const result = convert(msgs)[0].content[0].content;
 		assert.deepEqual(result, [
-			{ type: "text", text: "[document]" },
 			{ type: "image", source: { type: "base64", media_type: "image/png", data: "BASE64DATA" } },
 		]);
+	});
+
+	// Measured live: an MCP tool returning one empty text block is recorded by CC as
+	// this string, naming the tool the way its tool_use did.
+	it("an empty toolResult becomes the note CC writes, naming the MCP tool", () => {
+		const msgs = [
+			{ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "empty_tool", arguments: {} }] },
+			{ role: "toolResult", toolCallId: "t1", toolName: "empty_tool", content: [{ type: "text", text: "" }] },
+		];
+		const served = new Map([["empty_tool", "mcp__custom-tools__empty_tool"]]);
+		const [call, result] = convertPiMessages(msgs, served).anthropicMessages;
+		assert.equal(call.content[0].name, "mcp__custom-tools__empty_tool");
+		assert.equal(result.content[0].content, "(mcp__custom-tools__empty_tool completed with no output)");
 	});
 
 	it("toolResult with only an image keeps the image", () => {
@@ -382,7 +421,7 @@ describe("conversion survives repairToolPairing", () => {
 
 		assert.deepEqual(repaired, converted);
 		const results = repaired.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result");
-		assert.deepEqual(results.map((b) => b.content), ["body of t0", "body of t1", "body of t2"]);
+		assert.deepEqual(results.map((b) => b.content[0].text), ["body of t0", "body of t1", "body of t2"]);
 	});
 
 	// Mid-turn steering puts a user message between the results (which is why
@@ -398,7 +437,7 @@ describe("conversion survives repairToolPairing", () => {
 		const repaired = repairToolPairing(convert(msgs));
 
 		assert.deepEqual(repaired.map((m) => m.role), ["assistant", "user", "user"]);
-		assert.deepEqual(repaired[1].content.map((b) => b.content), ["first", "second"]);
+		assert.deepEqual(repaired[1].content.map((b) => b.content[0].text), ["first", "second"]);
 		assert.equal(repaired[2].content, "actually, also check X");
 	});
 
@@ -415,7 +454,7 @@ describe("conversion survives repairToolPairing", () => {
 		const repaired = repairToolPairing(convert(msgs));
 
 		assert.deepEqual(repaired.map((m) => m.role), ["assistant", "user", "user"]);
-		assert.deepEqual(repaired[1].content.map((b) => b.content), ["first", "second"]);
+		assert.deepEqual(repaired[1].content.map((b) => b.content[0].text), ["first", "second"]);
 		assert.equal(repaired[2].content, "actually stop and check X");
 	});
 

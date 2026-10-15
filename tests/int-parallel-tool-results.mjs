@@ -60,7 +60,7 @@ test("a rebuilt parallel tool call keeps every result on disk", { timeout: 30_00
 
 	assert.equal(results.length, TOKENS.length, `expected ${TOKENS.length} tool_result blocks, got ${results.length}`);
 	for (const token of TOKENS) {
-		assert.ok(results.some((b) => typeof b.content === "string" && b.content.includes(token)),
+		assert.ok(results.some((b) => JSON.stringify(b.content).includes(token)),
 			`${token} missing from the rebuilt session — results: ${JSON.stringify(results.map((b) => b.content))}`);
 	}
 });

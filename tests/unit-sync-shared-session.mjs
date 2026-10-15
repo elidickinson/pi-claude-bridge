@@ -37,6 +37,38 @@ describe("syncSharedSession", () => {
 		}
 	});
 
+	// Key order is part of the serialized prompt, so of the cache key. A rebuild has
+	// to write tool results in the order CC writes them for live MCP results, and
+	// cc-session-io's importMessages does not (src/convert.ts matchLiveToolResultKeyOrder).
+	it("writes rebuilt tool results in Claude Code's key order", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+		try {
+			const t = Date.now();
+			const result = __test.syncSharedSession([
+				{ role: "user", content: "go", timestamp: t },
+				{ role: "assistant", stopReason: "toolUse", timestamp: t + 1, content: [
+					{ type: "toolCall", id: "toolu_ok", name: "read", arguments: {} },
+					{ type: "toolCall", id: "toolu_err", name: "read", arguments: {} },
+				]},
+				{ role: "toolResult", toolCallId: "toolu_ok", toolName: "read", content: [{ type: "text", text: "ok" }], isError: false, timestamp: t + 2 },
+				{ role: "toolResult", toolCallId: "toolu_err", toolName: "read", content: [{ type: "text", text: "boom" }], isError: true, timestamp: t + 3 },
+				{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }], timestamp: t + 4 },
+				{ role: "user", content: "next", timestamp: t + 5 },
+			], cwd);
+
+			const records = openSession({ sessionId: result.sessionId, projectPath: cwd }).records;
+			const blocks = records.flatMap((r) => r.type === "user" && Array.isArray(r.message.content) ? r.message.content : [])
+				.filter((b) => b.type === "tool_result");
+			assert.deepEqual(blocks.map((b) => Object.keys(b)), [
+				["tool_use_id", "type", "content"],
+				["type", "content", "is_error", "tool_use_id"],
+			]);
+			deleteSession(result.sessionId, cwd);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	// Mid-conversation tool-loadout updates land in the transcript as system messages. They must not inflate the cursor or be imported as history, or the next turn's
 	// reuse check (priors >= cursor) fails and every turn rebuilds the session.
 	it("keeps cursor arithmetic consistent when system messages punctuate the history", () => {

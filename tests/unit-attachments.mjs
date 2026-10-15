@@ -24,8 +24,7 @@ describe("collectCarriedAttachments", () => {
 			attach("a4", "u1", "edited_text_file", "/b.js"),
 		]);
 		// edited_text_file is deliberately not carried: the edit is already in pi's
-		// history as a tool call, and it usually hangs off a tool-result record that
-		// has no prompt ordinal. See diag/attachment-coverage.mjs.
+		// history as a tool call and its result.
 		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/a.js"]);
 	});
 
@@ -38,6 +37,48 @@ describe("collectCarriedAttachments", () => {
 		]);
 		assert.equal(carried[0].userOrdinal, 1);
 		assert.equal(carried[0].parentText, "review @a.js");
+	});
+
+	it("keeps session-start context in its original position, so a rebuilt prefix stays cacheable", () => {
+		// Dropped, CC re-attaches these to the NEWEST prompt on the rebuilt session,
+		// so the request differs at messages[0] and the whole history misses the
+		// prompt cache. Carried, they stay on the first prompt as in the live session.
+		const kinds = ["environment", "model", "output_style_instructions", "total_tokens_reminder",
+			"output_style", "instructions", "session_context", "date", "credential_org"];
+		const records = [user("u1", "first")];
+		let parent = "u1";
+		kinds.forEach((k, i) => { records.push(attach(`c${i}`, parent, k)); parent = `c${i}`; });
+		records.push(attach("snap", parent, "prompt_snapshot"));
+		const carried = collectCarriedAttachments(records);
+		assert.deepEqual(carried.map((c) => c.attachment.type), kinds);
+		assert.ok(carried.every((c) => c.userOrdinal === 0 && c.parentText === "first"));
+	});
+
+	it("carries the instruction-file block whole, so the rebuilt prompt shows the model the same memory", () => {
+		// Only present in folders with a memory dir or instruction files; before it was
+		// carried, CC re-attached it after credential_org on the newest prompt and the
+		// rebuilt history missed the cache (live: 12,776 read / 14,677 written).
+		const files = [{ path: "/p/memory/MEMORY.md", type: "AutoMem", content: "# Memory Index\n- [Fact](fact.md)" }];
+		const carried = collectCarriedAttachments([
+			user("u1", "first"),
+			{ type: "attachment", uuid: "i1", parentUuid: "u1", attachment: { type: "instructions", files } },
+		]);
+		assert.equal(carried.length, 1);
+		assert.deepEqual(carried[0].attachment, { type: "instructions", files });
+		assert.equal(carried[0].userOrdinal, 0);
+	});
+
+	it("anchors context hung off a tool-result record to the call it answers", () => {
+		// CC writes a total_tokens_reminder after every tool-result record and renders
+		// it as a system message there. Dropped, the rebuilt request lacks it and
+		// diverges from the cached prefix at the first tool result.
+		const carried = collectCarriedAttachments([
+			user("u1", "first"),
+			toolResultUser("u2"),
+			attach("a1", "u2", "total_tokens_reminder"),
+			attach("a2", "a1", "edited_text_file", "/b.js"),
+		]);
+		assert.deepEqual(carried, [{ toolUseId: "t1", attachment: { type: "total_tokens_reminder", filename: undefined } }]);
 	});
 
 	it("ignores an attachment whose parent is not a prompt", () => {
@@ -73,6 +114,28 @@ describe("placeCarriedAttachments", () => {
 
 	it("drops it when history no longer reaches that prompt", () => {
 		const { attachments, skipped } = placeCarriedAttachments(carried, [{ role: "user", content: "first" }]);
+		assert.equal(attachments.length, 0);
+		assert.match(skipped[0], /no longer in history/);
+	});
+});
+
+describe("placeCarriedAttachments at tool results", () => {
+	const reminder = { type: "total_tokens_reminder", text: "<total_tokens>1 tokens left</total_tokens>" };
+
+	it("places it after the message holding that call's result", () => {
+		const { attachments, skipped } = placeCarriedAttachments([{ toolUseId: "t2", attachment: reminder }], [
+			{ role: "user", content: "first" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "t1" }, { type: "tool_use", id: "t2" }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1" }, { type: "tool_result", tool_use_id: "t2" }] },
+		]);
+		assert.equal(skipped.length, 0);
+		assert.deepEqual(attachments, [{ afterIndex: 2, attachment: reminder }]);
+	});
+
+	it("drops it when the call is not in this history, as on another branch", () => {
+		const { attachments, skipped } = placeCarriedAttachments([{ toolUseId: "gone", attachment: reminder }], [
+			{ role: "user", content: "first" },
+		]);
 		assert.equal(attachments.length, 0);
 		assert.match(skipped[0], /no longer in history/);
 	});

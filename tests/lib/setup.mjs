@@ -21,3 +21,6 @@ process.env.CLAUDE_CONFIG_DIR = join(root, "claude");
 process.env.CLAUDE_BRIDGE_DEBUG_PATH = join(root, "claude-bridge.log");
 delete process.env.CLAUDE_BRIDGE_RECORD_STREAM;
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+// Same reason for the persisted pi→CC session links (src/session-links.ts): any test
+// that plants a session mirror would otherwise write into the real agent dir.
+process.env.CLAUDE_BRIDGE_SESSION_LINKS_PATH = join(root, "claude-bridge-sessions.json");

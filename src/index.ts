@@ -7,7 +7,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
-import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
+import { PROVIDER_ID, messageContentToText, convertPiMessages, matchLiveToolResultKeyOrder } from "./convert.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
 import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock } from "./skills.js";
@@ -23,6 +23,7 @@ import {
 	type PromptCapture,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
+import { recordSessionLink, lookupSessionLink } from "./session-links.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
@@ -251,7 +252,11 @@ function sessionStateFor(piSessionId: string | null | undefined): SessionState |
 /** Replace (or plant) the mirror for `piSessionId`. */
 function setSessionStateFor(piSessionId: string | null | undefined, state: SessionState | null): void {
 	if (state === null) sharedSessions.delete(sessionKey(piSessionId));
-	else sharedSessions.set(sessionKey(piSessionId), state);
+	else {
+		sharedSessions.set(sessionKey(piSessionId), state);
+		// Persisted so a NEW process can still carry attachments (session-links.ts).
+		recordSessionLink(piSessionId, state.sessionId, state.cwd);
+	}
 }
 
 // pi replaced one of its sessions' history (compact, tree) rather than appending
@@ -380,6 +385,7 @@ function convertAndImportMessages(
 	}
 	if (repaired.length) {
 		session.importMessages(repaired, placed?.attachments.length ? { attachments: placed.attachments } : undefined);
+		matchLiveToolResultKeyOrder(session.records);
 	}
 }
 
@@ -822,7 +828,15 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	// writer we shouldn't race (forceRotate).
 	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
 	// Before deleteSession — it wipes the file these live in.
-	const carried = previousSessionId !== undefined ? readCarriedAttachments(previousSessionId, cwd) : [];
+	// With no in-process mirror (a new pi process), fall back to the CC session this
+	// pi session last ran on, persisted by session-links.ts. Read-only: it is never
+	// deleted or resumed here, only read for attachments to carry.
+	const linkedSessionId = previousSessionId === undefined ? lookupSessionLink(piSessionId, cwd) : undefined;
+	const carrySource = previousSessionId ?? linkedSessionId;
+	const carried = carrySource !== undefined ? readCarriedAttachments(carrySource, cwd) : [];
+	if (linkedSessionId !== undefined) {
+		debug(`Case 2: carrying ${carried.length} attachment(s) from linked session ${linkedSessionId.slice(0, 8)} (new process)`);
+	}
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
 		deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
