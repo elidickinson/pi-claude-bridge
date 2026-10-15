@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: `/tree` back to an earlier turn keeps the prompt cache** — instead of rebuilding Claude Code's session from pi's history, the bridge forks CC's own session at the turn boundary (`resumeSessionAt` + `forkSession`), so the kept turns are CC's own records and the next request repeats the cached prefix byte for byte. Only when pi's history is a strict prefix of the synced one, ends a completed turn, and CC's session holds exactly the synced prompts, each matching pi's; anything else (branch summaries, mid-turn cuts, steers) still rebuilds, as does a fork whose query fails before CC writes it (carrying attachments from the source session). The abandoned branch's CC session file is left in place. Measured with `diag/probe-tree-fork.mjs`; covered by `tests/unit-tree-fork.mjs`.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
