@@ -1375,6 +1375,29 @@ function dropAbandonedStreamBlocks(c: QueryContext, why: string): void {
 	c.turnStreamOpen = false;
 }
 
+/** Warn when a model other than the requested one answered. Claude Code re-runs a
+ *  request its safeguards flag on another model (Opus 5.5 → Opus 4.8 for cyber),
+ *  marked by a `fallback` block, and later requests can route there directly with
+ *  only `model` telling. Nothing in pi shows either otherwise. */
+function noteServedModel(assistantMsg: any, model: Model<any>, c: QueryContext): void {
+	const served: string | undefined = assistantMsg.model;
+	if (!served) return;
+	const base = (id: string) => id.replace(/\[[^\]]*\]$/, "");
+	if (base(served) === base(model.id)) {
+		c.warnedServedModel = undefined;
+		return;
+	}
+	if (c.warnedServedModel === served) return;
+	c.warnedServedModel = served;
+	const flagged = assistantMsg.content.some((b: any) => b?.type === "fallback");
+	debug(`noteServedModel: requested ${model.id}, served by ${served}${flagged ? " (fallback block)" : ""}`);
+	piUI?.notify(
+		`Claude Code answered with ${served} instead of ${model.id}` +
+			(flagged ? " — its safeguards flagged the request and switched models." : "."),
+		"warning",
+	);
+}
+
 // The SDK always yields `assistant` messages (completed content blocks) after streaming.
 // When stream_events already delivered the content, this is a no-op. But after
 // resetTurnState (e.g. tool result delivery), if the next turn's assistant message
@@ -1412,6 +1435,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 		if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model);
 		return;
 	}
+	noteServedModel(assistantMsg, model, c);
 	if (c.turnSawStreamEvent) {
 		// Same id was already delivered; a new id is CC's non-streaming fallback.
 		// Drop the stalled stream's partial blocks if it never stopped. Deliberately

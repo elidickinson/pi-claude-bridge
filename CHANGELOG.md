@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: warn when another model answered** — Claude Code re-runs a request its safeguards flag on a fallback model (Opus 5.5 → Opus 4.8 for cyber), and later requests may route there directly. The bridge now compares each reply's `model` with the requested one and shows a warning in pi once per switch, naming the safeguard fallback when a `fallback` block marks it.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
