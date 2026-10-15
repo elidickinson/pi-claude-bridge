@@ -45,10 +45,44 @@ const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
 //   out of a pi session, which serves its own tools.
 // - DISABLE_AUTO_COMPACT=1: pi owns compaction; CC compacting its own copy would
 //   diverge from pi's history, which is the source of truth for every rebuild.
+// - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1: no update checks, MCP registry or
+//   telemetry from the child. Set here rather than on pi's process.env, where every
+//   command pi runs — for any provider — would inherit it.
 const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
+	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 } as const;
+
+// Variables Claude Code sets for the processes it runs. When pi is started from
+// inside a Claude Code session (its Bash tool, a script an agent launched), they
+// are in pi's env and would reach the child, which then takes itself for part of
+// that session: CLAUDE_CODE_ENTRYPOINT=cli stops the SDK from stamping its own
+// entrypoint (it only fills one in when unset), CLAUDECODE / CLAUDE_CODE_SESSION_ID
+// / CLAUDE_CODE_CHILD_SESSION mark it as nested under the parent, and CLAUDE_EFFORT
+// carries the parent's effort. Configuration such as ANTHROPIC_BASE_URL,
+// ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN and CLAUDE_CODE_USE_* is not on the
+// list and still passes through. AI_AGENT is left alone: pi sets it to its own name.
+const PARENT_CLAUDE_CODE_ENV = [
+	"CLAUDECODE",
+	"CLAUDE_CODE_ENTRYPOINT",
+	"CLAUDE_CODE_SSE_PORT",
+	"CLAUDE_CODE_CHILD_SESSION",
+	"CLAUDE_CODE_EXECPATH",
+	"CLAUDE_CODE_MESSAGING_SOCKET",
+	"CLAUDE_CODE_MESSAGING_TOKEN",
+	"CLAUDE_CODE_SESSION_ATTENDED",
+	"CLAUDE_CODE_SESSION_ID",
+	"CLAUDE_EFFORT",
+	"CLAUDE_PID",
+] as const;
+
+/** pi's env for a Claude Code child: parent-session markers removed, CC_CHILD_ENV on top. */
+function ccChildEnv(): Record<string, string | undefined> {
+	const env: Record<string, string | undefined> = { ...process.env };
+	for (const name of PARENT_CLAUDE_CODE_ENV) delete env[name];
+	return { ...env, ...CC_CHILD_ENV };
+}
 
 // Pi owns context files on the provider path, so Claude Code must not load its
 // own on top: otherwise project CLAUDE.md/AGENTS.md files arrive twice, and
@@ -590,7 +624,7 @@ async function runIsolatedSummary(
 			prompt: promptText,
 			options: {
 				cwd,
-				env: { ...process.env, ...CC_CHILD_ENV },
+				env: ccChildEnv(),
 				settings: { autoMemoryEnabled: false },
 				tools: [],
 				strictMcpConfig: true,
@@ -2024,7 +2058,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// also autocompact would double-flush the prompt cache and races pi's
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ...CC_CHILD_ENV };
+	const childEnv = ccChildEnv();
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
@@ -2321,7 +2355,7 @@ async function promptAndWait(
 		prompt,
 		options: {
 			cwd,
-			env: { ...process.env, ...CC_CHILD_ENV },
+			env: ccChildEnv(),
 			permissionMode: "bypassPermissions",
 			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 			skills: [],
@@ -2431,9 +2465,6 @@ const PREVIEW_MAX_LINES = 6;
 let askClaudeToolName = "AskClaude";
 
 export default function (pi: ExtensionAPI) {
-	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
-	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-
 	const config = loadConfig(process.cwd());
 	let askClaudeDeprecationNoticeShown = Boolean(config.askClaudeDeprecationShown);
 	debug("loadConfig:", JSON.stringify(config));
