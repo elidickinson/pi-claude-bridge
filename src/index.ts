@@ -2044,10 +2044,19 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// CC's git-workflow guidance from its Bash tool prompt, but the provider
 		// path runs CC with `tools: []`, so those definitions never ship.
 		// AskClaude keeps CC's native tools and its guidance — unaffected.
+		//
+		// disableAllHooks: settingSources stays at CC's default (see CLAUDE_MD_EXCLUDES
+		// for why), which also registers every hook in user, project and local
+		// settings and in enabled plugins — and in -p mode a project's
+		// .claude/settings.json hooks run without a trust prompt. Pi runs the tools
+		// here, so those hooks only add latency per turn and per tool call, and run a
+		// repo's commands just for opening it. Flag settings outrank user, project and
+		// local settings, so a `disableAllHooks: false` there cannot undo it.
 		settings: {
 			...claudeCodeSettings(providerSettings),
 			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
 			includeGitInstructions: false,
+			disableAllHooks: true,
 		},
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
