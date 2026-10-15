@@ -1814,6 +1814,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	if (resultCtx) {
 		claimCurrentPiStream(stream, "tool-result", resultCtx, options);
 		resultCtx.resetTurnState(model);
+		resultCtx.bindRunSignal?.(options?.signal);
 		// A rewrite that armed the mark after this query parked gets copied here,
 		// though markRebuildForSession usually reaches it directly.
 		if (!resultCtx.historyStale && resultCtx.piSessionId && historyRewrittenBySession.has(resultCtx.piSessionId)) {
@@ -2083,6 +2084,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		try { sdkQuery.close(); } catch {}
 	};
 	const onAbort = () => {
+		if (wasAborted) return;
 		wasAborted = true;
 		drainForAbort(abortCtx, promptStream);
 		requestAbort();
@@ -2091,6 +2093,21 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		if (options.signal.aborted) onAbort();
 		else options.signal.addEventListener("abort", onAbort, { once: true });
 	}
+	// A later run continuing this query from a tool result brings its own signal;
+	// only the latest one is bound, and it is unbound when the query ends.
+	let runSignal: AbortSignal | undefined;
+	const unbindRunSignal = () => {
+		if (runSignal !== options?.signal) runSignal?.removeEventListener("abort", onAbort);
+		runSignal = undefined;
+	};
+	const bindRunSignal = (signal: AbortSignal | undefined) => {
+		unbindRunSignal();
+		if (!signal || signal === options?.signal) return;
+		runSignal = signal;
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+	};
+	queryCtx.bindRunSignal = bindRunSignal;
 
 	// Background consumer — runs until query ends
 	consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx)
@@ -2189,6 +2206,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		})
 		.finally(() => {
 			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
+			unbindRunSignal();
+			if (queryCtx.bindRunSignal === bindRunSignal) queryCtx.bindRunSignal = null;
 			// Settle any ack still parked in the generator — the CLI is gone, so
 			// nothing will resume it. Clear the handle only if a later query
 			// hasn't already claimed the shared context.

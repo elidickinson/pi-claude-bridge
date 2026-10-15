@@ -34,6 +34,10 @@ export class QueryContext {
 	turnToolCallIds: string[] = [];
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
+	/** Binds a later run's abort signal to this query. Set by the run that opened it;
+	 *  a run that continues it from a tool result (e.g. after pi terminated a tool
+	 *  batch and ended the opening run) has no other way to stop it. */
+	bindRunSignal: ((signal: AbortSignal | undefined) => void) | null = null;
 	/** Last rate-limit rejection seen on this query. Claude Code sends it just before the
 	 *  failure it caused, which is the only thing tying the two together. */
 	rateLimitRejection: { rateLimitType?: string; resetsAt?: number } | null = null;

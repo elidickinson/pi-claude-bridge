@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: abort stops a run that continues a parked query** — when pi ended a run with Claude Code's query parked at a tool call (a tool blocked with `terminate: true`), the next run's abort was ignored and the turn generated to the end. Each run that continues the query now binds its own signal to it.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
