@@ -45,10 +45,44 @@ const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
 //   out of a pi session, which serves its own tools.
 // - DISABLE_AUTO_COMPACT=1: pi owns compaction; CC compacting its own copy would
 //   diverge from pi's history, which is the source of truth for every rebuild.
+// - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1: no update checks, MCP registry or
+//   telemetry from the child. Set here rather than on pi's process.env, where every
+//   command pi runs — for any provider — would inherit it.
 const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
+	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 } as const;
+
+// Variables Claude Code sets for the processes it runs. When pi is started from
+// inside a Claude Code session (its Bash tool, a script an agent launched), they
+// are in pi's env and would reach the child, which then takes itself for part of
+// that session: CLAUDE_CODE_ENTRYPOINT=cli stops the SDK from stamping its own
+// entrypoint (it only fills one in when unset), CLAUDECODE / CLAUDE_CODE_SESSION_ID
+// / CLAUDE_CODE_CHILD_SESSION mark it as nested under the parent, and CLAUDE_EFFORT
+// carries the parent's effort. Configuration such as ANTHROPIC_BASE_URL,
+// ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN and CLAUDE_CODE_USE_* is not on the
+// list and still passes through. AI_AGENT is left alone: pi sets it to its own name.
+const PARENT_CLAUDE_CODE_ENV = [
+	"CLAUDECODE",
+	"CLAUDE_CODE_ENTRYPOINT",
+	"CLAUDE_CODE_SSE_PORT",
+	"CLAUDE_CODE_CHILD_SESSION",
+	"CLAUDE_CODE_EXECPATH",
+	"CLAUDE_CODE_MESSAGING_SOCKET",
+	"CLAUDE_CODE_MESSAGING_TOKEN",
+	"CLAUDE_CODE_SESSION_ATTENDED",
+	"CLAUDE_CODE_SESSION_ID",
+	"CLAUDE_EFFORT",
+	"CLAUDE_PID",
+] as const;
+
+/** pi's env for a Claude Code child: parent-session markers removed, CC_CHILD_ENV on top. */
+function ccChildEnv(): Record<string, string | undefined> {
+	const env: Record<string, string | undefined> = { ...process.env };
+	for (const name of PARENT_CLAUDE_CODE_ENV) delete env[name];
+	return { ...env, ...CC_CHILD_ENV };
+}
 
 // Pi owns context files on the provider path, so Claude Code must not load its
 // own on top: otherwise project CLAUDE.md/AGENTS.md files arrive twice, and
@@ -590,7 +624,7 @@ async function runIsolatedSummary(
 			prompt: promptText,
 			options: {
 				cwd,
-				env: { ...process.env, ...CC_CHILD_ENV },
+				env: ccChildEnv(),
 				settings: { autoMemoryEnabled: false },
 				tools: [],
 				strictMcpConfig: true,
@@ -945,10 +979,6 @@ function mapToolArgs(
 	for (const [key, value] of Object.entries(input)) {
 		const piKey = renames?.[key] ?? key;
 		if (!(piKey in result)) result[piKey] = value; // first alias wins
-	}
-	// Pi bash has no default timeout; add a safety default
-	if (toolName.toLowerCase() === "bash" && result.timeout == null) {
-		result.timeout = 120;
 	}
 	return result;
 }
@@ -2028,7 +2058,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// also autocompact would double-flush the prompt cache and races pi's
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ...CC_CHILD_ENV };
+	const childEnv = ccChildEnv();
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
@@ -2044,10 +2074,19 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// CC's git-workflow guidance from its Bash tool prompt, but the provider
 		// path runs CC with `tools: []`, so those definitions never ship.
 		// AskClaude keeps CC's native tools and its guidance — unaffected.
+		//
+		// disableAllHooks: settingSources stays at CC's default (see CLAUDE_MD_EXCLUDES
+		// for why), which also registers every hook in user, project and local
+		// settings and in enabled plugins — and in -p mode a project's
+		// .claude/settings.json hooks run without a trust prompt. Pi runs the tools
+		// here, so those hooks only add latency per turn and per tool call, and run a
+		// repo's commands just for opening it. Flag settings outrank user, project and
+		// local settings, so a `disableAllHooks: false` there cannot undo it.
 		settings: {
 			...claudeCodeSettings(providerSettings),
 			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
 			includeGitInstructions: false,
+			disableAllHooks: true,
 		},
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
@@ -2138,12 +2177,24 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			} else {
 				const state = sessionStateFor(queryCtx.piSessionId);
 				const sessionId = capturedSessionId ?? state?.sessionId;
+				// An error result (429, overload, 5xx) is a turn pi may retry: it drops the
+				// failed assistant message and resends the same context, ending at the same
+				// user turn. Advancing the cursor past that turn makes the retry look like a
+				// shorter context, so it took the clean-start-and-preserve branch — a
+				// history-less session, deleted afterwards — and the next turn resumed this
+				// session without the retried answer. Hold the cursor and arm a rebuild
+				// instead: the retry rewrites this session from pi's history and resumes it.
+				// Rebuild rather than resume, because CC already wrote the failed prompt into
+				// the session file and resuming would send it twice.
+				const failed = queryCtx.turnOutput?.stopReason === "error";
 				if (sessionId) {
-					const cursor = Math.max(context.messages.length, queryCtx.latestCursor, state?.cursor ?? 0);
-					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
+					const cursor = failed
+						? state?.cursor ?? 0
+						: Math.max(context.messages.length, queryCtx.latestCursor, state?.cursor ?? 0);
+					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}${failed ? " (error result: cursor held, rebuild armed)" : ""}`);
 					// A missed steer may precede the first mirror or arrive while this
 					// query is still able to complete. Preserve both rebuild signals.
-					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: queryCtx.missedSteer || state?.needsRebuild });
+					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: failed || queryCtx.missedSteer || state?.needsRebuild });
 				}
 			}
 
@@ -2304,7 +2355,7 @@ async function promptAndWait(
 		prompt,
 		options: {
 			cwd,
-			env: { ...process.env, ...CC_CHILD_ENV },
+			env: ccChildEnv(),
 			permissionMode: "bypassPermissions",
 			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 			skills: [],
@@ -2414,9 +2465,6 @@ const PREVIEW_MAX_LINES = 6;
 let askClaudeToolName = "AskClaude";
 
 export default function (pi: ExtensionAPI) {
-	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
-	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-
 	const config = loadConfig(process.cwd());
 	let askClaudeDeprecationNoticeShown = Boolean(config.askClaudeDeprecationShown);
 	debug("loadConfig:", JSON.stringify(config));
