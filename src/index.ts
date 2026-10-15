@@ -1398,16 +1398,21 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	// fails over before output commits (pi-model-fallback-alias) then cannot reach the
 	// next provider. Keep the wording on the failed turn — the error event carries it —
 	// but emit no events, so the turn still reads as a call that produced no output.
-	// Issue #162.
+	// Issue #162. For a rate-limit rejection the turn stays empty too (issue #195).
 	if (assistantMsg.model === "<synthetic>") {
 		// The report can follow a stalled stream whose non-streaming retry also failed;
 		// drop the abandoned partial blocks (unsigned thinking, a tool call CC will never
 		// dispatch) the way the fallback path below would.
 		if (c.turnSawStreamEvent && c.turnStreamOpen) dropAbandonedStreamBlocks(c, "synthetic failure report");
 		debug(`processAssistantMessage: <synthetic> message, keeping ${assistantMsg.content.length} block(s) off the stream`);
+		// A rate-limit rejection leaves the turn empty: the error carries the wording, and
+		// omp only retries or walks retry.fallbackChains for a failed turn with no text.
+		// Other failures keep their wording as the turn's content.
+		const keepText = c.rateLimitRejection === null;
 		for (const block of assistantMsg.content) {
-			if (block.type === "text" && block.text) c.turnBlocks.push({ type: "text", text: block.text });
-			else debug("processAssistantMessage: unhandled <synthetic> block type", block.type);
+			if (block.type === "text" && block.text) {
+				if (keepText) c.turnBlocks.push({ type: "text", text: block.text });
+			} else debug("processAssistantMessage: unhandled <synthetic> block type", block.type);
 		}
 		if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model);
 		return;

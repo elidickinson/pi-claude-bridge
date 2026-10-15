@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: a rate-limited turn stays empty, so omp falls back (#195)** — when Claude Code's `<synthetic>` report follows a rate-limit rejection, its wording now lives only in the error, not in the turn's content. omp won't retry or walk `retry.fallbackChains` for a failed turn that holds text. Other failures keep their wording as before.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
