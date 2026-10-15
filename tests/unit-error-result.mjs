@@ -91,6 +91,21 @@ describe("a rate-limited failure", () => {
 		assert.ok(c.turnOutput.errorMessage.includes("five_hour"));
 	});
 
+	// omp refuses to retry or walk retry.fallbackChains for a failed turn whose content
+	// holds text, so the synthetic report of a rejected window must leave the turn empty.
+	it("leaves the turn empty, so omp's fallback chain can fire", async () => {
+		const c = makeCtx();
+		await consume(c, [
+			rejection,
+			{ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: limitResult.result }] } },
+			limitResult,
+		]);
+
+		assert.deepStrictEqual(c.turnOutput.content, []);
+		assert.strictEqual(c.turnOutput.stopReason, "error");
+		assert.ok(c.turnOutput.errorMessage.includes(limitResult.result), "the wording moves to the error");
+	});
+
 	it("labels only the failure it caused, not a later one", async () => {
 		const c = makeCtx();
 		await consume(c, [rejection, limitResult, errorResult]);
