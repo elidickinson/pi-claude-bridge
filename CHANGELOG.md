@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Remove: injected bash `timeout: 120`** — the bridge added it to every pi bash call that omitted it, so the argument reached pi's history but not Claude Code's, and every rebuild missed the prompt cache from the first such call. Tool calls now reach pi exactly as the model made them; pi's bash has no default timeout, so a default belongs in pi's bash tool (e.g. `@cad0p/pi-bash-timeout`, which applies one at execution time). Same change as part of #198 (@superninjv).
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.

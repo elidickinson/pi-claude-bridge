@@ -946,10 +946,10 @@ function mapToolArgs(
 		const piKey = renames?.[key] ?? key;
 		if (!(piKey in result)) result[piKey] = value; // first alias wins
 	}
-	// Pi bash has no default timeout; add a safety default
-	if (toolName.toLowerCase() === "bash" && result.timeout == null) {
-		result.timeout = 120;
-	}
+	// No default bash timeout: an argument the model did not send would reach
+	// pi's history but not Claude Code's, and every rebuild would then miss the
+	// prompt cache from the first such call. A default belongs in pi's bash tool
+	// itself (e.g. an extension that applies one at execution time).
 	return result;
 }
 
