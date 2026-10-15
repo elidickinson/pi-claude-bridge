@@ -2138,12 +2138,24 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			} else {
 				const state = sessionStateFor(queryCtx.piSessionId);
 				const sessionId = capturedSessionId ?? state?.sessionId;
+				// An error result (429, overload, 5xx) is a turn pi may retry: it drops the
+				// failed assistant message and resends the same context, ending at the same
+				// user turn. Advancing the cursor past that turn makes the retry look like a
+				// shorter context, so it took the clean-start-and-preserve branch — a
+				// history-less session, deleted afterwards — and the next turn resumed this
+				// session without the retried answer. Hold the cursor and arm a rebuild
+				// instead: the retry rewrites this session from pi's history and resumes it.
+				// Rebuild rather than resume, because CC already wrote the failed prompt into
+				// the session file and resuming would send it twice.
+				const failed = queryCtx.turnOutput?.stopReason === "error";
 				if (sessionId) {
-					const cursor = Math.max(context.messages.length, queryCtx.latestCursor, state?.cursor ?? 0);
-					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
+					const cursor = failed
+						? state?.cursor ?? 0
+						: Math.max(context.messages.length, queryCtx.latestCursor, state?.cursor ?? 0);
+					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}${failed ? " (error result: cursor held, rebuild armed)" : ""}`);
 					// A missed steer may precede the first mirror or arrive while this
 					// query is still able to complete. Preserve both rebuild signals.
-					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: queryCtx.missedSteer || state?.needsRebuild });
+					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: failed || queryCtx.missedSteer || state?.needsRebuild });
 				}
 			}
 

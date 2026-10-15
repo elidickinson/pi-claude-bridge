@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: a retried turn keeps its history** — after an error result (429, overload, 5xx) the session cursor advanced past the failed user turn, so pi's retry of the same context ran as a fresh Claude Code session holding only the prompt, which was then deleted, and the next turn resumed the old session without the retried answer. The cursor now holds on an error result and the session is rebuilt from pi's history on the retry.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
