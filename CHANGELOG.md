@@ -1,13 +1,46 @@
 # Changelog
 
-## UNRELEASED
+## 0.9.3 — 2026-10-13
 
-- **Fix: reject leaked pi harness prompts (issue #88)** — Prompts that somehow still reference pi's harness now fail loudly instead of being forwarded and potentially being billed as extra usage. See note in README.
-- **Fix: AskClaude reports its effective configured defaults (issue #65)** — its schema, description, and TUI now agree on mode and isolation, and disabling full mode removes it from the enum.
-- **Bump: require pi ≥0.86.1, drop pre-0.86 compat** — `src/transcript.ts` now replays prompt/tool state through pi-ai's helpers instead of a vendored copy (canonical section re-rank stays local). Also removes the event-stream factory fallback and version-tolerance casts. devDeps move to `^0.87.1`; Agent SDK to `^0.3.280` (the API now rejects older clients); fixes a model-catalog test bug from 0.87.1's added `claude-opus-5-5`.
+- **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
+- **Deprecate: AskClaude tool** — Show a one-time notice on first use; remove the startup reminder to opt in.
+- **Fix: Haiku 5.5 registered at 1M (#190)** — Thanks @Blue-B.
+- **Fix: hang when a stream is cut right after a tool call starts (#146)** — Tool calls now dispatch only once their block closes, so pi no longer gets a `{}`-argument call Claude Code has dropped. Thanks @andreypopp.
+- **Fix: tool result after a restart resumes the turn (#174)** — a result with no parked query ends the turn only when pi delivers it on an aborted request; otherwise (restart, crash, stall, retry) it resumes the Claude Code session. Thanks @jcwasher.
+- **Fix: Claude Code runs in the pi session's cwd (#175)** — hosts serving many sessions from one process (pi-web) spawned it in the host process cwd, so it loaded that directory's AGENTS.md and mirrored the session under the wrong project. Thanks @SoulKyu.
+- **Add: report plan usage through pi's `after_provider_response` (#171)** — Claude Code's usage updates arrive as `anthropic-ratelimit-unified-*` headers, so extensions that read usage from the built-in `anthropic` provider work with the bridge too. Thanks @fj.
+- **Fix: one-off calls honor the caller's reasoning level (#184)** — compaction summaries, `/bug-report` summaries and extension one-shots that pass `reasoning` now send it to Claude Code as `effort` instead of using its default. Thanks @roberthmms.
+- **Fix: exhausted subscription windows go straight to fallback (#183)** — the error now leads with "Claude quota exceeded", which pi does not retry, and still says "rate limit" for fallback chains. Thanks @good-nightmoon.
+- **Fix: tools with a top-level `anyOf`/`oneOf`/`allOf` schema (#180, issue #179)** — Claude Code dropped them, so a call could run twice or hang the turn. The bridge now flattens the schema the way CC's own normalizer does. Thanks @MataM15.
 
-- **Fix: turns hang on "Working" after a stalled response stream** — when a response stream stops arriving, Claude Code abandons it and repeats the request without streaming ("Error streaming, falling back to non-streaming mode"). The answer arrives as one `assistant` message under a new message id with no stream events of its own, and the bridge skipped it as already streamed because the dead stream had set `turnSawStreamEvent`. Its tool calls never reached pi, CC sat in the MCP handler waiting for their results, and the turn hung until the user aborted it; CC's own stall watchdog takes ~20 minutes to fire, so from the outside it looks like an agent that simply stopped. The bridge now tracks the streamed message id, treats an assistant message under a different id as the fallback, and drops the dead stream's partial blocks (an unsigned thinking block, a tool call CC will never dispatch) before delivering it. A stream retried as a new stream drops its predecessor the same way. Reproduced end to end with a proxy that stalls one response mid-message; covered by `tests/unit-nonstreaming-fallback.mjs`.
-- **Add: Claude Opus 5.5 1M context (issue #116)** — `claude-opus-5-5` joins the 1M list based on Anthropic's documentation for Opus 4.7 and later; its `[1m]` SDK behavior on Pro has not yet been measured (see `diag/CONTEXT-SIZE.md`). The model appears when pi-ai ≥0.87.1 is installed; users on older pi versions need to update pi to see it.
+## 0.9.2 — 2026-10-07
+
+- **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.
+- **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
+- **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
+- **Bump: Agent SDK `^0.3.293`** — bundles Claude Code 2.1.293, includes Haiku 5.5.
+- **Tests: fix test isolation by lazy loading log path (#164)** — log-paths resolves debug/diag paths per call instead of at import time. Fixes issues with config tests overwriting real user settings in some situations.
+
+## 0.9.1 — 2026-09-30
+
+- **Bump: Claude Sonnet 5.5 and pi-ai 0.99.1** — pi-ai update brings `claude-sonnet-5-5` with 1M context. Agent SDK now requires `^0.3.284`.
+- **Tests: add PR CI** — Run unit tests on GitHub Actions without Claude credentials.
+- **Fix: write the debug and diagnostics logs into pi's agent dir (#147)** — Honour `PI_CODING_AGENT_DIR` instead of always writing to (and recreating) `~/.pi/agent`; `CLAUDE_BRIDGE_DEBUG_PATH` still overrides the debug log. Thanks @Susensio.
+- **Fix: unresolvable or refused system prompt ends the turn as a stream error (#124)** — The prompt-capture checks end the returned stream with an error event instead of throwing out of the provider call, so callers outside pi's agent loop see a failed turn too. The fallback to the freshest capture proposed in #124 is not included: an unmatched mid-query turn still fails, now as a failed turn rather than a throw. Thanks @jmtoepperwien.
+- **Add: name pi#5581 when an extension-triggered turn's prompt can't be matched (#144)** — An idle `sendMessage` with `triggerTurn` skips `before_agent_start`, so its prompt lacks that turn's extension additions. The turn still fails, but the error now says so and suggests sending a user message instead.
+- **Fix: thinking tokens never reached pi's `usage.reasoning` (#139)** — Read the SDK's nested `output_tokens_details.thinking_tokens`, as pi's own Anthropic provider does. Reasoning stays a subset of output tokens and out of cost. Thanks @cmembreno048.
+
+## 0.9.0 — 2026-09-27
+
+- **Bump: require pi ≥0.86.1 and drop pre-0.86 compat** — This breaks support for pi <0.86.1. Use pi-ai's transcript helpers and update dev peers to `^0.87.1` and the Agent SDK to `^0.3.280`; the API now rejects older Claude Code clients.
+- **Fix: make mid-turn compaction rebuilds session-safe (issue #101)** — Restart parked queries from pi's rewritten history, with separate Claude Code mirrors per pi session. Prevents compaction loops and subagents taking over the parent's conversation; covered by `tests/int-compact-midturn-rebuild.mjs` and `tests/unit-cross-session-turns.mjs`. Thanks @andreypopp (PR #128), @chigkim, and @QuBiit0.
+- **Fix: recover when a response stream stalls** — Accept Claude Code's non-streaming retry under a new message id and drop incomplete blocks from the stalled stream so tool calls reach pi. Covered by `tests/unit-nonstreaming-fallback.mjs`.
+- **Fix: rebuild after an undelivered steer** — keep the rebuild request through successful completion, including on a first turn without a session mirror. Turn-level tests check that the next turn restores the missed message.
+- **Fix: reject prompts that trigger Anthropic's third-party gate (issue #88)** — Refuse prompts carrying pi's harness or both documented trigger paths (`docs/custom-provider.md` and `docs/packages.md`) rather than risk a 400 or Extra Usage charge. See README.
+- **Fix: AskClaude reports its effective configured defaults (issue #65)** — its schema, description, and TUI agree on mode and isolation; disabling full mode removes it from the enum. Thanks @fmguerreiro (PR #69).
+- **Fix: honor unsupported per-model reasoning levels** — when pi-ai's `thinkingLevelMap` marks a level `null`, omit the effort setting instead of falling through to the generic mapping.
+- **Add: Claude Opus 5.5 1M context (issue #116)** — Requires pi-ai ≥0.87.1.
+- **Tests: strengthen integration and cache diagnostics** — Fail runs on bridge-origin `BUG:`/stranded-handler warnings; add an opt-in live-API git-commit cache test (`tests/int-cache-git.sh`) and a rebuild-fidelity probe. The probe confirms cache loss beyond the system prompt after rebuilds on CC 2.1.263+; see `diag/AUDIT.md`.
 
 ## 0.8.0 — 2026-09-20
 

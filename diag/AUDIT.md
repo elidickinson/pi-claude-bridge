@@ -18,7 +18,7 @@ node --import tsx diag/audit-warnings.mjs    [claude-bridge.log] [--since YYYY-M
 node --import tsx diag/replay-write-path.mjs <pi-session.jsonl>
 ```
 
-Defaults are `~/.claude/projects` and `~/.pi/agent/claude-bridge.log`.
+Defaults are `~/.claude/projects` and the bridge log in pi's agent dir (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`).
 
 **`--since` is what makes these gates rather than reports.** Everything found is
 always printed, but the exit code counts only records and log lines inside the
@@ -28,12 +28,9 @@ being read. Pass the date of the last known-good run to ask "has anything gone
 wrong since?". One caveat: a rebuild re-stamps old messages with the time it ran,
 so a session rebuilt inside the window drags its whole history in with it.
 
-`--ceiling` exists because the 24.8% boundary break rate below is an open finding
-rather than a regression; set it just above the current rate to catch that number
-getting *worse* while the cause is unresolved.
+`--ceiling` exists because boundary cache breaks are an open finding rather than a regression; set it just above the latest measured rate to catch an increase while the cause is unresolved.
 
-Baselines below are from the 2026-07-29 audit over 1,810 transcripts and an
-April–July bridge log. Compare a future run against these, not against zero.
+Dated baselines below cover the window named with each. Compare a future run against the baseline nearest it, not against zero.
 
 ---
 
@@ -213,6 +210,65 @@ breaks on a rebuild boundary: 35
 Classified out as benign: idle > 5 min (88), effort changed (30), model change
 (29), compaction/new session (10), tool set changed (2).
 
+### Baseline (2026-09-25, 17,917 requests)
+
+`audit-cache.mjs` reports 130/15,033 in-query pairs (0.9%) and 310/1,360 `--resume` boundaries (22.8%), including 89 breaks on `path=rebuild`. Split by sync path over the same boundary denominator: 89/139 rebuild boundaries (64.0%), 216/1,121 reuse boundaries (19.3%), 5/100 without a captured path. Nearly all of it is CC 2.1.141 or earlier; bin by CC version before comparing it with later runs (see the rebuild finding below).
+
+Three rates measure different things: the boundary rate over all `--resume` boundaries (22.8% here, 24.8% in the July baseline), the break rate conditional on sync path (64.0%/19.3%), and the rebuild-cause census below, a share of rebuilds by cause. None substitutes for another.
+
+### Rebuild-cause census
+
+Counts `syncResult: path=rebuild` lines in the anchored bridge log, grouped by module id and matched to the event lines emitted by `syncSharedSession`, `markRebuildForSession`, the abort handler, and `discardRewrittenQuery`. The 188 `first` paths are reported separately: they have no prior shared-session id.
+
+| Window (UTC) | `first` paths | Existing-session rebuilds |
+|---|---:|---|
+| 2026-04-12 – 2026-05-03 04:11 | 26 | 15: 8 abort, 7 unmarked history gaps |
+| 2026-05-03 04:11 – 2026-09-24 19:24 | 158 | 150: 118 abort, 6 compact, 26 unmarked history gaps |
+| 2026-09-24 19:24 – 2026-09-25 23:59 | 4 | 1: compact |
+| Total | 188 | 166: 126 abort, 7 compact, 33 unmarked history gaps |
+
+Window boundaries are where `session_tree:` logging and the parked-query discard path entered the code, so the eras are not comparable without binning.
+
+All 126 `rotated-post-abort` rebuilds have a preceding `provider: abort detected` line. The log contains no `provider: history rewritten under a parked query`, `session_tree:`, `steer never reached CC`, or foreign-session `sync:` lines — so no discard sample and no tree sample exist to classify.
+
+**The `rotated-post-abort` label is not a cause field.** `discardRewrittenQuery` also sets `forceRotate`, and a `preserveSharedSession` rebuild can also skip preserving the id. The 126 count is sound for this window only because every one carries an explicit abort marker. Add a structured `cause=` field to `syncResult` — `abort`, `discarded-query`, `compact`, `tree`, `history-gap`, `api-error` — rather than inferring cause from the rotation label.
+
+The seven compact rebuilds carry a `session_compact:` marker and cannot be served by suffix truncation. All 33 unmarked preserved rebuilds log positive `Case 4` missed-message counts: the CC file lacks current history that must be imported, though the log does not record what supplied it.
+
+Truncation ceiling: **126/166 (75.9%)** from aborts, or at most **133/166 (80.1%)** if every pre-instrumentation history gap were an eligible single-turn tree cut. The fork guard's single-turn condition is not measurable from this log. Candidate ceiling, not demonstrated implementation success. Across all 354 rebuilds, `first` included, aborts are 126 (35.6%).
+
+Validation: parser checked against session `2y1vp2`, where abort markers precede two `rotated-post-abort` rebuilds, and `kq2gaa`, where `session_compact:` precedes a preserved rebuild. Counts require anchored regexes — unanchored, `session_tree` matches three bash tool-output echoes containing source text; anchored, zero.
+
+The 25 `first` paths with a preceding `provider: query error` cannot be folded into the 166 denominator: `session_start:new/resume/fork` also clears the shared session, so `first` mixes new sessions, starts, resumes, forks, and error recovery. The API-error contribution to a broader rebuild denominator is unknown.
+
+### Finding: since CC 2.1.263, a rebuild re-caches the whole conversation
+
+Rebuild boundaries by CC version. Pairs as in `audit-cache.mjs` (same module and model, previous request within 5 minutes), at least 20k tokens cached, CC version read from `cc_version=` in the CLI log each query's `cli-debug:` line names:
+
+| CC | Rebuilds | Read back ≥95% | Under 50% |
+|---|---:|---:|---:|
+| 2.1.86 | 1 | 0 | 1 |
+| 2.1.114 | 3 | 0 | 3 |
+| 2.1.126 | 17 | 4 | 12 |
+| 2.1.141 | 96 | 17 | 75 |
+
+Cold reads sit at 4k–16k tokens, about tools plus system prompt. The warm ones are exact: an abort rebuild of 485 pi messages on 2026-08-13 read back all 280,803 cached tokens and wrote 52. What made the cold majority cold is not found; the empty-signature thinking drop (end of this file) touches 1.1% of blocks, too few.
+
+Since 2.1.263 CC also writes context records a rebuild drops. Counted by `attachment.type` in `~/.claude/projects` session files — types only CC writes, so provenance is not in question. Live prompts are user records with a `promptId` and text content, excluding `isMeta` and `req_syn_*`.
+
+| CC | Live prompts | `total_tokens_reminder` | `environment`, `model`, `session_context`, `date` |
+|---|---:|---:|---|
+| 2.1.141 | 258 | 0 | 0 |
+| 2.1.263 | 241 | 378 | 0 |
+| 2.1.267 | 813 | 1,140 | 0 |
+| 2.1.280 | 446 | 842 | one of each per session file |
+
+`diag/probe-rebuild-fidelity.mjs` on 2.1.280 (3 Haiku 4.5 runs, 2 Opus 5 runs): every forced rebuild read back exactly tools plus system prompt, diverging at `messages[0]`, where the rebuilt prompt lacks CC's context blocks. Reuse controls and mid-turn boundaries read back fully. CC's cache breakpoints are the end of the system prompt and the newest message, so the only cached prefixes are the system prompt and earlier requests' full prompts, and one early difference costs the whole conversation. Later differences, moot once the first one hits: `timeout: 120` that `mapToolArgs` adds to bash calls, and `tool_result.content` written as a string with a different key order.
+
+Real 2.1.280 usage: none of its six rebuilds passes the 5-minute filter. One has no earlier request in its process, one follows a 193-minute gap, and one follows a compaction that shrank the history. The other three follow 14–18 minute gaps — within the cache lifetime, since all 9 reuses on 2.1.263+ after a 5–60 minute gap read back fully — and all three read back only the floor: 11,451, 11,451, and 14,224 of 74k–104k. They are `first` rebuilds after `session_shutdown` cleared the mirror of a session the user then returned to, with CC's session file still on disk. Reuse is unaffected: all 40 comparable reuse boundaries on 2.1.263+ read back fully.
+
+Hand-checked against the raw log: the 2026-08-13 warm rebuild and the three 2.1.280 cold ones.
+
 ### Finding: ~25% of `--resume` boundaries re-send the whole conversation
 
 The one finding here that neither known bug explains. Superseded in part: most of
@@ -286,11 +342,18 @@ commit-spanning breaks (24 modules, 268 boundaries), 83 breaks land exactly on i
 and 15 land elsewhere, so re-serialization can account for at most ~15% of
 residual boundary breaks.
 
-**Thinking blocks are untested, not exonerated.** The obvious log-side proxy does
-not exist: `reasoning=` appears in **0** of 14,994 `usage:` lines, so the SDK never
-reports reasoning tokens to the bridge and `src/index.ts:825`'s `reasoningText` is
-dead in practice. The transcript-join fallback (match the 8-char `resume=` prefix
-to a surviving `.jsonl`, then look at CC-authored records inside the previous
+**Thinking blocks are untested, not exonerated.** The obvious log-side proxy did not
+exist when this was written: `reasoning=` appears in **0** of 14,994 `usage:` lines.
+The cause was a bridge defect, not a missing SDK field. `updateUsage` read
+`usage.reasoning_tokens` (absent from every version of `@anthropic-ai/sdk`) and a flat
+`usage.thinking_tokens`, but the count is nested at
+`usage.output_tokens_details.thinking_tokens` — so every value CC sent was dropped, and
+the recorded fixtures under `tests/fixtures/sdk-streams/` turned out to carry populated
+counts all along. Fixed in `src/usage.ts`, so `reasoning=` now appears on turns that
+think and this proxy is available for a *fresh* run. Every `usage:` line counted above
+predates the fix; do not reread that window for it. The transcript-join fallback
+(match the 8-char `resume=` prefix to a surviving `.jsonl`, then look at
+CC-authored records inside the previous
 query's time window) only lands 20 of 263 boundaries — most sessions have since
 been deleted and rewritten by a rebuild — and the cells are n=1–2. Underpowered;
 do not read a result into it. Images are likewise untestable here: zero boundaries

@@ -40,9 +40,9 @@ try {
 	const fullLog = readFileSync(DEBUG_LOG, "utf8");
 	const postNewLog = fullLog.slice(NEW_MARKER_LOG);
 
-	// The bridge logs `session_start:new: clearing session ...` when it
+	// The bridge logs `session_start:new: clearing ... shared sessions` when it
 	// observes the event. Make sure we saw it.
-	if (!/session_start:new: clearing session/.test(postNewLog)) {
+	if (!/session_start:new: clearing \d+ shared session/.test(postNewLog)) {
 		throw new Error("no `session_start:new: clearing session` marker — bridge didn't observe /new");
 	}
 

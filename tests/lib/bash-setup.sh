@@ -28,7 +28,7 @@ setup_test_env() {
 	local log_suffix="${2:-.log}"  # optional: suffix for logfile, or "none" for no logfile
 
 	DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-	LOGDIR="$DIR/.test-output"
+	LOGDIR="${CLAUDE_BRIDGE_TEST_LOG_DIR:-$DIR/.test-output}"
 	mkdir -p "$LOGDIR"
 
 	export CLAUDE_BRIDGE_DEBUG=1

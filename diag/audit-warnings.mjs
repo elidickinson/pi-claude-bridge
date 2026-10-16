@@ -2,8 +2,8 @@
 // Warning/anomaly inventory for the bridge debug log.
 //
 // The bridge logs a handful of conditions it believes are impossible or broken
-// (`WARNING:`, `BUG:`). Nothing surfaces them — they scroll past in a 23MB file —
-// so this collects them with counts and dates, plus the tool-loop invariants that
+// (`WARNING:`, `BUG:`). The integration suite gates deadlock markers; this
+// collects all warnings with counts and dates, plus the tool-loop invariants that
 // have no WARNING of their own: MCP handlers that waited and were never resolved,
 // and tool results queued for a handler that never claimed them. Both are the
 // deadlock signature.
@@ -41,8 +41,11 @@ if (Number.isNaN(since)) {
 // The log reaches back to April; without a window every historical warning keeps
 // the check red forever. Everything is still printed — only the exit narrows.
 const inWindow = (iso) => since === null || Date.parse(iso) >= since;
+// Same resolution as src/log-paths.ts, without pulling pi's runtime into a diag
+// script: PI_CODING_AGENT_DIR wins, ~/.pi/agent is only the default.
+const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 const logPath = args.filter((a, i) => !a.startsWith("--") && i !== sinceArg + 1)[0]
-	?? join(homedir(), ".pi/agent/claude-bridge.log");
+	?? join(agentDir, "claude-bridge.log");
 
 function run() {
 	let text;

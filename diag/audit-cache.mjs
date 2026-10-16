@@ -57,8 +57,11 @@ if (Number.isNaN(since) || Number.isNaN(ceiling)) {
 	console.error("usage: audit-cache.mjs [log] [--since YYYY-MM-DD] [--ceiling 0.30]");
 	process.exit(2);
 }
+// Same resolution as src/log-paths.ts, without pulling pi's runtime into a diag
+// script: PI_CODING_AGENT_DIR wins, ~/.pi/agent is only the default.
+const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 const logPath = args.filter((a, i) => !a.startsWith("--") && !args[i - 1]?.startsWith("--"))[0]
-	?? join(homedir(), ".pi/agent/claude-bridge.log");
+	?? join(agentDir, "claude-bridge.log");
 
 // A turn emits several `usage:` lines reporting the same request as its output
 // grows. Collapsing runs that share (cacheRead, cacheWrite, model) leaves one row

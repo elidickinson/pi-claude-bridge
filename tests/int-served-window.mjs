@@ -23,10 +23,9 @@ const harness = createRpcHarness({
 	defaultTimeout: TIMEOUT,
 });
 
-const { start, stop, promptAndWait, DEBUG_LOG, RPC_LOG } = harness;
+const { startAndWait, stop, promptAndWait, DEBUG_LOG, RPC_LOG } = harness;
 
-start();
-await new Promise((r) => setTimeout(r, 2000));
+await startAndWait();
 
 try {
 	console.log("Single bridge prompt to exercise the provider result path...");

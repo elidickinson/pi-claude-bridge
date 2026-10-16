@@ -54,7 +54,7 @@ try {
 export function createRpcHarness(opts) {
 	const { name, args = [], env = {}, cwd = DIR, defaultTimeout = 30_000 } = opts;
 
-	const LOGDIR = `${DIR}/.test-output`;
+	const LOGDIR = process.env.CLAUDE_BRIDGE_TEST_LOG_DIR ?? `${DIR}/.test-output`;
 	mkdirSync(LOGDIR, { recursive: true });
 
 	const RPC_LOG = `${LOGDIR}/${name}.log`;
@@ -65,15 +65,16 @@ export function createRpcHarness(opts) {
 
 	let pi, rpcLog;
 	let stopped = false;
+	let startedOnce = false;
 	let buffer = "";
 	let listeners = [];
 	let reqId = 0;
 
 	function start() {
-		// Truncate the debug log on each run so test assertions that grep the
-		// log see only this run's output, not accumulated history from prior
-		// failing runs. RPC log is still append so cross-run comparisons work.
-		writeFileSync(DEBUG_LOG, "");
+		// Clear an earlier test run, but retain markers from earlier starts of
+		// this harness (e.g. after a child crash) for the final log gate.
+		if (!startedOnce) writeFileSync(DEBUG_LOG, "");
+		startedOnce = true;
 		stopped = false;
 		rpcLog = createWriteStream(RPC_LOG, { flags: "a" });
 		const spawnArgs = ["--no-session", "-ne", "-e", DIR, "--mode", "rpc", ...args];

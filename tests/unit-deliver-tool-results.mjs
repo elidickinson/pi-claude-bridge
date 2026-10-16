@@ -96,22 +96,22 @@ describe("deliverToolResults", () => {
 		const c = new QueryContext();
 		c.promptStream = rec.promptStream("reject");
 		c.pendingToolCalls.set("call-1", rec.handler("read"));
-		__test.setSharedSession({ sessionId: "abc", cursor: 3, cwd: "/tmp", needsRebuild: false });
+		__test.setSharedSession(null, { sessionId: "abc", cursor: 3, cwd: "/tmp", needsRebuild: false });
 
 		await __test.deliverToolResults(c, [result("call-1")], steerText, 4);
 
 		assert.deepStrictEqual(rec.order, ["push:actually stop", "push-rejected", "resolve:read"]);
-		assert.equal(__test.getSharedSession().needsRebuild, true);
+		assert.equal(__test.getSharedSession(null).needsRebuild, true);
 	});
 
 	it("marks the session for rebuild when there is no prompt stream", async () => {
 		const c = new QueryContext();
 		c.promptStream = null;
-		__test.setSharedSession({ sessionId: "abc", cursor: 3, cwd: "/tmp", needsRebuild: false });
+		__test.setSharedSession(null, { sessionId: "abc", cursor: 3, cwd: "/tmp", needsRebuild: false });
 
 		await __test.deliverToolResults(c, [], steerText, 4);
 
-		assert.equal(__test.getSharedSession().needsRebuild, true);
+		assert.equal(__test.getSharedSession(null).needsRebuild, true);
 	});
 
 	it("queues a result whose handler has not arrived yet", async () => {
