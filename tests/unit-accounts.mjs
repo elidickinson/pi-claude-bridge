@@ -11,9 +11,16 @@ import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const { resolveToken, settingsWithToken, mergeWindows, formatAccountStatus } = await import("../src/accounts.js");
+const { pickAccount, resolveToken, settingsWithToken, mergeWindows, formatAccountStatus } = await import("../src/accounts.js");
 
 describe("accounts", () => {
+	it("picks the active account, else the first; none configured means no override", () => {
+		assert.equal(pickAccount("alt", ["default", "alt"]), "alt");
+		assert.equal(pickAccount(undefined, ["default", "alt"]), "default");
+		assert.equal(pickAccount("renamed", ["default", "alt"]), "default");
+		assert.equal(pickAccount("alt", []), undefined);
+	});
+
 	it("resolves tokens from env or file, trimmed", () => {
 		assert.equal(resolveToken("a", { tokenEnv: "T" }, { T: " tok\n" }), "tok");
 		assert.equal(resolveToken("i", { token: "inline", tokenEnv: "T" }, { T: "env" }), "inline");

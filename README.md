@@ -88,7 +88,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 
 An inline `token` makes the config file a secret: keep it `chmod 600` and out of dotfile repos. When several are set, `token` wins over `tokenEnv`, which wins over `tokenFile`.
 
-`/claude-account [name]` switches the account for the next request and remembers it as `activeAccount`; `default` leaves Claude Code's own credentials in charge (`~/.claude/settings.json` env, then `/login`). The token reaches Claude Code through a private `--settings` file, which outranks `~/.claude/settings.json`. The status bar shows the account and its 5h / 7d plan usage (Nerd Font icons), updated on every request.
+`/claude-account [name]` switches the account for the next request and remembers it as `activeAccount`; without one, or if it was removed, the first account is used. With no `accounts` at all the feature is off and Claude Code's own credentials are in charge (`~/.claude/settings.json` env, then `/login`). The token reaches Claude Code through a private `--settings` file, which outranks `~/.claude/settings.json`. The status bar shows the account and its 5h / 7d plan usage (Nerd Font icons), updated on every request.
 
 **Notices:** the startup notice points out when `provider.plan` is unset and records `startupNoticeShown` in the global config. There's also a deprecation notice on first use of AskClaude that records its display date as `askClaudeDeprecationShown`.
 

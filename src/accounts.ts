@@ -11,8 +11,11 @@ import type { RateLimitInfo } from "./rate-limit.js";
 
 export type AccountSource = { token?: string; tokenEnv?: string; tokenFile?: string };
 
-/** No override: Claude Code picks its own credentials (settings.json env, then /login). */
-export const DEFAULT_ACCOUNT = "default";
+/** The account a query runs on: the picked one if still configured, else the first. None configured
+ *  means no override: Claude Code picks its own credentials (settings.json env, then /login). */
+export function pickAccount(active: string | undefined, names: string[]): string | undefined {
+	return active !== undefined && names.includes(active) ? active : names[0];
+}
 
 export function resolveToken(name: string, source: AccountSource | undefined, env: NodeJS.ProcessEnv = process.env): string {
 	if (!source) throw new Error(`claude-bridge: account "${name}" is not in claude-bridge.json "accounts"`);
