@@ -130,6 +130,79 @@ describe("MCP tool schema advertisement", () => {
 	});
 });
 
+// Claude Code drops any MCP tool whose input schema has a top-level
+// anyOf/oneOf/allOf ("its input schema uses top-level anyOf, which the Anthropic
+// API does not accept"). The bridge still maps the tool as served, so a call to it
+// reached pi and ran there while CC answered "No such tool available" and retried
+// under a fresh id: the tool ran twice, or the retry's handler waited forever.
+// Pi validates arguments against the full schema itself, so the bridge only needs
+// to advertise a flat object schema that CC accepts.
+describe("MCP tool schema with top-level combinators", () => {
+	async function listTool(inputSchema) {
+		const server = createToolServer("custom-tools", [
+			{ name: "union_tool", description: "d", inputSchema, handler: async () => ({ content: [] }) },
+		]);
+		const { request } = await connectClient(server);
+		return (await request("tools/list", {})).result.tools[0];
+	}
+
+	it("flattens a top-level anyOf into one object schema CC accepts", async () => {
+		const { description, inputSchema: listed } = await listTool({
+			type: "object",
+			additionalProperties: false,
+			required: ["operation"],
+			properties: { operation: { type: "string", enum: ["start", "status"] }, input: { type: "string" } },
+			anyOf: [
+				{ type: "object", properties: { operation: { type: "string", enum: ["start"] }, baseRef: { type: "string" } } },
+				{ type: "object", properties: { operation: { type: "string", enum: ["status"] } }, required: ["input"] },
+			],
+		});
+
+		for (const key of ["anyOf", "oneOf", "allOf"]) assert.ok(!(key in listed), `top-level ${key} must not reach CC`);
+		assert.strictEqual(listed.type, "object");
+		assert.strictEqual(listed.additionalProperties, false);
+		assert.deepStrictEqual(Object.keys(listed.properties).sort(), ["baseRef", "input", "operation"]);
+		assert.deepStrictEqual(listed.properties.operation.enum, ["start", "status"], "root declaration wins over a branch");
+		assert.deepStrictEqual(listed.required, ["operation"], "a branch-only requirement is not universal");
+		assert.strictEqual(description, "Input constraint: Provide parameters for at least one of: (operation, baseRef) or (input).\n\nd");
+	});
+
+	it("keeps allOf requirements, which apply to every call", async () => {
+		const { description, inputSchema: listed } = await listTool({
+			type: "object",
+			properties: { a: { type: "string" } },
+			required: ["a"],
+			allOf: [{ type: "object", properties: { b: { type: "number" } }, required: ["b"] }],
+		});
+
+		assert.ok(!("allOf" in listed));
+		assert.deepStrictEqual(Object.keys(listed.properties).sort(), ["a", "b"]);
+		assert.deepStrictEqual(listed.required, ["a", "b"]);
+		assert.ok(description.startsWith("Input constraint: all listed parameters apply together"));
+	});
+
+	it("flattens a oneOf of $defs refs and names each group in the description", async () => {
+		const { description, inputSchema: listed } = await listTool({
+			type: "object",
+			$defs: {
+				byId: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+				byName: { type: "object", properties: { name: { type: "string" }, scope: { type: "string" } }, required: ["name"] },
+			},
+			oneOf: [{ $ref: "#/$defs/byId" }, { $ref: "#/$defs/byName" }],
+		});
+
+		assert.ok(!("oneOf" in listed));
+		assert.deepStrictEqual(Object.keys(listed.properties).sort(), ["id", "name", "scope"]);
+		assert.ok(!("required" in listed), "each branch's requirement holds only for that branch");
+		assert.strictEqual(description, "Input constraint: Provide parameters for exactly one of: (id) or (name).\n\nd");
+	});
+
+	it("leaves the description alone when there is no top-level combinator", async () => {
+		const { description } = await listTool({ type: "object", properties: { a: { type: "string" } } });
+		assert.strictEqual(description, "d");
+	});
+});
+
 describe("MCP tool invocation", () => {
 	// Two tools, so a handler picked by position rather than by name/id is visible.
 	const twoTools = (record) => [

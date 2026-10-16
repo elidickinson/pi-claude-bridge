@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-bridge",
-  "version": "0.8.0",
+  "version": "0.9.3",
   "private": false,
   "description": "Pi extension that uses Claude Code (via Agent SDK) as a model provider and adds an AskClaude tool.",
   "keywords": [
@@ -27,13 +27,13 @@
   ],
   "scripts": {
     "test:unit": "node --import tsx --import ./tests/lib/setup.mjs --test tests/unit-*.mjs",
-    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
+    "test": "set -a && [ -f .env.test ] && . .env.test; set +a; CLAUDE_BRIDGE_TEST_LOG_DIR=$(mktemp -d); export CLAUDE_BRIDGE_TEST_LOG_DIR; npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs && node tests/lib/check-deadlock-logs.mjs \"$CLAUDE_BRIDGE_TEST_LOG_DIR\"",
     "test:usage": "tests/usage-test.sh",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.280",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.293",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "cc-session-io": "^0.4.0",
     "change-case": "^5.4.4"
@@ -46,9 +46,9 @@
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
-    "@earendil-works/pi-ai": "^0.87.1",
-    "@earendil-works/pi-coding-agent": "^0.87.1",
-    "@earendil-works/pi-tui": "^0.87.1",
+    "@earendil-works/pi-ai": "^1.2.0",
+    "@earendil-works/pi-coding-agent": "^1.2.0",
+    "@earendil-works/pi-tui": "^1.2.0",
     "@types/node": "^24.13.2",
     "tsx": "^4.22.4",
     "typebox": "^1.3.7",

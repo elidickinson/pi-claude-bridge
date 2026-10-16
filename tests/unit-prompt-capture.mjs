@@ -2,7 +2,11 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { collectPromptSkills, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { collectPromptSkills, PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+
+const PI_SYSTEM_PROMPT = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js", import.meta.url));
 
 const PI_HARNESS = "You are an expert coding assistant operating inside pi. Pi documentation: pi packages (docs/packages.md).";
 const PARENT_KEY = `${PI_HARNESS}\n\n<project_context>raw parent context</project_context>\nCurrent working directory: /parent`;
@@ -132,6 +136,18 @@ describe("PromptCaptures", () => {
 		assert.equal(diagnostics[0].matches[0].firstDivergent, 14);
 	});
 
+	it("names pi#5581 when a prompt is a recorded key with its tail missing", () => {
+		const captures = new PromptCaptures();
+		// The issue #144 shape: the next turn's prompt is the last recorded key with the
+		// extension's additions gone, because the idle triggerTurn skipped before_agent_start.
+		captures.record(`${PARENT_KEY}\n\n<skills>extension additions</skills>`, capture(), "turn_start");
+
+		assert.throws(
+			() => captures.resolveOrDerive(PARENT_KEY),
+			/pi#5581/,
+		);
+	});
+
 	it("recursively projects an inherited prompt without Pi's harness", () => {
 		const browser = skill("browser");
 		const captures = new PromptCaptures();
@@ -257,6 +273,86 @@ describe("PromptCaptures", () => {
 		assert.equal(captures.resolve("b"), undefined);
 		assert.equal(captures.resolve("a").custom, "refreshed");
 		assert.ok(captures.resolve("c") && captures.resolve("d"));
+	});
+});
+
+describe("prompt sections", () => {
+	const MCP_CONTENT = "- mcp__github (codemode): GitHub tools";
+	const MCP_SECTION = `<mcp_servers>\n${MCP_CONTENT}\n</mcp_servers>`;
+
+	it("projects a recorded section after the appended instructions, in pi's wrapper format", async () => {
+		const captures = new PromptCaptures();
+		captures.record("sectioned prompt", capture({
+			append: "be careful",
+			sections: { mcp_servers: MCP_CONTENT },
+		}));
+
+		assert.equal(project(captures, "sectioned prompt"), `be careful\n\n${MCP_SECTION}`);
+
+		// pi's own renderer: the projection has to be byte-identical to the text the
+		// builder put into the prompt this capture keys.
+		assert.ok(existsSync(PI_SYSTEM_PROMPT), `pi's system prompt module is not at ${PI_SYSTEM_PROMPT}; if pi moved it, update this test`);
+		const { buildSystemPromptSections } = await import(PI_SYSTEM_PROMPT);
+		assert.equal(
+			buildSystemPromptSections({ cwd: "/w", sections: { mcp_servers: MCP_CONTENT } }).mcp_servers,
+			MCP_SECTION,
+		);
+	});
+
+	it("skips an empty section, as pi's builder does", () => {
+		const captures = new PromptCaptures();
+		captures.record("one empty section", capture({ sections: { mcp_servers: "", other: "kept" } }));
+
+		assert.equal(project(captures, "one empty section"), "<other>\nkept\n</other>");
+	});
+
+	it("keeps the recorded sections when the caller mutates its own map", () => {
+		// systemPromptOptions is a live object: later before_agent_start handlers edit it.
+		const sections = { mcp_servers: MCP_CONTENT };
+		const captures = new PromptCaptures();
+		captures.record("live options", capture({ sections }));
+		sections.mcp_servers = "mutated";
+
+		assert.equal(project(captures, "live options"), MCP_SECTION);
+	});
+
+	it("drops a section a later recording no longer carries", () => {
+		const captures = new PromptCaptures();
+		captures.record("sectioned prompt", capture({ sections: { mcp_servers: MCP_CONTENT } }));
+		assert.equal(project(captures, "sectioned prompt"), MCP_SECTION);
+
+		captures.record("sectioned prompt", capture({ sections: {} }));
+		assert.equal(project(captures, "sectioned prompt"), undefined);
+	});
+
+	it("projects an inherited prompt's section through a child, once", () => {
+		const captures = new PromptCaptures();
+		captures.record(PARENT_KEY, capture({
+			contextFiles: [{ path: "/AGENTS.md", content: "parent rules" }],
+			sections: { mcp_servers: MCP_CONTENT },
+		}));
+		captures.record(CHILD_KEY, capture({ custom: `${PARENT_KEY}${CHILD_SUFFIX}` }));
+
+		const child = project(captures, CHILD_KEY);
+		assert.equal(occurrences(child, MCP_SECTION), 1);
+		assert.doesNotMatch(child, /operating inside pi/);
+	});
+
+	it("refuses a section carrying pi's preamble or Anthropic's trigger pair", () => {
+		const offending = {
+			leaked_harness: `${PI_PREAMBLE}, a coding agent harness.`,
+			triggers: "see docs/custom-provider.md and docs/packages.md",
+		};
+		for (const [name, content] of Object.entries(offending)) {
+			const captures = new PromptCaptures();
+			captures.record("guarded prompt", capture({ sections: { [name]: content } }), "before_agent_start");
+
+			assert.throws(
+				() => projectPromptCapture(captures.resolve("guarded prompt"), { skillReadTool: "none" }),
+				(error) => error.message.includes(`in the ${name} section`),
+				`the ${name} section must be checked on its own`,
+			);
+		}
 	});
 });
 

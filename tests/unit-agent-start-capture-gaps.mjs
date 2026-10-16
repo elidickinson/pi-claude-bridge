@@ -26,18 +26,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { PI_PREAMBLE, projectPromptCapture } from "../src/prompt-capture.js";
+import { activateWithMockPi } from "./lib/mock-pi.mjs";
 
-const { default: activate, __test } = await import("../src/index.js");
-
-function activateWithMockPi(activateFn) {
-	const handlers = new Map();
-	(activateFn ?? activate)({
-		on: (event, handler) => handlers.set(event, handler),
-		registerProvider: () => {},
-		registerTool: () => {},
-	});
-	return handlers;
-}
+const { __test } = await import("../src/index.js");
 
 const section = (name, content) => `<${name}>\n${content}\n</${name}>`;
 const parentSections = [

@@ -7,8 +7,9 @@
 // `bash` are both disabled, then returns) or a mid-session first appearance (skills
 // becomes loadable) lands at the tail instead of its canonical slot. Re-emitting in
 // canonical order keeps the replayed prompt byte-identical to the recorded key, so the
-// exact-match lookup never spuriously throws. An unknown section name keeps its replayed
-// position, so a future pi built-in section does not relocate and break fresh sessions.
+// exact-match lookup never spuriously throws. A name pi does not rank — an extension's
+// custom section such as `mcp_servers`, or a future pi built-in — sorts after `cwd`, where
+// pi's builder puts every custom section.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
@@ -37,13 +38,30 @@ const SKILLS_REORDERED = [
 	userMessage("go"),
 ];
 
-/** A section pi does not know about today (say a future `environment`) present from the
- *  first patch, in canonical position between docs and addendum. */
+/** A section pi does not rank today (say a future `environment`) present from the first
+ *  patch, where the replay would put it before `cwd`. */
 const UNKNOWN_SECTION_CANONICAL = [
 	systemMessage({ content: "", toolsAdded: [{ name: "read", description: "", parameters: {} }] }),
 	systemMessage({
 		sections: { preamble: "P", tools: "T", rules: "R", docs: "D", environment: "E", cwd: "/w" },
 	}),
+	userMessage("go"),
+];
+
+/** The issue #153 shape: the built-ins (including `cwd`) are in the replay Map from the
+ *  first patch, and a later patch introduces `mcp_servers` — the section pi's MCP extension
+ *  adds once its servers connect — alongside an `addendum` that the first render did not
+ *  have. Ranking unlisted names after the built-ins is what keeps `mcp_servers` from
+ *  inheriting `addendum`'s rank and jumping ahead of `cwd`. */
+const MCP_SECTION_LATE = [
+	systemMessage({ content: "", toolsAdded: [{ name: "read", description: "", parameters: {} }] }),
+	systemMessage({
+		sections: {
+			preamble: "P", tools: "T", rules: "R", docs: "D",
+			project_context: "C", skills: "S", cwd: "/w",
+		},
+	}),
+	systemMessage({ sections: { addendum: "A", mcp_servers: "M" } }),
 	userMessage("go"),
 ];
 
@@ -60,8 +78,17 @@ describe("toBridgeContext section replay order", () => {
 		assert.equal(replayedSystemPrompt(SKILLS_REORDERED), ["P", "T", "R", "D", "S", "/w"].join("\n\n"));
 	});
 
-	it("leaves an unknown section in its replayed position", () => {
-		assert.equal(replayedSystemPrompt(UNKNOWN_SECTION_CANONICAL), ["P", "T", "R", "D", "E", "/w"].join("\n\n"));
+	it("ranks a section pi does not know about after cwd", () => {
+		assert.equal(replayedSystemPrompt(UNKNOWN_SECTION_CANONICAL), ["P", "T", "R", "D", "/w", "E"].join("\n\n"));
+	});
+
+	it("puts a late-introduced custom section after cwd, matching pi's builder order", () => {
+		// pi's buildSystemPrompt renders: preamble, tools, rules, docs, addendum,
+		// project_context, skills, cwd, then every custom section.
+		assert.equal(
+			replayedSystemPrompt(MCP_SECTION_LATE),
+			["P", "T", "R", "D", "A", "C", "S", "/w", "M"].join("\n\n"),
+		);
 	});
 
 	it("keeps a custom section appended after the built-ins", () => {

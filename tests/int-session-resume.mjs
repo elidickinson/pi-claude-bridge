@@ -15,7 +15,7 @@ console.log("=== session-resume-test.mjs ===");
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createRpcHarness, requireEnv } from "./lib/rpc-harness.mjs";
 
 const OTHER_PROVIDER = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER");
@@ -223,8 +223,7 @@ try {
   console.log(`FAIL: ${e.message}\n${e.stack}`);
   console.log(`  RPC log:    ${RPC_LOG}`);
   console.log(`  Debug log:  ${DEBUG_LOG}`);
-  console.log(`  CC CLI:     .test-output/cc-cli-logs/  (look for *-askclaude-*.log near the failing turn)`);
-  console.log(`  Note: logs are overwritten on next test run — copy them now if you need to investigate.`);
+  console.log(`  CC CLI:     ${join(dirname(DEBUG_LOG), "cc-cli-logs")} (look for *-askclaude-*.log near the failing turn)`);
 } finally {
   await stop();
   if (TEST_CWD.startsWith(TEST_CWD_PREFIX) && TEST_CWD.length > TEST_CWD_PREFIX.length) {

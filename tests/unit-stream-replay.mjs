@@ -49,6 +49,24 @@ async function replay(name, { toolNames = ["read"] } = {}) {
 
 const blocks = (ctx, type) => ctx.turnOutput.content.filter((b) => b.type === type);
 
+/** Every usage frame in a fixture, in stream order. */
+function usageFrames(messages) {
+	return messages
+		.map((m) => m?.event?.message?.usage ?? m?.event?.usage ?? m?.message?.usage)
+		.filter(Boolean);
+}
+
+/** The count this pi turn ends on: the *first* in the stream. A fixture that ends on a
+ *  tool call spans several cycles, and the bridge closes the pi stream at the first
+ *  tool-call boundary, so every later cycle belongs to the next pi turn. */
+function turnThinkingTokens(messages) {
+	for (const usage of usageFrames(messages)) {
+		const thinking = usage.output_tokens_details?.thinking_tokens;
+		if (thinking != null) return thinking;
+	}
+	return undefined;
+}
+
 describe("replaying a recorded text-only turn", () => {
 	it("produces the assistant text and a clean stop", async () => {
 		const { ctx, events } = await replay("text");
@@ -65,6 +83,36 @@ describe("replaying a recorded text-only turn", () => {
 		assert.ok(ctx.turnOutput.usage.output > 0, "output tokens");
 		assert.ok(ctx.turnOutput.usage.input + ctx.turnOutput.usage.cacheRead + ctx.turnOutput.usage.cacheWrite > 0, "prompt tokens");
 		assert.match(capturedSessionId ?? "", /^[0-9a-f-]{36}$/);
+	});
+});
+
+// Regression guard: updateUsage read `reasoning_tokens ?? thinking_tokens`, neither of
+// which can ever fire, so every fixture below already carried a count the bridge dropped.
+describe("reasoning tokens from a recorded turn", () => {
+	for (const name of ["text", "single-tool", "parallel-tools"]) {
+		it(`surfaces the ${name} turn's thinking tokens as usage.reasoning`, async () => {
+			const { ctx, messages } = await replay(name);
+			const expected = turnThinkingTokens(messages);
+
+			assert.ok(expected > 0, "fixture must carry a thinking-token count, else this asserts nothing");
+			assert.equal(ctx.turnOutput.usage.reasoning, expected);
+			assert.ok(expected <= ctx.turnOutput.usage.output, "SDK documents thinking_tokens <= output_tokens");
+		});
+	}
+
+	// Guards the helper above, and with it the reason the single-cycle `text` fixture is
+	// the one the cost/total assertions use: a tool-call fixture carries counts this pi
+	// turn must NOT pick up, so an implementation that took the last frame would report
+	// the following turn's reasoning against this one.
+	it("ignores counts from cycles that belong to the next pi turn", async () => {
+		const { ctx, messages } = await replay("single-tool");
+		const counts = usageFrames(messages)
+			.map((u) => u.output_tokens_details?.thinking_tokens)
+			.filter((n) => n != null);
+
+		assert.ok(counts.length > 1, "fixture must span more than one cycle for this to mean anything");
+		assert.equal(ctx.turnOutput.stopReason, "toolUse", "the turn must have ended on the tool call");
+		assert.equal(ctx.turnOutput.usage.reasoning, counts[0]);
 	});
 });
 

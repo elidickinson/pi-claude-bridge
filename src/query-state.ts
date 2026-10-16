@@ -6,10 +6,11 @@
 //
 // Extracted from index.ts so tests can import without activating the extension.
 
-import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
 import type { StreamMonitor } from "./stream-resilience.js";
+import type { RateLimitInfo } from "./rate-limit.js";
 
 export interface PendingToolCall {
 	toolName: string;
@@ -20,6 +21,11 @@ export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: unknown | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
+	/** onResponse from the provider call that owns currentPiStream. */
+	currentOnResponse: SimpleStreamOptions["onResponse"] | undefined;
+	/** Latest rate_limit_event not yet reported. CC sends it after message_stop, when a
+	 *  tool call has already ended the stream, so it waits for the next call's stream. */
+	heldRateLimit: RateLimitInfo | undefined;
 	latestCursor = 0;
 	streamMonitor: StreamMonitor | null = null;
 	pendingToolCalls = new Map<string, PendingToolCall>();
@@ -39,6 +45,23 @@ export class QueryContext {
 	/** Highest 5% utilization bucket we notified for, so repeat rate_limit_event spam is suppressed. */
 	lastRateLimitWarnStep: number | null = null;
 	lastRateLimitWarnThreshold: number | undefined;
+	/** pi session this query serves, from SimpleStreamOptions.sessionId at fresh-query
+	 *  setup. A bridge process serves several pi sessions at once (subagents run their
+	 *  own AgentSessions), and history rewrites must only discard the rewriting
+	 *  session's parked queries — this is the match key. Null when the host did not
+	 *  supply an id.
+	 */
+	piSessionId: string | null = null;
+	/** pi rewrote the history this query was built from (session_compact,
+	 *  session_tree in its own pi session). Set by markRebuildForSession, consumed
+	 *  by the tool-result delivery that discards the query. Not session-wide state:
+	 *  it dies with the context it belongs to, so it cannot leak into later turns
+	 *  the way a module flag does.
+	 */
+	historyStale = false;
+	/** A steer never reached CC. A first query has no session mirror yet, so
+	 *  completion must carry this into the mirror it creates. */
+	missedSteer = false;
 
 	// Per-turn (reset together)
 	turnOutput: AssistantMessage | null = null;

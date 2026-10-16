@@ -31,7 +31,7 @@ describe("syncSharedSession", () => {
 
 			assert.equal(result.sessionId, null, "a fresh session with only prompt state as priors is a clean start");
 			assert.equal(result.preserveSharedSession, undefined);
-			assert.equal(__test.getSharedSession(), null, "a clean start must not create a session state");
+			assert.equal(__test.getSharedSession(null), null, "a clean start must not create a session state");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -49,7 +49,7 @@ describe("syncSharedSession", () => {
 				{ role: "assistant", content: [{ type: "text", text: "Hello." }] },
 			]);
 			seeded.save();
-			__test.setSharedSession({ sessionId, cursor: 2, cwd });
+			__test.setSharedSession(null, { sessionId, cursor: 2, cwd });
 
 			const result = __test.syncSharedSession([
 				{ role: "user", content: "Hi", timestamp: Date.now() },
@@ -59,7 +59,7 @@ describe("syncSharedSession", () => {
 			], cwd);
 
 			assert.equal(result.sessionId, sessionId, "2 priors at cursor 2 must resume, not rebuild");
-			assert.equal(__test.getSharedSession()?.cursor, 2, "cursor counts non-system messages only");
+			assert.equal(__test.getSharedSession(null)?.cursor, 2, "cursor counts non-system messages only");
 			const session = openSession({ sessionId, projectPath: cwd });
 			assert.deepEqual(
 				session.messages.map((m) => m.type),
@@ -86,7 +86,7 @@ describe("syncSharedSession", () => {
 				cursor: 42,
 				cwd,
 			};
-			__test.setSharedSession(mainSession);
+			__test.setSharedSession(null, mainSession);
 
 			const result = __test.syncSharedSession([
 				{
@@ -106,7 +106,7 @@ describe("syncSharedSession", () => {
 				true,
 				"the fresh session must not replace the parent's when it completes",
 			);
-			assert.deepEqual(__test.getSharedSession(), mainSession);
+			assert.deepEqual(__test.getSharedSession(null), mainSession);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -141,7 +141,7 @@ describe("syncSharedSession", () => {
 			);
 			seeded.save();
 
-			__test.setSharedSession({ sessionId, cursor: 0, cwd });
+			__test.setSharedSession(null, { sessionId, cursor: 0, cwd });
 			__test.setPiUI({ notify: (message) => notices.push(message) });
 			__test.syncSharedSession([
 				{ role: "user", content: prompt, timestamp: Date.now() },
