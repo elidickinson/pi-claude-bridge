@@ -16,7 +16,7 @@ import { extractAllToolResults as _extractAllToolResults, type McpResult } from 
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
 import { claudeCodeSettings, globalConfigPath, loadConfig, tryParseJson, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown, saveActiveAccount, type Config } from "./config.js";
-import { formatAccountStatus, mergeWindows, pickAccount, resolveToken, settingsWithToken } from "./accounts.js";
+import { DEFAULT_ACCOUNT, formatAccountStatus, mergeWindows, resolveToken, settingsWithToken } from "./accounts.js";
 import {
 	collectPromptSkills,
 	projectPromptCapture,
@@ -964,25 +964,21 @@ let piMode: ExtensionContext["mode"] | null = null;
 const activeQueryContexts = new Set<QueryContext>();
 
 // Account picked with /claude-account, and the usage windows reported while on it.
-let activeAccount: string | undefined;
+let activeAccount = DEFAULT_ACCOUNT;
 let accountWindows: Parameters<typeof formatAccountStatus>[1] = {};
-function currentAccount(): string | undefined {
-	return pickAccount(activeAccount, Object.keys(globalAccounts()));
-}
 function showAccountStatus(): void {
-	const account = currentAccount();
-	piUI?.setStatus("claude-bridge-account", account === undefined ? undefined : formatAccountStatus(account, accountWindows));
+	piUI?.setStatus("claude-bridge-account", formatAccountStatus(activeAccount, accountWindows));
 }
-/** Claude Code settings for a query, carrying the current account's token; no accounts, no override.
+/** Claude Code settings for a query, carrying the active account's token when one is picked.
  *  Throws on a misconfigured account: running on some other account instead would be silent. */
 function settingsForAccount(settings: Settings): Settings | string {
-	const account = currentAccount();
-	if (account === undefined) return settings;
-	return settingsWithToken(settings, resolveToken(account, globalAccounts()[account]));
+	if (activeAccount === DEFAULT_ACCOUNT) return settings;
+	return settingsWithToken(settings, resolveToken(activeAccount, globalAccounts()[activeAccount]));
 }
 /** Global config only: a repo's .pi/claude-bridge.json must not decide which secret gets read. */
 function globalAccounts(): NonNullable<Config["accounts"]> {
-	return tryParseJson(globalConfigPath()).accounts ?? {};
+	const { [DEFAULT_ACCOUNT]: _reserved, ...accounts } = tryParseJson(globalConfigPath()).accounts ?? {};
+	return accounts;
 }
 
 // Defaults that silently cost the user something (no Opus 1M on Max) are
@@ -1533,7 +1529,7 @@ async function consumeQuery(
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
 	// Starts right after the query is built, so this is the account its settings carried.
-	const queryAccount = currentAccount();
+	const queryAccount = activeAccount;
 
 	for await (const message of sdkQuery) {
 		// CLAUDE_BRIDGE_RECORD_STREAM=<path> appends every SDK message consumeQuery
@@ -1581,7 +1577,7 @@ async function consumeQuery(
 			if (info) {
 				queryCtx.heldRateLimit = info;
 				// A query started before a switch still reports the old account's usage.
-				if (queryAccount === currentAccount()) {
+				if (queryAccount === activeAccount) {
 					accountWindows = mergeWindows(accountWindows, info);
 					showAccountStatus();
 				}
@@ -2518,27 +2514,25 @@ export default function (pi: ExtensionAPI) {
 			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
 		}
 	};
-	activeAccount = config.activeAccount;
-	const accountNames = () => Object.keys(globalAccounts());
+	activeAccount = config.activeAccount ?? DEFAULT_ACCOUNT;
+	const accountNames = () => [DEFAULT_ACCOUNT, ...Object.keys(globalAccounts())];
 	pi.registerCommand("claude-account", {
 		description: "Switch the Claude account (OAuth token) claude-bridge runs on",
 		getArgumentCompletions: (prefix) => accountNames().filter((n) => n.startsWith(prefix)).map((n) => ({ value: n, label: n })),
 		handler: async (args, ctx) => {
-			if (!accountNames().length) {
-				ctx.ui.notify(`claude-bridge: no accounts — add them under "accounts" in ${globalConfigPath()}`, "error");
-				return;
-			}
-			const name = args.trim() || await ctx.ui.select(`Claude account (now: ${currentAccount()})`, accountNames());
+			const name = args.trim() || await ctx.ui.select(`Claude account (now: ${activeAccount})`, accountNames());
 			if (!name) return;
 			if (!accountNames().includes(name)) {
 				ctx.ui.notify(`claude-bridge: no account "${name}" — add it under "accounts" in ${globalConfigPath()}`, "error");
 				return;
 			}
-			try {
-				resolveToken(name, globalAccounts()[name]);
-			} catch (e) {
-				ctx.ui.notify((e as Error).message, "error");
-				return;
+			if (name !== DEFAULT_ACCOUNT) {
+				try {
+					resolveToken(name, globalAccounts()[name]);
+				} catch (e) {
+					ctx.ui.notify((e as Error).message, "error");
+					return;
+				}
 			}
 			activeAccount = name;
 			accountWindows = {};
