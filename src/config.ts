@@ -23,6 +23,10 @@ export interface Config {
 		allowFullMode?: boolean;
 		appendSkills?: boolean;
 	};
+	/** Named Claude accounts for /claude-account: the OAuth token inline, or where it lives. */
+	accounts?: Record<string, { token?: string; tokenEnv?: string; tokenFile?: string }>;
+	/** Account picked with /claude-account. Written by the extension. */
+	activeAccount?: string;
 	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
 		strictMcpConfig?: boolean;
@@ -103,6 +107,24 @@ export function markAskClaudeDeprecationNoticeShown(): string {
 	return path;
 }
 
+/** Persist the /claude-account choice in the global config, preserving every other field.
+ *  Same unparseable-file rule as markStartupNoticeShown: skip rather than clobber. */
+export function saveActiveAccount(name: string): boolean {
+	const path = globalConfigPath();
+	let existing: Partial<Config> = {};
+	if (existsSync(path)) {
+		try {
+			existing = JSON.parse(readFileSync(path, "utf-8"));
+		} catch (e) {
+			console.error(`claude-bridge: leaving ${path} alone, it does not parse: ${e}`);
+			return false;
+		}
+	}
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify({ ...existing, activeAccount: name }, null, 2)}\n`);
+	return true;
+}
+
 export function loadConfig(cwd: string): Config {
 	const global = tryParseJson(globalConfigPath());
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
@@ -110,6 +132,9 @@ export function loadConfig(cwd: string): Config {
 		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
 		askClaudeDeprecationShown: project.askClaudeDeprecationShown ?? global.askClaudeDeprecationShown,
 		askClaude: { ...global.askClaude, ...project.askClaude },
+		// Global only: a project config must not redirect which secret an account reads.
+		accounts: { ...global.accounts },
+		activeAccount: global.activeAccount,
 		provider: { ...global.provider, ...project.provider },
 	};
 }

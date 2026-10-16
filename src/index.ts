@@ -1,7 +1,7 @@
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { query, type EffortLevel, type SDKMessage, type SettingSource, type Settings } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
@@ -10,12 +10,13 @@ import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
 import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock } from "./skills.js";
+import { escapeXml, MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock, skillsEditedPrompt } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown, type Config } from "./config.js";
+import { claudeCodeSettings, globalConfigPath, loadConfig, tryParseJson, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown, saveActiveAccount, type Config } from "./config.js";
+import { formatAccountStatus, mergeWindows, pickAccount, resolveToken, settingsWithToken } from "./accounts.js";
 import {
 	collectPromptSkills,
 	projectPromptCapture,
@@ -591,7 +592,7 @@ async function runIsolatedSummary(
 			options: {
 				cwd,
 				env: { ...process.env, ...CC_CHILD_ENV },
-				settings: { autoMemoryEnabled: false },
+				settings: settingsForAccount({ autoMemoryEnabled: false }),
 				tools: [],
 				strictMcpConfig: true,
 				settingSources: [] as SettingSource[],
@@ -961,6 +962,28 @@ function mapToolArgs(
 let piUI: ExtensionUIContext | null = null;
 let piMode: ExtensionContext["mode"] | null = null;
 const activeQueryContexts = new Set<QueryContext>();
+
+// Account picked with /claude-account, and the usage windows reported while on it.
+let activeAccount: string | undefined;
+let accountWindows: Parameters<typeof formatAccountStatus>[1] = {};
+function currentAccount(): string | undefined {
+	return pickAccount(activeAccount, Object.keys(globalAccounts()));
+}
+function showAccountStatus(): void {
+	const account = currentAccount();
+	piUI?.setStatus("claude-bridge-account", account === undefined ? undefined : formatAccountStatus(account, accountWindows));
+}
+/** Claude Code settings for a query, carrying the current account's token; no accounts, no override.
+ *  Throws on a misconfigured account: running on some other account instead would be silent. */
+function settingsForAccount(settings: Settings): Settings | string {
+	const account = currentAccount();
+	if (account === undefined) return settings;
+	return settingsWithToken(settings, resolveToken(account, globalAccounts()[account]));
+}
+/** Global config only: a repo's .pi/claude-bridge.json must not decide which secret gets read. */
+function globalAccounts(): NonNullable<Config["accounts"]> {
+	return tryParseJson(globalConfigPath()).accounts ?? {};
+}
 
 // Defaults that silently cost the user something (no Opus 1M on Max) are
 // announced once. Deferred to the first bridge query rather
@@ -1375,6 +1398,29 @@ function dropAbandonedStreamBlocks(c: QueryContext, why: string): void {
 	c.turnStreamOpen = false;
 }
 
+/** Warn when a model other than the requested one answered. Claude Code re-runs a
+ *  request its safeguards flag on another model (Opus 5.5 → Opus 4.8 for cyber),
+ *  marked by a `fallback` block, and later requests can route there directly with
+ *  only `model` telling. Nothing in pi shows either otherwise. */
+function noteServedModel(assistantMsg: any, model: Model<any>, c: QueryContext): void {
+	const served: string | undefined = assistantMsg.model;
+	if (!served) return;
+	const base = (id: string) => id.replace(/\[[^\]]*\]$/, "");
+	if (base(served) === base(model.id)) {
+		c.warnedServedModel = undefined;
+		return;
+	}
+	if (c.warnedServedModel === served) return;
+	c.warnedServedModel = served;
+	const flagged = assistantMsg.content.some((b: any) => b?.type === "fallback");
+	debug(`noteServedModel: requested ${model.id}, served by ${served}${flagged ? " (fallback block)" : ""}`);
+	piUI?.notify(
+		`Claude Code answered with ${served} instead of ${model.id}` +
+			(flagged ? " — its safeguards flagged the request and switched models." : "."),
+		"warning",
+	);
+}
+
 // The SDK always yields `assistant` messages (completed content blocks) after streaming.
 // When stream_events already delivered the content, this is a no-op. But after
 // resetTurnState (e.g. tool result delivery), if the next turn's assistant message
@@ -1412,6 +1458,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 		if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model);
 		return;
 	}
+	noteServedModel(assistantMsg, model, c);
 	if (c.turnSawStreamEvent) {
 		// Same id was already delivered; a new id is CC's non-streaming fallback.
 		// Drop the stalled stream's partial blocks if it never stopped. Deliberately
@@ -1485,6 +1532,8 @@ async function consumeQuery(
 	queryCtx: QueryContext,
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
+	// Starts right after the query is built, so this is the account its settings carried.
+	const queryAccount = currentAccount();
 
 	for await (const message of sdkQuery) {
 		// CLAUDE_BRIDGE_RECORD_STREAM=<path> appends every SDK message consumeQuery
@@ -1529,7 +1578,14 @@ async function consumeQuery(
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
-			if (info) queryCtx.heldRateLimit = info;
+			if (info) {
+				queryCtx.heldRateLimit = info;
+				// A query started before a switch still reports the old account's usage.
+				if (queryAccount === currentAccount()) {
+					accountWindows = mergeWindows(accountWindows, info);
+					showAccountStatus();
+				}
+			}
 			await reportHeldRateLimit(queryCtx, model);
 			if (info?.status === "rejected") {
 				// Held so the failure Claude Code sends next can be named as a rate limit.
@@ -1893,7 +1949,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// transformContext after turn_start, so ctx.getSystemPrompt() is not the head.
 	let promptCapture: PromptCapture | undefined;
 	let systemPromptAppend: string | undefined;
+	let ccSettings: Settings | string;
 	try {
+		// A misconfigured account throws too; same reason to fail before anything is claimed.
+		ccSettings = settingsForAccount({
+			...claudeCodeSettings(providerSettings),
+			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
+			includeGitInstructions: false,
+		});
 		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
 		systemPromptAppend = promptCapture
 			? projectPromptCapture(promptCapture, {
@@ -2044,11 +2107,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// CC's git-workflow guidance from its Bash tool prompt, but the provider
 		// path runs CC with `tools: []`, so those definitions never ship.
 		// AskClaude keeps CC's native tools and its guidance — unaffected.
-		settings: {
-			...claudeCodeSettings(providerSettings),
-			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
-			includeGitInstructions: false,
-		},
+		settings: ccSettings,
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend ? systemPromptAppend : undefined,
@@ -2306,7 +2365,7 @@ async function promptAndWait(
 			cwd,
 			env: { ...process.env, ...CC_CHILD_ENV },
 			permissionMode: "bypassPermissions",
-			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
+			settings: settingsForAccount({ ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES }),
 			skills: [],
 			...(disallowedTools.length ? { disallowedTools } : {}),
 			...(effort ? { effort } : {}),
@@ -2419,7 +2478,7 @@ export default function (pi: ExtensionAPI) {
 
 	const config = loadConfig(process.cwd());
 	let askClaudeDeprecationNoticeShown = Boolean(config.askClaudeDeprecationShown);
-	debug("loadConfig:", JSON.stringify(config));
+	debug("loadConfig:", JSON.stringify(config, (key, value) => key === "token" ? "<redacted>" : value));
 	providerSettings = config.provider ?? {};
 	// We need these settings to know if we're eligible for 1M context on certain models
 	// Validate at the boundary: a non-array here would throw inside every
@@ -2459,9 +2518,41 @@ export default function (pi: ExtensionAPI) {
 			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
 		}
 	};
+	activeAccount = config.activeAccount;
+	const accountNames = () => Object.keys(globalAccounts());
+	pi.registerCommand("claude-account", {
+		description: "Switch the Claude account (OAuth token) claude-bridge runs on",
+		getArgumentCompletions: (prefix) => accountNames().filter((n) => n.startsWith(prefix)).map((n) => ({ value: n, label: n })),
+		handler: async (args, ctx) => {
+			if (!accountNames().length) {
+				ctx.ui.notify(`claude-bridge: no accounts — add them under "accounts" in ${globalConfigPath()}`, "error");
+				return;
+			}
+			const name = args.trim() || await ctx.ui.select(`Claude account (now: ${currentAccount()})`, accountNames());
+			if (!name) return;
+			if (!accountNames().includes(name)) {
+				ctx.ui.notify(`claude-bridge: no account "${name}" — add it under "accounts" in ${globalConfigPath()}`, "error");
+				return;
+			}
+			try {
+				resolveToken(name, globalAccounts()[name]);
+			} catch (e) {
+				ctx.ui.notify((e as Error).message, "error");
+				return;
+			}
+			activeAccount = name;
+			accountWindows = {};
+			showAccountStatus();
+			ctx.ui.notify(saveActiveAccount(name)
+				? `claude-bridge: next request runs on account "${name}"`
+				: `claude-bridge: switched to "${name}" for this session only — ${globalConfigPath()} does not parse`, "info");
+		},
+	});
+
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
+		showAccountStatus();
 		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
@@ -2480,28 +2571,82 @@ export default function (pi: ExtensionAPI) {
 	// The options (custom/append/contextFiles/skills/sections) are pi config, stable across a
 	// turn; only the auto-generated tool list in the rendered prompt varies. Stash them
 	// at before_agent_start so the agent_start recording below can reuse them.
-	type RecordOptions = Parameters<typeof recordSystemPrompt>[2];
-	let lastSystemPromptOptions: RecordOptions | undefined;
-	function recordSystemPrompt(source: string, systemPrompt: string | undefined, options: {
+	type RecordOptions = {
 		customPrompt?: string;
 		appendSystemPrompt?: string;
 		contextFiles?: { path: string; content: string }[];
 		skills?: Parameters<typeof promptCaptures.record>[1]["skills"];
 		sections?: Record<string, string>;
 		selectedTools?: string[];
-	} | undefined) {
-		if (!systemPrompt) return;
+		forceSystemPrompt?: string;
+	};
+	type CaptureInput = Parameters<typeof promptCaptures.record>[1];
+	let lastSystemPromptOptions: RecordOptions | undefined;
+	// Capture input for this run's forced prompt, derived at before_agent_start.
+	let forcedCapture: { prompt: string; input: CaptureInput } | undefined;
+	function captureInput(options: RecordOptions | undefined): CaptureInput {
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
-		promptCaptures.record(systemPrompt, {
+		return {
 			custom: options?.customPrompt,
 			append: options?.appendSystemPrompt,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 			sections: options?.sections,
-		}, source);
+		};
+	}
+	function recordSystemPrompt(source: string, systemPrompt: string | undefined, options: RecordOptions | undefined) {
+		if (!systemPrompt) return;
+		const forced = options?.forceSystemPrompt;
+		const input = forced === undefined || forced !== systemPrompt
+			? captureInput(options)
+			: forcedCapture?.prompt === forced
+				? forcedCapture.input
+				// Forced by a handler that ran after ours: resolve it as a wrapper around known prompts.
+				: { custom: forced, contextFiles: [], skills: [] };
+		promptCaptures.record(systemPrompt, input, source);
+	}
+	// A before_agent_start handler that returns `systemPrompt` forces the run's prompt
+	// (forceSystemPrompt). Projecting pi's options for that text would drop whatever the
+	// extension appended and re-add skills it removed. Instead render the pi prompt the
+	// forced text was built from — through the event's live getter, with the removed skills
+	// left out — and record it as its own key, so the forced text resolves as a wrapper
+	// around it: the extension's text is kept and pi's harness is swapped for portable parts.
+	// An extension that narrowed the skills section in place (reformatted or emptied) leaves
+	// no re-render of pi's prompt to wrap — the edited section splits it in two — so the
+	// key is that edited span of pi's full render instead, with any other extension's text
+	// still wrapped around it. An extension that rebuilt the prompt instead of wrapping it
+	// embeds no pi prompt and still fails the turn in the capture's preamble check.
+	function deriveForcedCapture(event: { systemPrompt: string; systemPromptOptions?: RecordOptions }) {
+		const options = event.systemPromptOptions;
+		const forced = options?.forceSystemPrompt;
+		if (!options || forced === undefined) return undefined;
+		const { skills } = options;
+		options.forceSystemPrompt = undefined;
+		let edited: ReturnType<typeof skillsEditedPrompt>;
+		let base: string;
+		let baseInput: CaptureInput;
+		try {
+			const original = event.systemPrompt;
+			options.skills = [];
+			edited = skillsEditedPrompt(original, event.systemPrompt, forced);
+			// Kept skills are read from the edited section when there is one, so a location
+			// quoted elsewhere (memory, context files) cannot bring a removed skill back.
+			const keptIn = edited?.section ?? forced;
+			options.skills = skills?.filter((skill) => keptIn.includes(`<location>${escapeXml(skill.filePath)}</location>`));
+			base = event.systemPrompt;
+			baseInput = captureInput(options);
+		} finally {
+			options.forceSystemPrompt = forced;
+			options.skills = skills;
+		}
+		// Only skills were removed: the forced text is pi's own render of the remaining ones.
+		if (base === forced || edited?.span === forced) return { prompt: forced, input: baseInput };
+		promptCaptures.record(edited?.span ?? base, baseInput, "before_agent_start");
+		return { prompt: forced, input: { custom: forced, contextFiles: [], skills: [] } };
 	}
 	pi.on("before_agent_start", (event) => {
 		lastSystemPromptOptions = event.systemPromptOptions;
+		forcedCapture = deriveForcedCapture(event);
 		recordSystemPrompt("before_agent_start", event.systemPrompt, event.systemPromptOptions);
 	});
 	// The prompt the provider actually queries with is the fully-widened one: MCP tool

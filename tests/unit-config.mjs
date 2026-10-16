@@ -48,6 +48,8 @@ describe("loadConfig", () => {
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
 				askClaudeDeprecationShown: undefined,
+				accounts: {},
+				activeAccount: undefined,
 				provider: { plan: "max" },
 				askClaude: { enabled: false },
 			});
@@ -75,6 +77,8 @@ describe("loadConfig", () => {
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
 				askClaudeDeprecationShown: undefined,
+				accounts: {},
+				activeAccount: undefined,
 				provider: { plan: "max", strictMcpConfig: true, autoMemoryEnabled: true },
 				askClaude: { enabled: false, defaultMode: "read" },
 			});
@@ -152,6 +156,8 @@ describe("loadConfig", () => {
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
 				askClaudeDeprecationShown: undefined,
+				accounts: {},
+				activeAccount: undefined,
 				provider: { plan: "max" },
 				askClaude: {},
 			});

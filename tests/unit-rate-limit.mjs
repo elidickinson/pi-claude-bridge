@@ -102,6 +102,7 @@ describe("delivery to the provider call that owns the stream", () => {
 		on: () => {},
 		registerProvider: (_name, config) => { providerConfig = config; },
 		registerTool: () => {},
+		registerCommand: () => {},
 	});
 	const model = providerConfig.models[0];
 
