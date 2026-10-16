@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: `--thinking off` disables thinking (#152)** — pi sends no reasoning level when thinking is off, so Claude Code applied its default and kept thinking on (e.g. `budget_tokens: 31999` on Haiku 4.5). The provider and one-off paths now pass `thinking: { type: "disabled" }`, like pi-ai's Anthropic provider, except on models whose `thinkingLevelMap` marks `off` unsupported.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
