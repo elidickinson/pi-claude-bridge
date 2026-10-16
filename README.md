@@ -76,6 +76,19 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
+**Accounts:** to switch between Claude subscriptions, give each OAuth token (from `claude setup-token`) a name — inline, or by the env var or file it lives in. Read from the global config only, so a project config can't redirect which secret an account sends:
+
+```json
+"accounts": {
+  "work": { "tokenEnv": "CLAUDE_TOKEN_WORK" },
+  "personal": { "tokenFile": "~/.config/claude-tokens/personal" },
+  "spare": { "token": "sk-ant-oat01-..." }
+}
+```
+
+An inline `token` makes the config file a secret: keep it `chmod 600` and out of dotfile repos. When several are set, `token` wins over `tokenEnv`, which wins over `tokenFile`.
+
+`/claude-account [name]` switches the account for the next request and remembers it as `activeAccount`; `default` leaves Claude Code's own credentials in charge (`~/.claude/settings.json` env, then `/login`). The token reaches Claude Code through a private `--settings` file, which outranks `~/.claude/settings.json`. The status bar shows the account and its 5h / 7d plan usage (Nerd Font icons), updated on every request.
 
 **Notices:** the startup notice points out when `provider.plan` is unset and records `startupNoticeShown` in the global config. There's also a deprecation notice on first use of AskClaude that records its display date as `askClaudeDeprecationShown`.
 

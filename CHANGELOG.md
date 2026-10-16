@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Add: switchable accounts and plan usage in the status bar** — `/claude-account` picks which OAuth token Claude Code runs on from the new `accounts` config (inline token, env var or file per account; `default` keeps CC's own credentials). The token goes through a 0600 `--settings` file, since inline settings reach the CLI as argv and `~/.claude/settings.json` env would otherwise win. The status bar shows the account with its 5h / 7d utilization from each `rate_limit_event`, with Nerd Font icons.
 - **Add: warn when another model answered** — Claude Code re-runs a request its safeguards flag on a fallback model (Opus 5.5 → Opus 4.8 for cyber), and later requests may route there directly. The bridge now compares each reply's `model` with the requested one and shows a warning in pi once per switch, naming the safeguard fallback when a `fallback` block marks it.
 
 ## 0.9.3 — 2026-10-13

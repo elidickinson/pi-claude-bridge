@@ -1,7 +1,7 @@
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { query, type EffortLevel, type SDKMessage, type SettingSource, type Settings } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
@@ -15,7 +15,8 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown, type Config } from "./config.js";
+import { claudeCodeSettings, globalConfigPath, loadConfig, tryParseJson, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown, saveActiveAccount, type Config } from "./config.js";
+import { DEFAULT_ACCOUNT, formatAccountStatus, mergeWindows, resolveToken, settingsWithToken } from "./accounts.js";
 import {
 	collectPromptSkills,
 	projectPromptCapture,
@@ -591,7 +592,7 @@ async function runIsolatedSummary(
 			options: {
 				cwd,
 				env: { ...process.env, ...CC_CHILD_ENV },
-				settings: { autoMemoryEnabled: false },
+				settings: settingsForAccount({ autoMemoryEnabled: false }),
 				tools: [],
 				strictMcpConfig: true,
 				settingSources: [] as SettingSource[],
@@ -961,6 +962,24 @@ function mapToolArgs(
 let piUI: ExtensionUIContext | null = null;
 let piMode: ExtensionContext["mode"] | null = null;
 const activeQueryContexts = new Set<QueryContext>();
+
+// Account picked with /claude-account, and the usage windows reported while on it.
+let activeAccount = DEFAULT_ACCOUNT;
+let accountWindows: Parameters<typeof formatAccountStatus>[1] = {};
+function showAccountStatus(): void {
+	piUI?.setStatus("claude-bridge-account", formatAccountStatus(activeAccount, accountWindows));
+}
+/** Claude Code settings for a query, carrying the active account's token when one is picked.
+ *  Throws on a misconfigured account: running on some other account instead would be silent. */
+function settingsForAccount(settings: Settings): Settings | string {
+	if (activeAccount === DEFAULT_ACCOUNT) return settings;
+	return settingsWithToken(settings, resolveToken(activeAccount, globalAccounts()[activeAccount]));
+}
+/** Global config only: a repo's .pi/claude-bridge.json must not decide which secret gets read. */
+function globalAccounts(): NonNullable<Config["accounts"]> {
+	const { [DEFAULT_ACCOUNT]: _reserved, ...accounts } = tryParseJson(globalConfigPath()).accounts ?? {};
+	return accounts;
+}
 
 // Defaults that silently cost the user something (no Opus 1M on Max) are
 // announced once. Deferred to the first bridge query rather
@@ -1509,6 +1528,8 @@ async function consumeQuery(
 	queryCtx: QueryContext,
 ): Promise<{ capturedSessionId?: string }> {
 	let capturedSessionId: string | undefined;
+	// Starts right after the query is built, so this is the account its settings carried.
+	const queryAccount = activeAccount;
 
 	for await (const message of sdkQuery) {
 		// CLAUDE_BRIDGE_RECORD_STREAM=<path> appends every SDK message consumeQuery
@@ -1553,7 +1574,14 @@ async function consumeQuery(
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
-			if (info) queryCtx.heldRateLimit = info;
+			if (info) {
+				queryCtx.heldRateLimit = info;
+				// A query started before a switch still reports the old account's usage.
+				if (queryAccount === activeAccount) {
+					accountWindows = mergeWindows(accountWindows, info);
+					showAccountStatus();
+				}
+			}
 			await reportHeldRateLimit(queryCtx, model);
 			if (info?.status === "rejected") {
 				// Held so the failure Claude Code sends next can be named as a rate limit.
@@ -1917,7 +1945,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// transformContext after turn_start, so ctx.getSystemPrompt() is not the head.
 	let promptCapture: PromptCapture | undefined;
 	let systemPromptAppend: string | undefined;
+	let ccSettings: Settings | string;
 	try {
+		// A misconfigured account throws too; same reason to fail before anything is claimed.
+		ccSettings = settingsForAccount({
+			...claudeCodeSettings(providerSettings),
+			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
+			includeGitInstructions: false,
+		});
 		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
 		systemPromptAppend = promptCapture
 			? projectPromptCapture(promptCapture, {
@@ -2068,11 +2103,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// CC's git-workflow guidance from its Bash tool prompt, but the provider
 		// path runs CC with `tools: []`, so those definitions never ship.
 		// AskClaude keeps CC's native tools and its guidance — unaffected.
-		settings: {
-			...claudeCodeSettings(providerSettings),
-			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
-			includeGitInstructions: false,
-		},
+		settings: ccSettings,
 		systemPrompt: {
 			type: "preset", preset: "claude_code",
 			append: systemPromptAppend ? systemPromptAppend : undefined,
@@ -2330,7 +2361,7 @@ async function promptAndWait(
 			cwd,
 			env: { ...process.env, ...CC_CHILD_ENV },
 			permissionMode: "bypassPermissions",
-			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
+			settings: settingsForAccount({ ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES }),
 			skills: [],
 			...(disallowedTools.length ? { disallowedTools } : {}),
 			...(effort ? { effort } : {}),
@@ -2443,7 +2474,7 @@ export default function (pi: ExtensionAPI) {
 
 	const config = loadConfig(process.cwd());
 	let askClaudeDeprecationNoticeShown = Boolean(config.askClaudeDeprecationShown);
-	debug("loadConfig:", JSON.stringify(config));
+	debug("loadConfig:", JSON.stringify(config, (key, value) => key === "token" ? "<redacted>" : value));
 	providerSettings = config.provider ?? {};
 	// We need these settings to know if we're eligible for 1M context on certain models
 	// Validate at the boundary: a non-array here would throw inside every
@@ -2483,9 +2514,39 @@ export default function (pi: ExtensionAPI) {
 			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
 		}
 	};
+	activeAccount = config.activeAccount ?? DEFAULT_ACCOUNT;
+	const accountNames = () => [DEFAULT_ACCOUNT, ...Object.keys(globalAccounts())];
+	pi.registerCommand("claude-account", {
+		description: "Switch the Claude account (OAuth token) claude-bridge runs on",
+		getArgumentCompletions: (prefix) => accountNames().filter((n) => n.startsWith(prefix)).map((n) => ({ value: n, label: n })),
+		handler: async (args, ctx) => {
+			const name = args.trim() || await ctx.ui.select(`Claude account (now: ${activeAccount})`, accountNames());
+			if (!name) return;
+			if (!accountNames().includes(name)) {
+				ctx.ui.notify(`claude-bridge: no account "${name}" — add it under "accounts" in ${globalConfigPath()}`, "error");
+				return;
+			}
+			if (name !== DEFAULT_ACCOUNT) {
+				try {
+					resolveToken(name, globalAccounts()[name]);
+				} catch (e) {
+					ctx.ui.notify((e as Error).message, "error");
+					return;
+				}
+			}
+			activeAccount = name;
+			accountWindows = {};
+			showAccountStatus();
+			ctx.ui.notify(saveActiveAccount(name)
+				? `claude-bridge: next request runs on account "${name}"`
+				: `claude-bridge: switched to "${name}" for this session only — ${globalConfigPath()} does not parse`, "info");
+		},
+	});
+
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
+		showAccountStatus();
 		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
