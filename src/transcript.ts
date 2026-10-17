@@ -20,11 +20,9 @@ import {
 
 /** pi's canonical built-in section order. A name absent from the table is a custom
  *  section, which the builder renders after every built-in; see stableRanked.
- *  Known limitation: customs keep their replayed relative order here, while the builder
- *  takes theirs from `systemPromptOptions.sections`. The two agree unless a custom moves
- *  without its content changing — pi's section diff then emits nothing for it, the replay
- *  keeps the stale position, and the exact-key capture lookup throws on that legitimate
- *  turn. */
+ *  Customs keep their replayed relative order here, while the builder takes theirs from
+ *  `systemPromptOptions.sections`. The final capture boundary verifies the builder order
+ *  and records the replay key too, without editing the saved section patches. */
 const SECTION_RANK = new Map<string, number>([
 	["preamble", 0], ["tools", 1], ["rules", 2], ["docs", 3], ["addendum", 4],
 	["project_context", 5], ["skills", 6], ["cwd", 7],
@@ -53,13 +51,28 @@ function stableRanked(sections: Map<string, string>, ranks: Map<string, number>)
 	return new Map(ranked.map(({ name, value }) => [name, value]));
 }
 
-/** Render replayed system state in the same section order as pi's prompt builder. */
-function canonicalSystemPrompt(message: SystemMessage | undefined): string | undefined {
+/** Render the provider's replay order, or verify and render a supplied builder order.
+ *  With customSections, every non-built-in must be accounted for and its content must
+ *  match the raw options. Unknown or altered sections cannot gain a capture alias. */
+export function canonicalSystemPrompt(
+	message: SystemMessage | undefined,
+	customSections?: Record<string, string>,
+): string | undefined {
 	if (!message) return undefined;
 	const sections = new Map<string, string>(
 		Object.entries(message.sections ?? {}).filter((entry): entry is [string, string] => entry[1] !== null),
 	);
-	const parts = [contentText(message.content), ...stableRanked(sections, SECTION_RANK).values()]
+	const ranks = new Map(SECTION_RANK);
+	if (customSections !== undefined) {
+		let nextRank = ranks.size;
+		for (const [name, raw] of Object.entries(customSections)) {
+			if (!raw) continue;
+			if (sections.get(name) !== `<${name}>\n${raw}\n</${name}>`) return undefined;
+			if (!ranks.has(name)) ranks.set(name, nextRank++);
+		}
+		if ([...sections.keys()].some((name) => !ranks.has(name))) return undefined;
+	}
+	const parts = [contentText(message.content), ...stableRanked(sections, ranks).values()]
 		.filter((part) => part.length > 0);
 	return parts.length > 0 ? parts.join("\n\n") : undefined;
 }

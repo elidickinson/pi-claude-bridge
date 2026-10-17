@@ -1,7 +1,9 @@
 import type { Skill } from "@earendil-works/pi-coding-agent";
+import { contentText, getCurrentSystemMessage, type SystemMessage } from "@earendil-works/pi-ai";
 import { formatProjectContext } from "./agents-md.js";
 import { debugLogPath } from "./log-paths.js";
 import { renderSkillsBlock, type SkillReadTool } from "./skills.js";
+import { canonicalSystemPrompt } from "./transcript.js";
 
 // What pi assembled for one agent, kept so the bridge can append only the
 // portable parts after Claude Code's own preset.
@@ -25,7 +27,7 @@ type InheritedPrompt = {
 
 export type PromptCapture = PromptCaptureInput & {
 	assembledPrompt: string;
-	/** Which bridge boundary last recorded this key (before_agent_start | agent_start | turn_start). */
+	/** Which bridge boundary last recorded this key. */
 	source?: string;
 	/** Exact previously assembled prompts embedded in `custom`. */
 	inherited: InheritedPrompt[];
@@ -74,6 +76,23 @@ export class PromptCaptures {
 	 *  grow keys without limit. */
 	constructor(private readonly limit = 256, onDiagnose?: (diagnostic: PromptCaptureDiagnostic) => void) {
 		this.onDiagnose = onDiagnose ?? (() => {});
+	}
+
+	/** Record final structured state only when it agrees with the live builder and
+	 *  portable inputs. Section diffs do not encode moves among unchanged custom
+	 *  sections, so the provider can render a different order with identical content.
+	 *  Keep both exact keys; neither the transcript nor resolution guard is changed. */
+	recordSystemContext(systemPrompt: string | undefined, messages: readonly SystemMessage[], input: PromptCaptureInput): boolean {
+		const message = getCurrentSystemMessage(messages);
+		if (!systemPrompt || !message?.sections?.preamble || contentText(message.content)) return false;
+		if (canonicalSystemPrompt(message, input.sections ?? {}) !== systemPrompt) return false;
+		if (input.custom && message.sections.preamble !== input.custom) return false;
+		if ((message.sections.addendum ?? "") !== (input.append ? `<addendum>\n${input.append}\n</addendum>` : "")) return false;
+
+		this.record(systemPrompt, input, "context_with_system");
+		const replayKey = canonicalSystemPrompt(message);
+		if (replayKey && replayKey !== systemPrompt) this.record(replayKey, input, "context_with_system");
+		return true;
 	}
 
 	record(systemPrompt: string, input: PromptCaptureInput, source?: string): void {

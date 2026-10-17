@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: finalized custom-section prompt captures (issue #153)** — Record verified structured prompt state at Pi's awaited `context_with_system` boundary. Late native MCP sections and unchanged custom sections whose builder order differs from transcript replay retain their portable instructions without weakening the unmatched-prompt guard or rewriting history.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.

@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type SystemMessage, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
@@ -2484,6 +2484,7 @@ export default function (pi: ExtensionAPI) {
 	let lastSystemPromptOptions: RecordOptions | undefined;
 	function recordSystemPrompt(source: string, systemPrompt: string | undefined, options: {
 		customPrompt?: string;
+		forceSystemPrompt?: string;
 		appendSystemPrompt?: string;
 		contextFiles?: { path: string; content: string }[];
 		skills?: Parameters<typeof promptCaptures.record>[1]["skills"];
@@ -2491,14 +2492,17 @@ export default function (pi: ExtensionAPI) {
 		selectedTools?: string[];
 	} | undefined) {
 		if (!systemPrompt) return;
+		promptCaptures.record(systemPrompt, promptCaptureInput(options), source);
+	}
+	function promptCaptureInput(options: RecordOptions): Parameters<typeof promptCaptures.record>[1] {
 		const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
-		promptCaptures.record(systemPrompt, {
+		return {
 			custom: options?.customPrompt,
 			append: options?.appendSystemPrompt,
 			contextFiles: options?.contextFiles ?? [],
 			skills: hasRead ? options?.skills ?? [] : [],
 			sections: options?.sections,
-		}, source);
+		};
 	}
 	pi.on("before_agent_start", (event) => {
 		lastSystemPromptOptions = event.systemPromptOptions;
@@ -2530,7 +2534,20 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_start", (_event, ctx) => {
 		recordSystemPrompt("turn_start", ctx.getSystemPrompt(), lastSystemPromptOptions);
 	});
+	// Unlike the notification boundaries above, this hook is awaited on the request
+	// path. Later before_agent_start handlers have now filled the mutable options,
+	// including native MCP sections. Verify the actual system state before re-keying;
+	// arbitrary context rewrites and opaque forced prompts keep the existing guard.
+	pi.on("context_with_system", (event, ctx) => {
+		if (!lastSystemPromptOptions || lastSystemPromptOptions.forceSystemPrompt !== undefined) return;
+		promptCaptures.recordSystemContext(
+			ctx.getSystemPrompt(),
+			event.messages.filter((message): message is SystemMessage => message.role === "system"),
+			promptCaptureInput(lastSystemPromptOptions),
+		);
+	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		lastSystemPromptOptions = undefined;
 		forgetSessionCwd(ctx.sessionManager.getSessionId());
 		reportLeaks("session_shutdown");
 		clearSession("session_shutdown");
