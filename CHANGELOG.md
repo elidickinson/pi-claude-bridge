@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: Claude 5 progress updates show as text, not reasoning (issue #211)** — They arrive as signed `thinking` blocks, so pi showed them as reasoning. The bridge now reads the `narration` tag in the signature, as Claude Code does.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.

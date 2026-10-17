@@ -37,6 +37,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createSession, openSession, repairToolPairing } from "cc-session-io";
+import { signatureBlockKind } from "../src/narration.js";
 
 const CWD = process.cwd();
 const MODEL = "claude-haiku-4-5";
@@ -297,6 +298,32 @@ test("message_delta usage carries thinking tokens nested under output_tokens_det
 			`thinking_tokens must stay a subset of output_tokens: ${JSON.stringify(usage)}`);
 		assert.equal(usage.thinking_tokens, undefined, "a flat thinking_tokens would mean the shape changed");
 		assert.equal(usage.reasoning_tokens, undefined, "reasoning_tokens has never existed; a value means the shape changed");
+	}
+});
+
+test("a Claude 5 reasoning block's signature names its kind in the envelope header", { timeout: 120_000 }, async () => {
+	// The bridge shows a progress update — a note the model writes between tool calls, which the
+	// API returns as a thinking block of its own — as text, and tells it from reasoning by the
+	// block kind in its signature (src/narration.ts); Claude Code decodes the same tag. The tag is
+	// undocumented and nothing fails loudly if it moves: progress updates just go back to showing
+	// as reasoning. So this pins the path to it on a signature that is easy to provoke, a reasoning
+	// block's, which names the kind "thinking". Haiku signs with an older envelope and never writes
+	// progress updates, hence Sonnet 5.5. The "narration" kind itself cannot be provoked on demand
+	// and rests on tests/fixtures/sdk-streams/narration.jsonl.
+	const signatures = [];
+	for await (const message of query({
+		prompt: "How many integer solutions does x1+x2+x3+x4+x5=40 have with 1<=xi<=15? Reply with just the number.",
+		options: providerOptions({ model: "claude-sonnet-5-5", effort: "medium", maxTurns: 1, persistSession: false, extraArgs: { "strict-mcp-config": null, "thinking-display": "summarized" } }),
+	})) {
+		if (message.type !== "assistant") continue;
+		for (const block of message.message?.content ?? []) {
+			if (block.type === "thinking") signatures.push(block.signature);
+		}
+	}
+
+	assert.ok(signatures.length > 0, "no thinking block arrived to read a signature from");
+	for (const signature of signatures) {
+		assert.equal(signatureBlockKind(signature), "thinking", `a signature no longer names its kind: ${signature.slice(0, 40)}...`);
 	}
 });
 

@@ -8,6 +8,7 @@ import { createSession, deleteSession, openSession, repairToolPairing } from "cc
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
+import { NARRATION_HOLD_CHARS, isNarrationBlock } from "./narration.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
 import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock } from "./skills.js";
@@ -1204,6 +1205,41 @@ function finalizeCurrentStream(c: QueryContext, stopReason?: string): void {
 	c.currentPiStream = null;
 }
 
+/** Thinking blocks whose start has not been sent to pi yet. Whether one is reasoning or
+ *  narration (see narration.ts) is only known from the signature at its end, so a short
+ *  block is held until then, and one that runs past NARRATION_HOLD_CHARS is released
+ *  to stream live. A set rather than a field on the block: blocks are pi's message
+ *  content, and whatever sits on them is persisted with the message. */
+const heldThinking = new WeakSet<object>();
+
+/** Send pi the start of a held thinking block, with what it has gathered so far. */
+function releaseHeldThinking(c: QueryContext, index: number): void {
+	const block = c.turnBlocks[index];
+	heldThinking.delete(block);
+	c.currentPiStream!.push({ type: "thinking_start", contentIndex: index, partial: c.turnOutput });
+	if (block.thinking) c.currentPiStream!.push({ type: "thinking_delta", contentIndex: index, delta: block.thinking, partial: c.turnOutput });
+}
+
+/** A held thinking block has closed, so its signature is in. Narration becomes the text
+ *  it is, replacing the block in place: pi never saw a thinking event for that index.
+ *  The signature stays on the block, and the text stays exactly as received, so
+ *  convertPiMessages can send the signed block back as the API sent it. Anything else
+ *  is shown as thinking after all. */
+function settleHeldThinking(c: QueryContext, index: number): void {
+	const block = c.turnBlocks[index];
+	if (isNarrationBlock({ thinking: block.thinking, signature: block.thinkingSignature })) {
+		const text: string = block.thinking;
+		heldThinking.delete(block);
+		c.turnBlocks[index] = { type: "text", text, textSignature: block.thinkingSignature };
+		c.currentPiStream!.push({ type: "text_start", contentIndex: index, partial: c.turnOutput });
+		c.currentPiStream!.push({ type: "text_delta", contentIndex: index, delta: text, partial: c.turnOutput });
+		c.currentPiStream!.push({ type: "text_end", contentIndex: index, content: text, partial: c.turnOutput });
+		return;
+	}
+	releaseHeldThinking(c, index);
+	c.currentPiStream!.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: c.turnOutput });
+}
+
 /** Maps Anthropic stream events to pi stream events (text, thinking, toolcall).
  *  On message_stop with tool_use: ends currentPiStream so pi can execute the tool. */
 function processStreamEvent(
@@ -1234,8 +1270,9 @@ function processStreamEvent(
 			c.turnBlocks.push({ type: "text", text: "", index: event.index });
 			c.currentPiStream!.push({ type: "text_start", contentIndex: c.turnBlocks.length - 1, partial: c.turnOutput });
 		} else if (event.content_block?.type === "thinking") {
-			c.turnBlocks.push({ type: "thinking", thinking: "", thinkingSignature: "", index: event.index });
-			c.currentPiStream!.push({ type: "thinking_start", contentIndex: c.turnBlocks.length - 1, partial: c.turnOutput });
+			const block = { type: "thinking", thinking: "", thinkingSignature: "", index: event.index };
+			c.turnBlocks.push(block);
+			heldThinking.add(block);
 		} else if (event.content_block?.type === "tool_use") {
 			const piName = piToolNameFor(event.content_block.name, customToolNameToPi);
 			if (!piName) {
@@ -1265,7 +1302,11 @@ function processStreamEvent(
 			c.currentPiStream!.push({ type: "text_delta", contentIndex: index, delta: event.delta.text, partial: c.turnOutput });
 		} else if (event.delta?.type === "thinking_delta" && block.type === "thinking") {
 			block.thinking += event.delta.thinking;
-			c.currentPiStream!.push({ type: "thinking_delta", contentIndex: index, delta: event.delta.thinking, partial: c.turnOutput });
+			if (!heldThinking.has(block)) {
+				c.currentPiStream!.push({ type: "thinking_delta", contentIndex: index, delta: event.delta.thinking, partial: c.turnOutput });
+			} else if (block.thinking.length > NARRATION_HOLD_CHARS) {
+				releaseHeldThinking(c, index);
+			}
 		} else if (event.delta?.type === "input_json_delta" && block.type === "toolCall") {
 			block.partialJson += event.delta.partial_json;
 			block.arguments = parsePartialJson(block.partialJson, block.arguments);
@@ -1286,7 +1327,8 @@ function processStreamEvent(
 		if (block.type === "text") {
 			c.currentPiStream!.push({ type: "text_end", contentIndex: index, content: block.text, partial: c.turnOutput });
 		} else if (block.type === "thinking") {
-			c.currentPiStream!.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: c.turnOutput });
+			if (heldThinking.has(block)) settleHeldThinking(c, index);
+			else c.currentPiStream!.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: c.turnOutput });
 		} else if (block.type === "toolCall") {
 			c.turnSawToolCall = true;
 			block.arguments = mapToolArgs(
@@ -1423,13 +1465,16 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	c.turnToolCallIds = [];
 	debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}`);
 	for (const block of assistantMsg.content) {
-		if (block.type === "text" && block.text) {
+		// Prose between tool calls arrives as a signed thinking block; it is text (see narration.ts).
+		const narration = block.type === "thinking" && isNarrationBlock(block);
+		if ((block.type === "text" && block.text) || narration) {
+			const text: string = narration ? block.thinking : block.text;
 			ensureTurnStarted(c);
-			c.turnBlocks.push({ type: "text", text: block.text });
+			c.turnBlocks.push(narration ? { type: "text", text, textSignature: block.signature } : { type: "text", text });
 			const idx = c.turnBlocks.length - 1;
 			c.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: block.text, partial: c.turnOutput });
+			c.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: c.turnOutput });
+			c.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: c.turnOutput });
 		} else if (block.type === "thinking") {
 			ensureTurnStarted(c);
 			c.turnBlocks.push({ type: "thinking", thinking: block.thinking ?? "", thinkingSignature: block.signature ?? "" });
