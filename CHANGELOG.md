@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Add: `provider.allowExtensionSystemPrompts` to serve extensions' one-off calls** — A call with its own system prompt, no tools and one user message (e.g. `@mzwing/pi-permission-auto-review`'s reviewer) matches no prompt capture and throws. Opted in, it runs on the isolated path with its prompt as-is; the throw now names the option. The harness guard still applies, and session turns are unaffected. Off by default. Covered by `tests/unit-standalone-completion.mjs`.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
