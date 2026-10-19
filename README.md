@@ -123,11 +123,15 @@ To add instructions, use `message`, `context`, or a system-message edit that kee
 [ -n "$PI_CODING_AGENT" ] && exit 0
 ```
 
-Hooks do not fire on isolated summary queries.
+Hooks do not fire on isolated summary queries. The isolated compression fork (billion-context-pi `compress.async`) runs with `disableAllHooks`, so hooks from settings files and installed plugins do not run in it; hooks from managed policy settings still do, and Claude Code still writes its own state (for example `~/.claude.json`) as it does on any query.
 
 ### Compaction and branch summaries
 
 pi runs compaction and branch summaries natively. The bridge routes their `cacheRetention: "none"` calls to isolated Claude Code queries, leaving the live session untouched until pi completes the history rewrite. Other extensions can provide summaries through pi's hooks.
+
+### Isolated fork for other extensions
+
+An extension can ask, over `pi.events` (`claude-bridge:isolated-fork`, version 1), for one extra prompt to run in a copy of a session the bridge is serving, and get back the arguments of the model's first call to a named tool. Nothing runs in the copy: every tool call is refused, settings-file and plugin hooks are off, and the copy is deleted when its process exits. The main session is never written. By default the copy is cut at the final answer of the request being served; with `cutAfterToolResult` it is cut right after that tool call's result in the request, while the main turn keeps running. billion-context-pi's `compress.async` uses this.
 
 ### System prompt rejections
 

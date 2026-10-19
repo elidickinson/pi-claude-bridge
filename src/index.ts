@@ -4,8 +4,9 @@ import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionContext,
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
-import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
-import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
+import { createSession, deleteSession, getSessionPath, openSession, repairToolPairing } from "cc-session-io";
+import { spawn, type ChildProcess } from "child_process";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
@@ -22,7 +23,7 @@ import {
 	sharedPromptCaptures,
 	type PromptCapture,
 } from "./prompt-capture.js";
-import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
+import { collectCarriedAttachments, placeCarriedAttachments, promptsOf, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
@@ -30,6 +31,8 @@ import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
+import { fingerprintPriors } from "./priors-fingerprint.js";
+import { ForkRefused, forkSettings, IsolatedForks, ISOLATED_FORK_CHANNEL, ServedRequests, waitForAnswerEnd, waitForToolResultCut, type AnswerWait, type CutWait, type ForkFailure, type ForkProcess, type ForkSource, type ServedRequest } from "./isolated-fork.js";
 
 // --- Debug logging ---
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to the bridge log in pi's agent
@@ -202,6 +205,26 @@ interface SessionState {
 	// with no query in flight does NOT set this — there's no concurrent CC writer
 	// then, so in-place rebuild (preserve UUID, deleteSession + createSession) is safe.
 	forceRotate?: boolean;
+	// fingerprintPriors of history[0, cursor) when the cursor last moved. A
+	// session with a piSessionId is only resumed while this still matches.
+	fingerprint?: string;
+}
+
+/** Cursor and fingerprint for a session that has seen all of this context's history. */
+function contextMirror(context: Context): { cursor: number; fingerprint: string } {
+	const history = nonSystemMessages(context.messages);
+	const { customToolNameToSdk } = resolveMcpTools(context, askClaudeToolName);
+	return { cursor: history.length, fingerprint: fingerprintPriors(history, customToolNameToSdk) };
+}
+
+/** Whether the history pi hands a parked query no longer starts with what its
+ *  CLI was given. A context hook can rewrite it without any session event. */
+function servedPrefixChanged(c: QueryContext, context: Context): boolean {
+	if (c.piSessionId === null || !c.served) return false;
+	const history = nonSystemMessages(context.messages);
+	if (history.length < c.served.cursor) return true;
+	const { customToolNameToSdk } = resolveMcpTools(context, askClaudeToolName);
+	return fingerprintPriors(history.slice(0, c.served.cursor), customToolNameToSdk) !== c.served.fingerprint;
 }
 
 /**
@@ -337,7 +360,7 @@ function convertAndImportMessages(
 	messages: Context["messages"],
 	customToolNameToSdk?: Map<string, string>,
 	carried?: readonly CarriedAttachment[],
-): void {
+): { skippedAttachments: string[]; promptTexts: string[] } {
 	const { anthropicMessages, sanitizedIds, dropped } = convertPiMessages(messages, customToolNameToSdk);
 
 	debug(`convertAndImportMessages: ${messages.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
@@ -381,6 +404,10 @@ function convertAndImportMessages(
 	if (repaired.length) {
 		session.importMessages(repaired, placed?.attachments.length ? { attachments: placed.attachments } : undefined);
 	}
+	return {
+		skippedAttachments: placed?.skipped ?? [],
+		promptTexts: promptsOf(repaired as unknown as { role: string; content: unknown }[]).map((p) => p.text),
+	};
 }
 
 // Pi doesn't pass tool results directly — it appends them to the context and calls
@@ -752,6 +779,7 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
 	piSessionId?: string | null,
+	sessionLive = false,
 ): SyncResult {
 	// System messages are pi's transcript representation of prompt and tool state, not
 	// conversation history — they are never imported into a CC session, so exclude them from
@@ -771,13 +799,22 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	// pi-side history rewrites such as /compact and session_tree: without it,
 	// missed = [].slice(cursor) can falsely hit REUSE and resume an unrelated
 	// longer CC session. See issue #25.
-	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length >= sharedSession.cursor) {
+	//
+	// A session with a piSessionId also needs the prefix the cursor covers to be
+	// unchanged. Count alone misses a context hook that rewrites history (an
+	// in-place edit, or a compressed view that later grows back to the same
+	// count), and Claude Code would resume a conversation pi no longer has.
+	const keyed = piSessionId != null && !sessionLive;
+	const prefixMatches = (state: SessionState) =>
+		!keyed || (state.fingerprint !== undefined
+			&& fingerprintPriors(priorMessages.slice(0, state.cursor), customToolNameToSdk) === state.fingerprint);
+	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length >= sharedSession.cursor && prefixMatches(sharedSession)) {
 		const missed = priorMessages.slice(sharedSession.cursor);
 		const trailingAssistantOnly =
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
 		if (missed.length === 0 || trailingAssistantOnly) {
 		if (trailingAssistantOnly) {
-			setSessionStateFor(piSessionId, { ...sharedSession, cursor: priorMessages.length, cwd });
+			setSessionStateFor(piSessionId, { ...sharedSession, cursor: priorMessages.length, cwd, fingerprint: fingerprintPriors(priorMessages, customToolNameToSdk) });
 			debug(`Case 3: advanced cursor past trailing assistant, resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${priorMessages.length}`);
 		} else {
 			debug(`Case 3: resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
@@ -802,7 +839,9 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	// Only reachable when needsRebuild is false — user-facing history rewrites
 	// (/compact, session_tree, /new, fork) always set needsRebuild or clear
 	// sharedSession before the next syncSharedSession call.
-	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
+	// With a piSessionId the bucket is that session's own, so a shorter or
+	// changed history is a rewrite of it: fall through and rebuild.
+	if (!keyed && sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
 		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
 		debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
 		return { sessionId: null, preserveSharedSession: true };
@@ -810,6 +849,7 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 
 	// REBUILD path
 	if (priorMessages.length === 0) {
+		if (keyed && sharedSession) setSessionStateFor(piSessionId, null);
 		debug(`Case 1: clean start, ${history.length} total messages`);
 		debug(`syncResult: path=clean-start`);
 		return { sessionId: null };
@@ -838,7 +878,7 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	// records, not messages: `messages` filters out the attachment records that
 	// carrying an `@file` expansion across a rebuild writes into the same file.
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
-	setSessionStateFor(piSessionId, { sessionId: session.sessionId, cursor: priorMessages.length, cwd, piSessionId: piSessionId ?? undefined });
+	setSessionStateFor(piSessionId, { sessionId: session.sessionId, cursor: priorMessages.length, cwd, piSessionId: piSessionId ?? undefined, fingerprint: fingerprintPriors(priorMessages, customToolNameToSdk) });
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.records.length} records`);
 	} else if (preserveId) {
@@ -857,6 +897,17 @@ let queryImpl: typeof query = query;
 
 // @internal
 export const __test = {
+	get servedRequests() { return servedRequests; },
+	get isolatedForks() { return isolatedForks; },
+	setForkAnswerWait(wait: AnswerWait | null) {
+		forkAnswerWait = wait ?? FORK_ANSWER_WAIT;
+	},
+	setForkCutWait(wait: CutWait | null) {
+		forkCutWait = wait ?? FORK_CUT_WAIT;
+	},
+	setProviderSettings(settings: NonNullable<Config["provider"]>) {
+		providerSettings = settings;
+	},
 	setQuery(fn: typeof query | null) {
 		queryImpl = fn ?? query;
 	},
@@ -1315,6 +1366,7 @@ function processStreamEvent(
 		// consumeQuery to skip it. The MCP handler blocks the generator until
 		// pi delivers the tool result via the next streamSimple call.
 		c.turnOutput.stopReason = "toolUse";
+		c.endServedTurn("toolUse");
 		const stream = c.currentPiStream;
 		stream!.push({ type: "done", reason: "toolUse", message: c.turnOutput });
 		markStreamComplete(stream);
@@ -1464,6 +1516,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
 	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
 		c.turnOutput.stopReason = "toolUse";
+		c.endServedTurn("toolUse");
 		const stream = c.currentPiStream;
 		stream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
 		markStreamComplete(stream);
@@ -1508,6 +1561,7 @@ async function consumeQuery(
 		// - rate-limit events: notifications to the user, which are most likely to
 		//   fire during exactly the long tool-using turns the guard was skipping.
 		let resultError: string | undefined;
+		if (message.type === "assistant" && typeof message.uuid === "string") queryCtx.lastAssistantUuid = message.uuid;
 		if (message.type === "result") {
 			queryCtx.promptStream?.end();
 			logServedContextWindow("result", message, model);
@@ -1525,6 +1579,7 @@ async function consumeQuery(
 					queryCtx.turnOutput.errorMessage = resultError;
 				}
 			}
+			queryCtx.endServedTurn(resultError === undefined && message.subtype === "success" ? "answer" : "failed");
 		}
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
@@ -1587,6 +1642,7 @@ async function consumeQuery(
 			case "system":
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
+					queryCtx.ccSessionId = capturedSessionId;
 				}
 				break;
 			case "user":
@@ -1761,6 +1817,267 @@ function discardRewrittenQuery(c: QueryContext): void {
 	debug("provider: history rewritten under a parked query — discarded it, rebuilding from current history");
 }
 
+function systemPromptAppendFor(systemPrompt: string | undefined, mcpTools: Tool[]): {
+	promptCapture: ReturnType<typeof promptCaptures.resolveOrDerive>;
+	systemPromptAppend: string | undefined;
+} {
+	const promptCapture = promptCaptures.resolveOrDerive(systemPrompt);
+	const systemPromptAppend = promptCapture
+		? projectPromptCapture(promptCapture, {
+			skillReadTool: mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none",
+		})
+		: undefined;
+	return { promptCapture, systemPromptAppend };
+}
+
+const FORK_TOOL_REFUSAL = "Tool execution is disabled in this compression fork.";
+
+// Every pi session's last provider call, and the forks started from them. See
+// isolated-fork.ts: Claude Code copies the main session at the end of the
+// recorded request and runs it with the same options and tool definitions as
+// the main query, refusing every tool call.
+const servedRequests = new ServedRequests();
+const isolatedForks = new IsolatedForks(servedRequests, {
+	// Without --strict-mcp-config CC loads filesystem MCP servers whose handlers are
+	// not the fork's refusing proxies, and bypassPermissions would let them run.
+	refusal: () => (providerSettings.strictMcpConfig === false ? "unsafe-config" : undefined),
+	source: forkSource,
+	startQuery(served, target, prompt, abortController) {
+		const { mcpTools } = resolveMcpTools(served.context, askClaudeToolName);
+		const { systemPromptAppend } = systemPromptAppendFor(served.context.systemPrompt, mcpTools);
+		const mcpServers = mcpTools.length
+			? {
+				[MCP_SERVER_NAME]: createToolServer(MCP_SERVER_NAME, mcpTools.map((tool) => ({
+					name: tool.name,
+					description: tool.description,
+					inputSchema: tool.parameters,
+					handler: async (toolCallId: string): Promise<McpResult> => ({
+						toolCallId,
+						isError: true,
+						content: [{ type: "text", text: FORK_TOOL_REFUSAL }],
+					}),
+				}))),
+			}
+			: undefined;
+		const { queryOptions } = providerQueryOptions({
+			model: served.model,
+			reasoning: served.reasoning,
+			cliModel: claudeCodeModelId(served.model, longContextSettings),
+			cwd: served.cwd,
+			systemPromptAppend,
+			mcpServers,
+			resume: target.mainSessionId,
+			debugTag: "isolated-fork",
+		});
+		// Hooks would run user and plugin commands for a session the user never
+		// started; disableAllHooks leaves managed-policy hooks running.
+		const settings = forkSettings(queryOptions.settings);
+		if (!settings) throw new ForkRefused("unsafe-config");
+		const watched = watchedSpawn();
+		const forkQuery = queryImpl({ prompt, options: {
+			...queryOptions,
+			settings,
+			forkSession: true,
+			sessionId: target.forkSessionId,
+			resumeSessionAt: target.resumeAt,
+			abortController,
+			maxTurns: 1,
+			spawnClaudeCodeProcess: watched.spawn,
+		} });
+		return { query: forkQuery, process: watched.process };
+	},
+	sdkToolName: (piToolName) => `${MCP_TOOL_PREFIX}${piToolName}`,
+	deleteSession: (sessionId, cwd) => deleteSession(sessionId, cwd, process.env.CLAUDE_CONFIG_DIR),
+	debug,
+});
+
+/** The fork waits for the main turn at most as long as the extension waits for
+ *  the fork; a turn that ended gets this long to reach the transcript. */
+const FORK_ANSWER_WAIT: AnswerWait = { replyMs: 5 * 60_000, flushMs: 2_000, pollMs: 50 };
+let forkAnswerWait = FORK_ANSWER_WAIT;
+const FORK_CUT_WAIT: CutWait = { cutMs: 10_000, settleMs: 1_000, pollMs: 50 };
+let forkCutWait = FORK_CUT_WAIT;
+
+/** The main query serving `served`, if its CLI holds exactly that history. The
+ *  query, its input and its history are taken now: a later input, a rewrite or
+ *  another query on the session means the answer the fork waits for is not
+ *  this request's. */
+function forkSource(served: ServedRequest): ForkSource | ForkFailure {
+	const mirror = contextMirror(served.context);
+	const live = [...activeQueryContexts].filter((c) => c.piSessionId === served.piSessionId && c.activeQuery !== null);
+	if (live.length === 0) return "stale-context";
+	const c = live.find((q) => q.served?.cursor === mirror.cursor && q.served.fingerprint === mirror.fingerprint && !q.historyStale);
+	if (!c) return "stale-context";
+	const mainSessionId = c.ccSessionId;
+	const input = c.servedInput;
+	const owner = c.activeQuery;
+	if (!c.forkable || !mainSessionId || !input) return "unsupported-context";
+	const watch = {
+		reply: () => c.servedReplies.get(input),
+		superseded: () => c.servedInput !== input || c.historyStale || c.activeQuery !== owner,
+		records: () => recordsFrom(mainSessionId, served.cwd, input.fromByte),
+	};
+	return {
+		mainSessionId,
+		forkPoint: (signal, cutAfterToolResult) => cutAfterToolResult === undefined
+			? waitForAnswerEnd(watch, input, signal, forkAnswerWait)
+			: waitForToolResultCut(watch, input, cutAfterToolResult, signal, forkCutWait),
+	};
+}
+
+function transcriptSize(sessionId: string, cwd: string): number {
+	try {
+		return statSync(getSessionPath(sessionId, cwd, process.env.CLAUDE_CONFIG_DIR)).size;
+	} catch {
+		return 0;
+	}
+}
+
+/** The records a transcript gained after its first `fromByte` bytes. A line CC
+ *  is still appending does not parse and is left for the next read. */
+function recordsFrom(sessionId: string, cwd: string, fromByte: number): Record<string, unknown>[] {
+	let text: string;
+	try {
+		const bytes = readFileSync(getSessionPath(sessionId, cwd, process.env.CLAUDE_CONFIG_DIR));
+		if (bytes.length < fromByte) return [];
+		text = bytes.subarray(fromByte).toString("utf8");
+	} catch {
+		return [];
+	}
+	const records: Record<string, unknown>[] = [];
+	for (const line of text.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const record: unknown = JSON.parse(line);
+			if (record && typeof record === "object") records.push(record as Record<string, unknown>);
+		} catch {
+			break;
+		}
+	}
+	return records;
+}
+
+const FORK_KILL_AFTER_MS = 10_000;
+// pi awaits session_shutdown handlers, including on SIGTERM, so a fork's
+// session can still be deleted before the process exits.
+const FORK_SHUTDOWN_KILL_MS = 2_000;
+const FORK_SHUTDOWN_DEADLINE_MS = 4_000;
+
+/** A spawner that reports when the fork's CC process has exited — the SDK's own
+ *  close() returns before that — and refuses to start one after close. */
+function watchedSpawn(): { spawn: NonNullable<NonNullable<Parameters<typeof query>[0]["options"]>["spawnClaudeCodeProcess"]>; process: ForkProcess } {
+	let child: ChildProcess | undefined;
+	let closed = false;
+	let exit!: () => void;
+	const exited = new Promise<void>((resolve) => { exit = resolve; });
+	return {
+		spawn(options) {
+			if (closed) throw new Error("isolated fork closed before its process started");
+			const proc = spawn(options.command, options.args, { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+			child = proc;
+			proc.once("exit", () => exit());
+			proc.once("error", () => { if (proc.pid === undefined) exit(); });
+			options.signal.addEventListener("abort", () => { if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGTERM"); }, { once: true });
+			return proc as unknown as ReturnType<NonNullable<NonNullable<Parameters<typeof query>[0]["options"]>["spawnClaudeCodeProcess"]>>;
+		},
+		process: {
+			exited,
+			close() {
+				closed = true;
+				const proc = child;
+				if (!proc) {
+					exit();
+					return;
+				}
+				if (proc.exitCode !== null || proc.signalCode !== null) return;
+				const timer = setTimeout(() => { if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL"); }, FORK_KILL_AFTER_MS);
+				timer.unref();
+				proc.once("exit", () => clearTimeout(timer));
+			},
+			kill() {
+				closed = true;
+				const proc = child;
+				if (!proc) exit();
+				else if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+			},
+		},
+	};
+}
+
+/** Query options every provider-path CC process shares: the main query and the
+ *  isolated compression fork must send the same preset, settings and tools. */
+function providerQueryOptions(args: {
+	model: Model<any>;
+	reasoning: SimpleStreamOptions["reasoning"];
+	cliModel: string;
+	cwd: string;
+	systemPromptAppend: string | undefined;
+	mcpServers: Record<string, ReturnType<typeof createToolServer>> | undefined;
+	resume: string | null | undefined;
+	debugTag: string;
+}): { queryOptions: NonNullable<Parameters<typeof query>[0]["options"]>; effort: EffortLevel | undefined; strictMcpConfigEnabled: boolean } {
+	const { model, reasoning, cliModel, cwd, systemPromptAppend, mcpServers, resume, debugTag } = args;
+	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
+	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
+	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
+	// programmatically and ignore filesystem MCP entries — applied unconditionally because
+	// settingSources is left at CC's default, which loads all sources.
+	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
+	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
+
+	const effort = effortForReasoning(model, reasoning);
+
+	const extraArgs: Record<string, string | null> = { model: cliModel };
+	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
+	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
+	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
+	if (effort) extraArgs["thinking-display"] = "summarized";
+
+	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
+	// when the user is logged into Anthropic). These are a separate code path from
+	// filesystem MCP and are NOT blocked by --strict-mcp-config or settingSources=undefined.
+	// The native CC binary gates them on env var ENABLE_CLAUDEAI_MCP_SERVERS: setting it
+	// to "0"/"false"/"no"/"off" makes the loader return early before any cloud fetch.
+	// DISABLE_AUTO_COMPACT=1: pi owns context-management and propagates its own
+	// /compact via session_compact (see handler in default export). Letting CC
+	// also autocompact would double-flush the prompt cache and races pi's
+	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
+	// Manual /compact in CC still works (we never invoke it).
+	const childEnv = { ...process.env, ...CC_CHILD_ENV };
+	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+		cwd,
+		env: childEnv,
+		tools: [],
+		permissionMode: "bypassPermissions",
+		includePartialMessages: true,
+		// includeGitInstructions:false drops the gitStatus block from the preset.
+		// That block is the trailing suffix of the cached system block, and a
+		// git-state transition (new file, staging, commit) rewrites it — busting
+		// the prompt cache for the whole conversation from there on (see
+		// diag/probe-git-cache.mjs). The bridge re-invokes CC per turn, so this
+		// hit on every transition. Cost here is nil: the setting also strips
+		// CC's git-workflow guidance from its Bash tool prompt, but the provider
+		// path runs CC with `tools: []`, so those definitions never ship.
+		// AskClaude keeps CC's native tools and its guidance — unaffected.
+		settings: {
+			...claudeCodeSettings(providerSettings),
+			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
+			includeGitInstructions: false,
+		},
+		systemPrompt: {
+			type: "preset", preset: "claude_code",
+			append: systemPromptAppend ? systemPromptAppend : undefined,
+		},
+		extraArgs,
+		...(effort ? { effort } : {}),
+		...(mcpServers ? { mcpServers } : {}),
+		...(resume ? { resume } : {}),
+		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+		...makeCliDebugOptions(debugTag),
+	};
+	return { queryOptions, effort, strictMcpConfigEnabled };
+}
+
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -1776,6 +2093,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	if (options?.cacheRetention === "none") {
 		debug(`provider: one-off summarizer call (cacheRetention none) routed to isolated summary, msgs=${context.messages.length}`);
 		return isolatedStreamFn(model, context, options);
+	}
+	if (!servedRequests.record(options?.sessionId, model, context, options?.reasoning, sessionCwdFor(options?.sessionId))) {
+		debug("isolated-fork: request could not be copied; this session has no fork source until the next one");
 	}
 
 	const stream = createAssistantMessageEventStream();
@@ -1793,8 +2113,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// this tool result carry the turn into a fresh query over the rewritten history.
 	// The staleness mark is per pi session: a subagent's compaction (its own
 	// AgentSession, sharing this process) must not discard the parent's parked
-	// query, and vice versa.
-	const rewrittenUnderQuery = Boolean(resultCtx?.historyStale);
+	// query, and vice versa. A context hook rewrite has no mark, so the history
+	// itself is compared with what the query was served.
+	const prefixChanged = resultCtx !== undefined && !resultCtx.historyStale && servedPrefixChanged(resultCtx, context);
+	if (prefixChanged) debug("provider: history before this tool result differs from what the parked query was served");
+	const rewrittenUnderQuery = Boolean(resultCtx?.historyStale) || prefixChanged;
 	if (resultCtx && rewrittenUnderQuery) {
 		discardRewrittenQuery(resultCtx);
 		resultCtx = undefined;
@@ -1826,14 +2149,24 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// Delivery is async because the steer must reach CC's stdin *before* the
 		// tool result does — see deliverToolResults. Detached so the provider
 		// still returns its stream synchronously.
-		void deliverToolResults(resultCtx, allResults, steer, context.messages.length);
 		// The shared cursor tracks the top-level conversation. A reentrant subagent
 		// delivering its own results would drag it to that subagent's message count
 		// — observed pulling a parent from 5 back to 3, which cost the parent's next
 		// turn a full rebuild and a flushed prompt cache.
 		const state = sessionStateFor(resultCtx.piSessionId);
-		if (state) state.cursor = context.messages.length;
-		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
+		const mirror = contextMirror(context);
+		const delivered = resultCtx;
+		const fromByte = delivered.ccSessionId ? transcriptSize(delivered.ccSessionId, sessionCwdFor(delivered.piSessionId)) : 0;
+		void deliverToolResults(delivered, allResults, steer, context.messages.length).then(() => {
+			if (delivered.missedSteer) return;
+			delivered.served = mirror;
+			delivered.serve(steer ? undefined : { kind: "toolResults", ids: allResults.flatMap((r) => (r.toolCallId ? [r.toolCallId] : [])), fromByte });
+		});
+		if (state) Object.assign(state, mirror);
+		if (mirror.cursor >= resultCtx.latestCursor) {
+			resultCtx.latestCursor = mirror.cursor;
+			resultCtx.latestFingerprint = mirror.fingerprint;
+		}
 		return stream;
 	}
 
@@ -1857,7 +2190,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// count the result (options.sessionId is that session — pi emits the
 		// result event through the same session's streamSimple call).
 		const orphanState = sessionStateFor(options?.sessionId ?? null);
-		if (orphanState && activeQueryContexts.size === 0) orphanState.cursor = context.messages.length;
+		if (orphanState && activeQueryContexts.size === 0) Object.assign(orphanState, contextMirror(context));
 		// No query owns this result, so there is no context to reset: resetTurnState
 		// on the top-level ctx() would replace a live parent's turnOutput mid-stream,
 		// stranding the blocks it had already emitted. A throwaway context just
@@ -1894,12 +2227,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	let promptCapture: PromptCapture | undefined;
 	let systemPromptAppend: string | undefined;
 	try {
-		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
-		systemPromptAppend = promptCapture
-			? projectPromptCapture(promptCapture, {
-				skillReadTool: mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none",
-			})
-			: undefined;
+		({ promptCapture, systemPromptAppend } = systemPromptAppendFor(context.systemPrompt, mcpTools));
 	} catch (err) {
 		// resolveOrDerive and projectPromptCapture throw to stop a turn that would lose
 		// its instructions or leak pi's harness text. Report it on the stream, as pi-ai's
@@ -1933,6 +2261,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.turnToolCallIds = [];
 	queryCtx.resetTurnState(model);
 	queryCtx.latestCursor = 0;
+	queryCtx.latestFingerprint = undefined;
+	queryCtx.served = undefined;
 	// The served pi session, for rewrite attribution on delivery (issue #101
 	// follow-up) and on SessionState. A fresh instance of this module inside a
 	// worktree-spawned subagent has its own contexts; each records its own.
@@ -1950,10 +2280,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Which pi session this query serves — the attribution key for history
 	// rewrites (session_compact / session_tree) and for SessionState above.
 	const piSessionId = options?.sessionId ?? null;
+	// Another live query on this pi session may still be writing its file, so
+	// its sync keeps the count-based guard instead of rebuilding under it.
+	const sessionLive = piSessionId !== null && [...activeQueryContexts].some((c) => c.piSessionId === piSessionId && c.activeQuery !== null);
 	// Read before the consume below: with no query parked (an overflow retried
 	// after compaction), the session's mark is the only sign of the rewrite.
 	const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId);
+	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, sessionLive);
 	// This query starts from the history pi has now: consume this session's
 	// armed rewrite — a sibling pi session's stays armed for its own queries.
 	if (piSessionId) historyRewrittenBySession.delete(piSessionId);
@@ -2002,64 +2335,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.promptStream = promptStream;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 
-	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
-	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
-	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
-	// programmatically and ignore filesystem MCP entries — applied unconditionally because
-	// settingSources is left at CC's default, which loads all sources.
-	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
-	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
-
-	const effort = effortForReasoning(model, options?.reasoning);
-
-	const extraArgs: Record<string, string | null> = { model: cliModel };
-	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
-	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
-	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
-	if (effort) extraArgs["thinking-display"] = "summarized";
-
-	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
-	// when the user is logged into Anthropic). These are a separate code path from
-	// filesystem MCP and are NOT blocked by --strict-mcp-config or settingSources=undefined.
-	// The native CC binary gates them on env var ENABLE_CLAUDEAI_MCP_SERVERS: setting it
-	// to "0"/"false"/"no"/"off" makes the loader return early before any cloud fetch.
-	// DISABLE_AUTO_COMPACT=1: pi owns context-management and propagates its own
-	// /compact via session_compact (see handler in default export). Letting CC
-	// also autocompact would double-flush the prompt cache and races pi's
-	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
-	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ...CC_CHILD_ENV };
-	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
-		cwd,
-		env: childEnv,
-		tools: [],
-		permissionMode: "bypassPermissions",
-		includePartialMessages: true,
-		// includeGitInstructions:false drops the gitStatus block from the preset.
-		// That block is the trailing suffix of the cached system block, and a
-		// git-state transition (new file, staging, commit) rewrites it — busting
-		// the prompt cache for the whole conversation from there on (see
-		// diag/probe-git-cache.mjs). The bridge re-invokes CC per turn, so this
-		// hit on every transition. Cost here is nil: the setting also strips
-		// CC's git-workflow guidance from its Bash tool prompt, but the provider
-		// path runs CC with `tools: []`, so those definitions never ship.
-		// AskClaude keeps CC's native tools and its guidance — unaffected.
-		settings: {
-			...claudeCodeSettings(providerSettings),
-			claudeMdExcludes: CLAUDE_MD_EXCLUDES,
-			includeGitInstructions: false,
-		},
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
-		extraArgs,
-		...(effort ? { effort } : {}),
-		...(mcpServers ? { mcpServers } : {}),
-		...(resumeSessionId ? { resume: resumeSessionId } : {}),
-		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-		...makeCliDebugOptions("provider"),
-	};
+	const { queryOptions, effort, strictMcpConfigEnabled } = providerQueryOptions({
+		model, reasoning: options?.reasoning, cliModel, cwd, systemPromptAppend, mcpServers, resume: resumeSessionId, debugTag: "provider",
+	});
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -2069,8 +2347,18 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
+	const transcriptStart = resumeSessionId ? transcriptSize(resumeSessionId, cwd) : 0;
 	const sdkQuery = queryImpl({ prompt: promptStream.stream, options: queryOptions });
 	queryCtx.activeQuery = sdkQuery;
+	queryCtx.served = contextMirror(context);
+	// Until this query's init names its session, the context still holds the last one's.
+	queryCtx.ccSessionId = undefined;
+	queryCtx.serve({
+		kind: "prompt",
+		text: promptBlocks ? promptBlocks.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n") : promptText,
+		fromByte: transcriptStart,
+	});
+	queryCtx.forkable = !syncResult.preserveSharedSession;
 	activeQueryContexts.add(queryCtx);
 
 	// 4. Capture context for abort handling
@@ -2139,11 +2427,16 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				const state = sessionStateFor(queryCtx.piSessionId);
 				const sessionId = capturedSessionId ?? state?.sessionId;
 				if (sessionId) {
-					const cursor = Math.max(context.messages.length, queryCtx.latestCursor, state?.cursor ?? 0);
+					const mirror = contextMirror(context);
+					const cursor = Math.max(mirror.cursor, queryCtx.latestCursor, state?.cursor ?? 0);
+					// Whichever context set the cursor also supplies the fingerprint of it.
+					const fingerprint = cursor === mirror.cursor
+						? mirror.fingerprint
+						: cursor === queryCtx.latestCursor ? queryCtx.latestFingerprint : state?.fingerprint;
 					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
 					// A missed steer may precede the first mirror or arrive while this
 					// query is still able to complete. Preserve both rebuild signals.
-					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: queryCtx.missedSteer || state?.needsRebuild });
+					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, fingerprint, needsRebuild: queryCtx.missedSteer || state?.needsRebuild });
 				}
 			}
 
@@ -2416,6 +2709,7 @@ let askClaudeToolName = "AskClaude";
 export default function (pi: ExtensionAPI) {
 	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+	pi.events.on(ISOLATED_FORK_CHANNEL, (data) => isolatedForks.handle(data));
 
 	const config = loadConfig(process.cwd());
 	let askClaudeDeprecationNoticeShown = Boolean(config.askClaudeDeprecationShown);
@@ -2449,6 +2743,8 @@ export default function (pi: ExtensionAPI) {
 		// top-level transition takes every mirror with it.
 		sharedSessions.clear();
 		historyRewrittenBySession.clear();
+		isolatedForks.abortAll();
+		servedRequests.clear();
 
 		// Clear the global streamSimple if this instance registered it.
 		// This allows /reload to work — the old instance clears the flag so
@@ -2530,10 +2826,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_start", (_event, ctx) => {
 		recordSystemPrompt("turn_start", ctx.getSystemPrompt(), lastSystemPromptOptions);
 	});
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		forgetSessionCwd(ctx.sessionManager.getSessionId());
 		reportLeaks("session_shutdown");
 		clearSession("session_shutdown");
+		await isolatedForks.shutdown(FORK_SHUTDOWN_DEADLINE_MS, FORK_SHUTDOWN_KILL_MS);
 	});
 
 	// Pi and summary extensions own compaction and branch summaries; native calls use the
