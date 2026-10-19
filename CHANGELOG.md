@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: load in oh-my-pi (omp)** — omp's pi shim does not export `contentText` or `formatSkillsForPrompt`, so the named imports failed the extension at load time. The bridge now falls back to local copies when the host lacks them.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
