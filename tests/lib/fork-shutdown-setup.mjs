@@ -13,6 +13,8 @@ const { __test } = mod;
 const { ISOLATED_FORK_CHANNEL } = await import("../../src/isolated-fork.js");
 
 export const handlers = new Map();
+// The ctx pi passes session_shutdown; the handler reads the session id from it.
+export const SHUTDOWN_CTX = { sessionManager: { getSessionId: () => "pi-shutdown" } };
 const bus = createEventBus();
 let providerConfig;
 mod.default({
@@ -42,11 +44,14 @@ __test.setQuery(({ options }) => {
 	return gen;
 });
 
-export const sessionExists = (sessionId) => existsSync(getSessionPath(sessionId, cwd, process.env.CLAUDE_CONFIG_DIR));
+export const sessionExists = (sessionId, dir = cwd) => existsSync(getSessionPath(sessionId, dir, process.env.CLAUDE_CONFIG_DIR));
 
 /** Starts a main turn, then a fork whose CC process runs `childSource` and
- *  stays alive until killed. Resolves once the child has printed "ready". */
-export async function startForkWithChild(childSource) {
+ *  stays alive until killed. Resolves once the child has printed "ready".
+ *  With `sessionCwd`, pi's session_start names that as the session's cwd. The
+ *  stand-in CC writes wherever the bridge says each process runs. */
+export async function startForkWithChild(childSource, { sessionCwd } = {}) {
+	if (sessionCwd) handlers.get("session_start")({ reason: "startup" }, { ui: { notify: () => {} }, mode: "print", cwd: sessionCwd, sessionManager: SHUTDOWN_CTX.sessionManager });
 	let clock = 0;
 	const prompt = "[m00002] next";
 	const history = [
@@ -57,15 +62,19 @@ export async function startForkWithChild(childSource) {
 	];
 	let releaseMain;
 	const mainHeld = new Promise((r) => { releaseMain = r; });
+	let mainCwd;
 	const append = (sessionId, record) => {
-		const session = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		const session = openSession({ sessionId, projectPath: mainCwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
 		const last = session.records.at(-1);
 		appendFileSync(session.jsonlPath, JSON.stringify({ uuid: randomUUID(), parentUuid: last?.uuid ?? null, sessionId, timestamp: new Date().toISOString(), ...record }) + "\n");
 	};
 	// The fork starts once the main turn has answered, so the main turn answers.
 	const answer = randomUUID();
 	scripts.push({
-		onStart: (options) => append(options.resume, { type: "user", message: { role: "user", content: prompt } }),
+		onStart: (options) => {
+			mainCwd = options.cwd;
+			append(options.resume, { type: "user", message: { role: "user", content: prompt } });
+		},
 		steps: [
 			{ type: "system", subtype: "init" },
 			() => mainHeld,
@@ -80,12 +89,14 @@ export async function startForkWithChild(childSource) {
 	let ready;
 	const childReady = new Promise((r) => { ready = r; });
 	let forkId;
+	let forkCwd;
 	scripts.push({
 		onStart: (options) => {
 			forkId = options.sessionId;
+			forkCwd = options.cwd;
 			// What Claude Code does with forkSession: copy the session under the new id.
-			writeFileSync(getSessionPath(forkId, cwd, process.env.CLAUDE_CONFIG_DIR), "{}\n");
-			child = options.spawnClaudeCodeProcess({ command: process.execPath, args: ["-e", childSource], cwd, env: process.env, signal: options.abortController.signal });
+			writeFileSync(getSessionPath(forkId, forkCwd, process.env.CLAUDE_CONFIG_DIR), "{}\n");
+			child = options.spawnClaudeCodeProcess({ command: process.execPath, args: ["-e", childSource], cwd: forkCwd, env: process.env, signal: options.abortController.signal });
 			child.stdout.once("data", () => ready());
 		},
 		steps: [{ type: "system", subtype: "init" }, (options) => new Promise((r) => options.abortController.signal.addEventListener("abort", r, { once: true }))],
@@ -106,5 +117,5 @@ export async function startForkWithChild(childSource) {
 	declined.catch(() => {});
 	await Promise.race([childReady, declined, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("the fork's process never started")), 10_000); })]);
 	clearTimeout(timer);
-	return { child, forkId, accepted, finishMain: async () => {} };
+	return { child, forkId, mainCwd, forkCwd, accepted, finishMain: async () => {} };
 }

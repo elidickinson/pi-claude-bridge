@@ -21,7 +21,7 @@ process.on("exit", () => {
 });
 
 const { IsolatedForks, ServedRequests } = await import("../src/isolated-fork.js");
-const { handlers, sessionExists, startForkWithChild } = await import("./lib/fork-shutdown-setup.mjs");
+const { handlers, sessionExists, SHUTDOWN_CTX, startForkWithChild } = await import("./lib/fork-shutdown-setup.mjs");
 
 const READY = "process.stdout.write('ready\\n'); setInterval(() => {}, 1e6);";
 const IGNORES_SIGTERM = "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1e6);";
@@ -103,7 +103,7 @@ describe("isolated fork shutdown", () => {
 	it("the registered session_shutdown handler stops a real fork process and deletes its session", async () => {
 		const fork = await startForkWithChild(READY);
 		assert.ok(sessionExists(fork.forkId));
-		await handlers.get("session_shutdown")();
+		await handlers.get("session_shutdown")({}, SHUTDOWN_CTX);
 		assert.ok(exitedOf(fork.child), "the child has exited when the handler resolves");
 		assert.equal(sessionExists(fork.forkId), false);
 		assert.deepEqual(await fork.accepted, { ok: false, reason: "aborted" });
@@ -112,7 +112,7 @@ describe("isolated fork shutdown", () => {
 
 	it("escalates to SIGKILL for a process that ignores SIGTERM", async () => {
 		const fork = await startForkWithChild(IGNORES_SIGTERM);
-		await handlers.get("session_shutdown")();
+		await handlers.get("session_shutdown")({}, SHUTDOWN_CTX);
 		assert.equal(fork.child.signalCode, "SIGKILL");
 		assert.equal(sessionExists(fork.forkId), false);
 		await fork.finishMain();

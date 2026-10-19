@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown } from "../src/config.js";
+import { claudeCodeSettings, loadConfig, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown } from "../src/config.js";
 
 function withTempHome(fn) {
 	const oldHome = process.env.HOME;
@@ -47,6 +47,7 @@ describe("loadConfig", () => {
 
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
+				askClaudeDeprecationShown: undefined,
 				provider: { plan: "max" },
 				askClaude: { enabled: false },
 			});
@@ -73,6 +74,7 @@ describe("loadConfig", () => {
 
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
+				askClaudeDeprecationShown: undefined,
 				provider: { plan: "max", strictMcpConfig: true, autoMemoryEnabled: true },
 				askClaude: { enabled: false, defaultMode: "read" },
 			});
@@ -101,6 +103,18 @@ describe("loadConfig", () => {
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	}));
+
+	it("markAskClaudeDeprecationNoticeShown records today's date without dropping settings", () => withTempHome(() => {
+		const globalDir = getAgentDir();
+		mkdirSync(globalDir, { recursive: true });
+		const path = join(globalDir, "claude-bridge.json");
+		writeFileSync(path, JSON.stringify({ askClaude: { enabled: true } }));
+
+		markAskClaudeDeprecationNoticeShown();
+		const written = JSON.parse(readFileSync(path, "utf-8"));
+		assert.match(written.askClaudeDeprecationShown, /^\d{4}-\d{2}-\d{2}$/);
+		assert.deepEqual(written.askClaude, { enabled: true });
 	}));
 
 	it("markStartupNoticeShown leaves an unparseable config untouched", () => withTempHome(() => {
@@ -137,6 +151,7 @@ describe("loadConfig", () => {
 
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
+				askClaudeDeprecationShown: undefined,
 				provider: { plan: "max" },
 				askClaude: {},
 			});

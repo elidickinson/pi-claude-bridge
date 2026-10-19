@@ -6,9 +6,10 @@
 //
 // Extracted from index.ts so tests can import without activating the extension.
 
-import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
+import type { RateLimitInfo } from "./rate-limit.js";
 
 /** `fromByte` is the transcript size before the CLI got the input, so an
  *  earlier prompt with the same text cannot be taken for it. */
@@ -27,6 +28,11 @@ export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: unknown | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
+	/** onResponse from the provider call that owns currentPiStream. */
+	currentOnResponse: SimpleStreamOptions["onResponse"] | undefined;
+	/** Latest rate_limit_event not yet reported. CC sends it after message_stop, when a
+	 *  tool call has already ended the stream, so it waits for the next call's stream. */
+	heldRateLimit: RateLimitInfo | undefined;
 	latestCursor = 0;
 	latestFingerprint: string | undefined = undefined;
 	/** Cursor and fingerprint of the history this query's CLI holds, as of its

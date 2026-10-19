@@ -99,7 +99,7 @@ describe("resolveModel", () => {
 
 describe("Claude Code runtime policy", () => {
 	it("measured-1M ids send [1m] on every plan", () => {
-		for (const id of ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-sonnet-5"]) {
+		for (const id of ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"]) {
 			assert.deepEqual(resolveClaudeCodeRuntimeModel(oneM(id), PRO), { cliModelId: `${id}[1m]`, contextWindow: 1000000 });
 		}
 	});
@@ -158,7 +158,7 @@ describe("applyLongContext", () => {
 	});
 
 	it("haiku shortcut and no-match still resolve", () => {
-		assert.equal(resolveModel(models, "haiku")?.id, "claude-haiku-4-5");
+		assert.equal(resolveModel(models, "haiku")?.id, "claude-haiku-5-5");
 		assert.equal(resolveModel(models, "gpt-9"), undefined);
 	});
 

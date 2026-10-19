@@ -35,22 +35,7 @@ The model list comes from pi-ai's Anthropic catalog automatically — when pi-ai
 
 ## AskClaude Tool
 
-Opt-in: set `askClaude.enabled` to `true` (see [Configuration](#configuration)). Available when using any non-claude-bridge provider. Pi's LLM can delegate tasks to Claude Code and wait for it to answer a question or perform a task. Examples of how to use:
-
-- "Ask Claude to plan a fix"
-- "If you get stuck, ask claude for help"
-- "Ask claude to review the plan in @foo.md, implement it, then ask an isolated=true claude to review the implementation"
-- "Ask claude to poke holes in this theory"
-
-Delegated calls don't read global `CLAUDE.md` files or Claude Code's skill listing, and always get Claude Code's own system prompt.
-
-### Parameters
-
-- **`prompt`** — the question or task for Claude Code
-- **`mode`** — `read` (default, read files and search/fetch on web), `none`, or `full` (read+write+bash, disable this mode with `allowFullMode: false` in config)
-- **`model`** — `opus` (default), `sonnet`, `haiku`, or a full model ID
-- **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
-- **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
+**Deprecated:** AskClaude is an opt-in legacy tool and may be removed in a future release. You should set `askClaude.enabled` to `true` (see [Configuration](#configuration)) to use it. You can recreate similar functionality with one of the many Pi subagent extensions.
 
 ## Configuration
 
@@ -92,7 +77,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
 
-**Startup notice:** the first session lists `provider.plan` and `askClaude.enabled` if unset, then records `startupNoticeShown` in the global config so it doesn't nag again.
+**Notices:** the startup notice points out when `provider.plan` is unset and records `startupNoticeShown` in the global config. There's also a deprecation notice on first use of AskClaude that records its display date as `askClaudeDeprecationShown`.
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not currently apply to extension-registered providers (like claude-bridge). Overriding `contextWindow` or other fields requires editing `src/models.ts` directly — to pin a model to 200K, use `provider.forceTwoHundredK` instead.
 
@@ -138,7 +123,11 @@ To add instructions, use `message`, `context`, or a system-message edit that kee
 [ -n "$PI_CODING_AGENT" ] && exit 0
 ```
 
-Hooks do not fire on the compact-summary side query. The isolated compression fork (billion-context-pi `compress.async`) runs with `disableAllHooks`, so hooks from settings files and installed plugins do not run in it; hooks from managed policy settings still do, and Claude Code still writes its own state (for example `~/.claude.json`) as it does on any query.
+Hooks do not fire on isolated summary queries. The isolated compression fork (billion-context-pi `compress.async`) runs with `disableAllHooks`, so hooks from settings files and installed plugins do not run in it; hooks from managed policy settings still do, and Claude Code still writes its own state (for example `~/.claude.json`) as it does on any query.
+
+### Compaction and branch summaries
+
+pi runs compaction and branch summaries natively. The bridge routes their `cacheRetention: "none"` calls to isolated Claude Code queries, leaving the live session untouched until pi completes the history rewrite. Other extensions can provide summaries through pi's hooks.
 
 ### Isolated fork for other extensions
 
@@ -147,6 +136,10 @@ An extension can ask, over `pi.events` (`claude-bridge:isolated-fork`, version 1
 ### System prompt rejections
 
 Other extensions can change the system prompt. When the result still contains pi's built-in system prompt text, or the two documentation paths that Anthropic looks for (`docs/custom-provider.md` in the same prompt with `docs/packages.md`), the bridge stops the turn instead of sending it, since Anthropic may otherwise bill these requests as Extra Usage. Fix the source extension before retrying; `CLAUDE_BRIDGE_DEBUG=1` writes the full prompt to the bridge log when this happens.
+
+### Plan usage for footers and quota extensions
+
+The bridge does not show plan usage itself. Claude Code sends a `rate_limit_event` when a usage window changes, and the bridge passes it to pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers. Events are not tied to one response: one that arrives after a turn has ended on a tool call is reported on the next provider call, and only the latest is kept. The headers use the names that the Anthropic API uses (for example `anthropic-ratelimit-unified-5h-utilization`). The bridge sends only the headers that it can make from the event: the status, the reset time, the representative claim, the overage status and reset, and the utilization and reset of each window. The status code is always 200. An extension that reads these headers for the built-in `anthropic` provider can also accept `claude-bridge` without other changes.
 
 ### Using claude bridge with @gotgenes/pi-subagents
 
