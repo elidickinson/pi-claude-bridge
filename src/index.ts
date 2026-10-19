@@ -30,6 +30,7 @@ import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
+import { isStandalonePrompt, runStandalone } from "./standalone.js";
 
 // --- Debug logging ---
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to the bridge log in pi's agent
@@ -540,6 +541,28 @@ async function reportHeldRateLimit(c: QueryContext, model: Model<any>): Promise<
 	} catch (error) {
 		debug("rate limit: onResponse failed", error);
 	}
+}
+
+function standaloneStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	const stream = createAssistantMessageEventStream();
+	const effort = effortForReasoning(model, options?.reasoning);
+	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
+	void runStandalone(model, context, options, stream, {
+		query: queryImpl,
+		spawnOptions: {
+			cwd: sessionCwdFor(options?.sessionId),
+			env: { ...process.env, ...CC_CHILD_ENV },
+			model: claudeCodeModelId(model, longContextSettings),
+			...(effort ? { effort } : {}),
+			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+			...makeCliDebugOptions("standalone"),
+		},
+		prompt: (messages) => extractUserPromptBlocks(messages) ?? extractUserPrompt(messages) ?? "",
+		newOutput: (stopReason, error) => newAssistantOutput(model, "", stopReason, error),
+		resultError: resultErrorText,
+		debug,
+	});
+	return stream;
 }
 
 function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -1769,6 +1792,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// back out to the prompt/tools fields every cursor write, syncSharedSession call and
 	// prompt-capture lookup below assumes (issue #106).
 	context = toBridgeContext(context);
+
+	// An extension's own one-turn call, opted out of prompt capture. Checked first: a
+	// standalone call that also sets cacheRetention:"none" still gets its guard.
+	if (isStandalonePrompt(options)) {
+		debug(`provider: standalone prompt routed to its own query, msgs=${context.messages.length}`);
+		return standaloneStreamFn(model, context, options);
+	}
 
 	// Pi's compaction, branch-summary and bug-report calls use cacheRetention:"none"
 	// in completeSummarization. Their prompts bypass the capture boundaries, so route

@@ -25,7 +25,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { PI_PREAMBLE, projectPromptCapture } from "../src/prompt-capture.js";
+import { projectPromptCapture } from "../src/prompt-capture.js";
+import { PI_PREAMBLE } from "../src/sendable.js";
 import { activateWithMockPi } from "./lib/mock-pi.mjs";
 
 const { __test } = await import("../src/index.js");

@@ -4,7 +4,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { PI_PREAMBLE } from "../src/sendable.js";
 
 const PI_SYSTEM_PROMPT = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js", import.meta.url));
 
@@ -96,12 +97,12 @@ describe("prompt guard", () => {
 		const harness = buildSystemPrompt({ cwd: "/tmp" });
 		assert.ok(
 			harness.includes(PI_PREAMBLE),
-			"pi reworded its preamble, so the harness guard matches nothing; update PI_PREAMBLE in src/prompt-capture.ts",
+			"pi reworded its preamble, so the harness guard matches nothing; update PI_PREAMBLE in src/sendable.ts",
 		);
 		for (const trigger of ["docs/custom-provider.md", "docs/packages.md"]) {
 			assert.ok(
 				harness.includes(trigger),
-				`pi's rendered prompt no longer carries ${trigger}, so the third-party trigger pair may have moved; update ANTHROPIC_THIRD_PARTY_TRIGGERS in src/prompt-capture.ts`,
+				`pi's rendered prompt no longer carries ${trigger}, so the third-party trigger pair may have moved; update ANTHROPIC_THIRD_PARTY_TRIGGERS in src/sendable.ts`,
 			);
 		}
 		// A custom prompt replaces the harness in full, which is what makes these strings'
