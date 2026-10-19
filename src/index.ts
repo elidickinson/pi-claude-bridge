@@ -2163,7 +2163,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		void promptStream.push(userMessage(promptBlocks ?? [{ type: "text", text: promptText }]))
 			.catch((error) => debug(`provider: initial prompt push rejected:`, error));
 		queryCtx.promptStream = promptStream;
-		sdkQuery = query({ prompt: promptStream.stream, options: makeQueryOptions(resumeSessionId) });
+		sdkQuery = queryImpl({ prompt: promptStream.stream, options: makeQueryOptions(resumeSessionId) });
 		queryCtx.activeQuery = sdkQuery;
 	};
 	startAttempt();
