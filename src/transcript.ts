@@ -11,12 +11,12 @@
  * puts them.
  */
 import {
-	contentText,
 	getCurrentSystemMessage,
 	getCurrentTools,
 	type Context,
 	type SystemMessage,
 } from "@earendil-works/pi-ai";
+import { contentText } from "./host-compat.js";
 
 /** pi's canonical built-in section order. A name absent from the table is a custom
  *  section, which the builder renders after every built-in; see stableRanked.

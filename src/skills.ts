@@ -1,4 +1,5 @@
-import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent";
+import type { Skill } from "@earendil-works/pi-coding-agent";
+import { formatSkillsForPrompt } from "./host-compat.js";
 
 export const MCP_SERVER_NAME = "custom-tools";
 export const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
