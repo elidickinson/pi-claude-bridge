@@ -22,7 +22,7 @@ delete process.env.CLAUDE_BRIDGE_DEBUG;
 process.on("exit", () => rmSync(tmpRoot, { recursive: true, force: true }));
 
 const { default: activate, __test } = await import("../src/index.js");
-const { PI_PREAMBLE } = await import("../src/prompt-capture.js");
+const { PI_PREAMBLE } = await import("../src/sendable.js");
 
 let providerConfig;
 activate({
