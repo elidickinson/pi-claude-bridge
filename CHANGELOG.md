@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: standalone prompts for extension side calls** — a call with `metadata.promptKind: "standalone"` skips prompt capture and runs one isolated Claude Code turn with its system prompt verbatim. Tool calls return to the caller unexecuted. pi's preamble and Anthropic's trigger phrase pair are still refused.
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.

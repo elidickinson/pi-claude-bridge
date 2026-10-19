@@ -129,6 +129,16 @@ Hooks do not fire on isolated summary queries.
 
 pi runs compaction and branch summaries natively. The bridge routes their `cacheRetention: "none"` calls to isolated Claude Code queries, leaving the live session untouched until pi completes the history rewrite. Other extensions can provide summaries through pi's hooks.
 
+### Side calls through the session model
+
+An extension that calls the session model with its own system prompt (a permission classifier, a title generator) fails with `prompt-capture: no capture`, because pi never assembled that prompt for an agent turn. To send it as is, mark the call:
+
+```ts
+ctx.modelRegistry.complete(model, { systemPrompt, messages, tools }, { metadata: { promptKind: "standalone" } });
+```
+
+The bridge then runs one Claude Code turn with your system prompt verbatim (no Claude Code preset), no built-in tools, skills, settings files, memory or saved session, and leaves the live session untouched. `messages` must hold only user messages; they are joined into one prompt, images included. If you pass `tools`, the model can call them, but the bridge does not run them: the calls come back as `toolCall` blocks with `stopReason: "toolUse"`. The marker wins over `cacheRetention: "none"`. The rejection below applies to the system prompt and to each user message.
+
 ### System prompt rejections
 
 Other extensions can change the system prompt. When the result still contains pi's built-in system prompt text, or the two documentation paths that Anthropic looks for (`docs/custom-provider.md` in the same prompt with `docs/packages.md`), the bridge stops the turn instead of sending it, since Anthropic may otherwise bill these requests as Extra Usage. Fix the source extension before retrying; `CLAUDE_BRIDGE_DEBUG=1` writes the full prompt to the bridge log when this happens.
