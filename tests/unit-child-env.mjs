@@ -17,9 +17,8 @@ describe("Claude Code child environment", () => {
 		});
 	});
 
-	// Deliberately not asserted here: that every `query()` call site spreads the
-	// constant. The only way to check that from a unit test is to grep src/index.ts,
-	// which fails on innocent indirection (`env: childEnv`) and would have to be
-	// taught about it — a brittle test that reads as coverage. The three sites
-	// referencing CC_CHILD_ENV are the guard, and a fourth is a review question.
+	// Deliberately not asserted here: that every `query()` call site builds its env
+	// through childEnvFor. The only way to check that from a unit test is to grep
+	// src/index.ts — a brittle test that reads as coverage. unit-child-env-hook.mjs
+	// drives the three real sites; a fourth is a review question.
 });

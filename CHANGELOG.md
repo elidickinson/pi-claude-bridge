@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: per-child Claude Code environment hook** — before each query the bridge emits `claude-bridge:child-env` on the originating pi session's event bus, and listeners register a transform that returns the environment for that one child. Extensions can route one session's Claude Code traffic, for example through a proxy, without mutating `process.env`. `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE` keep the parent's values so children resume the session files the bridge synced. See README "Claude Code child environment".
+
 ## 0.9.3 — 2026-10-13
 
 - **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.

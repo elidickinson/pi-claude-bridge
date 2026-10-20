@@ -28,6 +28,7 @@ import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
+import { bindChildEnvSession, buildChildEnv, unbindChildEnvSession, type ChildEnvPurpose } from "./child-env.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
 
@@ -49,6 +50,17 @@ const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
 } as const;
+
+// The `env` for one Claude Code child: process.env plus CC_CHILD_ENV, adjusted by
+// the serving pi session's child-env listeners (see child-env.ts). Called once per
+// query construction, so a parked query's continuation keeps its spawn environment.
+function childEnvFor(purpose: ChildEnvPurpose, sessionId: string | null | undefined, model: { id: string; provider?: string; contextWindow?: number }): Record<string, string> {
+	return buildChildEnv(process.env, CC_CHILD_ENV, {
+		purpose,
+		sessionId,
+		model: { id: model.id, provider: model.provider, contextWindow: model.contextWindow },
+	}, (message) => debug(`child-env(${purpose}): ${message}`));
+}
 
 // Pi owns context files on the provider path, so Claude Code must not load its
 // own on top: otherwise project CLAUDE.md/AGENTS.md files arrive twice, and
@@ -578,7 +590,8 @@ async function runIsolatedSummary(
 			? extractUserPrompt(context.messages)
 			: extractIsolatedSummaryPrompt(context.messages);
 		if (!promptText) throw new Error("runIsolatedSummary: one-off summary without a user prompt (last message is not user?)");
-		const cwd = sessionCwdFor(summarySessionFor(options?.signal) ?? options?.sessionId);
+		const summarySessionId = summarySessionFor(options?.signal) ?? options?.sessionId;
+		const cwd = sessionCwdFor(summarySessionId);
 		const compactProviderSettings = loadConfig(cwd).provider;
 		const claudeExecutable = compactProviderSettings?.pathToClaudeCodeExecutable;
 		const cliModel = claudeCodeModelId(model, longContextSettings);
@@ -590,7 +603,7 @@ async function runIsolatedSummary(
 			prompt: promptText,
 			options: {
 				cwd,
-				env: { ...process.env, ...CC_CHILD_ENV },
+				env: childEnvFor("summary", summarySessionId, model),
 				settings: { autoMemoryEnabled: false },
 				tools: [],
 				strictMcpConfig: true,
@@ -896,6 +909,8 @@ export const __test = {
 	deliverToolResults,
 	drainForAbort,
 	CC_CHILD_ENV,
+	childEnvFor,
+	promptAndWait,
 	buildMcpServers,
 	get promptCaptures() {
 		return promptCaptures;
@@ -2028,7 +2043,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// also autocompact would double-flush the prompt cache and races pi's
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ...CC_CHILD_ENV };
+	const childEnv = childEnvFor("provider", piSessionId, model);
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
@@ -2300,11 +2315,11 @@ async function promptAndWait(
 	// removes the Skill tool and the listing with it — but AskClaude runs on CC's native
 	// tools, so it has to be asked for. Pi-side skills still arrive via skillsBlock below,
 	// which is meant to be the only channel.
-	const sdkQuery = query({
+	const sdkQuery = queryImpl({
 		prompt,
 		options: {
 			cwd,
-			env: { ...process.env, ...CC_CHILD_ENV },
+			env: childEnvFor("askclaude", askClaudeSessionId, model ?? { id: modelId }),
 			permissionMode: "bypassPermissions",
 			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 			skills: [],
@@ -2459,10 +2474,24 @@ export default function (pi: ExtensionAPI) {
 			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
 		}
 	};
+	// Child-env requests for this instance's session go to this instance's event bus,
+	// whichever module instance serves the query (see child-env.ts). The registry
+	// holds childEnvOwner weakly; this instance's handlers keep it, and with it the
+	// binding, alive exactly as long as the session's runtime is reachable.
+	const childEnvOwner = {};
+	let childEnvSessionId: string | undefined;
+	const unbindChildEnv = () => {
+		if (childEnvSessionId !== undefined) unbindChildEnvSession(childEnvSessionId, childEnvOwner);
+		childEnvSessionId = undefined;
+	};
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
-		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
+		const sessionId = ctx.sessionManager.getSessionId();
+		rememberSessionCwd(sessionId, ctx.cwd);
+		if (childEnvSessionId !== sessionId) unbindChildEnv();
+		bindChildEnvSession(sessionId, pi.events, childEnvOwner);
+		childEnvSessionId = sessionId;
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
@@ -2532,6 +2561,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		forgetSessionCwd(ctx.sessionManager.getSessionId());
+		unbindChildEnv();
 		reportLeaks("session_shutdown");
 		clearSession("session_shutdown");
 	});

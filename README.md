@@ -137,6 +137,43 @@ Other extensions can change the system prompt. When the result still contains pi
 
 The bridge does not show plan usage itself. Claude Code sends a `rate_limit_event` when a usage window changes, and the bridge passes it to pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers. Events are not tied to one response: one that arrives after a turn has ended on a tool call is reported on the next provider call, and only the latest is kept. The headers use the names that the Anthropic API uses (for example `anthropic-ratelimit-unified-5h-utilization`). The bridge sends only the headers that it can make from the event: the status, the reset time, the representative claim, the overage status and reset, and the utilization and reset of each window. The status code is always 200. An extension that reads these headers for the built-in `anthropic` provider can also accept `claude-bridge` without other changes.
 
+### Claude Code child environment
+
+Each Claude Code subprocess gets its own copy of the environment, built when the bridge starts a query: `process.env` plus the bridge's guards (`DISABLE_AUTO_COMPACT=1`, `ENABLE_CLAUDEAI_MCP_SERVERS=0`). An extension can adjust that copy for the children of its own pi session, for example to point `ANTHROPIC_BASE_URL` at a proxy, without touching `process.env`, which every concurrent session's child would inherit.
+
+Before each query the bridge emits `claude-bridge:child-env` on the event bus of the pi session the child serves. The request carries `version` (currently `1`), `purpose` (`"provider"`, `"summary"` or `"askclaude"`), `sessionId`, `model` (`{ id, provider?, contextWindow? }` for this request) and `register(fn)`. Call `register` synchronously inside the handler; registration closes when the emit returns. The bridge then calls each `fn` with a fresh copy of the environment, and `fn` must synchronously return the complete replacement record of string values:
+
+```ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+// The request the bridge emits; pi's event bus delivers it as `unknown`.
+interface ChildEnvRequest {
+	readonly version: number;
+	readonly purpose: "provider" | "summary" | "askclaude";
+	readonly sessionId: string;
+	readonly model: { readonly id: string; readonly provider?: string; readonly contextWindow?: number };
+	register(fn: (env: Record<string, string>) => Record<string, string>): void;
+}
+
+export default function (pi: ExtensionAPI) {
+	pi.events.on("claude-bridge:child-env", (data) => {
+		const request = data as ChildEnvRequest;
+		if (request.version !== 1 || request.purpose !== "provider") return;
+		request.register((env) => ({ ...env, ANTHROPIC_BASE_URL: "http://127.0.0.1:8080/" }));
+	});
+}
+```
+
+A `fn` that throws, returns a promise or returns anything other than a record of strings is ignored, and the environment from the previous step is kept. The bridge copies the result, so changing the returned object later has no effect, and it applies its guards last.
+
+The variables that locate Claude Code's session files — `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE`, matched in any letter case — always keep the values in `process.env`, because the bridge reads and writes the sessions its children resume through those values. After each `fn` and at the end, the bridge restores them: a variable that `process.env` does not set is removed, and an empty one stays empty. The next `fn` therefore never sees a changed value, and the rest of that `fn`'s result is kept.
+
+With `CLAUDE_BRIDGE_DEBUG=1`, the debug log records each ignored `fn` and each restore by the position of the `fn`, without the thrown value or any environment value.
+
+The environment is fixed when the child is spawned. A tool result delivered to a running query continues that child with the environment it started with, so a change takes effect at the next new query.
+
+Bridge versions up to 0.9.3 do not emit the event, so their children keep the inherited environment.
+
 ### Using claude bridge with @gotgenes/pi-subagents
 
 Requires the following in `~/.pi/agent/subagents.json`:
