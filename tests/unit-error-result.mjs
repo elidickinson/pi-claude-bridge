@@ -85,10 +85,10 @@ describe("a rate-limited failure", () => {
 		await consume(c, [rejection, limitResult]);
 
 		assert.match(c.turnOutput.errorMessage, RATE_LIMIT);
-		assert.equal(isRetryableAssistantError(c.turnOutput), false, "a rejected window is not retried as transient");
+		assert.equal(isRetryableAssistantError(c.turnOutput), true, "a rejected window uses fallback, not a transient retry");
 		assert.doesNotMatch(c.turnOutput.errorMessage, TOOL_FAILURE_PREFIX);
-		assert.ok(c.turnOutput.errorMessage.includes(limitResult.result), "keeps Claude Code's own wording");
-		assert.ok(c.turnOutput.errorMessage.includes("five_hour"));
+		assert.doesNotMatch(c.turnOutput.errorMessage, /out of extra usage/i);
+		assert.match(c.turnOutput.errorMessage, /subscription or plan limit reached/i);
 	});
 
 	it("labels only the failure it caused, not a later one", async () => {
