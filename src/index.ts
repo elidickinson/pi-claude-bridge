@@ -254,6 +254,24 @@ function setSessionStateFor(piSessionId: string | null | undefined, state: Sessi
 	else sharedSessions.set(sessionKey(piSessionId), state);
 }
 
+function recordQueryCompletion(
+	sessionId: string,
+	cursor: number,
+	cwd: string,
+	missedSteer = false,
+	piSessionId: string | null = null,
+): void {
+	const state = sessionStateFor(piSessionId);
+	setSessionStateFor(piSessionId, {
+		...state,
+		sessionId,
+		cursor,
+		cwd,
+		...(piSessionId === null ? {} : { piSessionId }),
+		needsRebuild: missedSteer || state?.needsRebuild,
+	});
+}
+
 // pi replaced one of its sessions' history (compact, tree) rather than appending
 // to it. Read on the tool-result path — the one provider call that never reaches
 // syncSharedSession — so a query parked at a tool boundary is discarded rather
@@ -746,14 +764,18 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 //
 // Log strings still say "Case 1/2/3/4" so existing diagnostics (int-cache.sh,
 // int-session-resume.mjs) keep grepping the same anchors.
-	function syncSharedSession(
+function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
-	piSessionId?: string | null,
+	piSessionId?: string | null | { reentrant?: boolean },
 	options?: { reentrant?: boolean },
 ): SyncResult {
+	if (typeof piSessionId === "object" && piSessionId !== null) {
+		options = piSessionId;
+		piSessionId = null;
+	}
 	// System messages are pi's transcript representation of prompt and tool state, not
 	// conversation history — they are never imported into a CC session, so exclude them from
 	// the history space (priorMessages, cursor, missed) everywhere below (issue #106).
@@ -885,8 +907,12 @@ export const __test = {
 	get activeQueryContexts() {
 		return activeQueryContexts;
 	},
-	setSharedSession(piSessionId: string | null, state: SessionState | null) {
-		setSessionStateFor(piSessionId, state);
+	setSharedSession(
+		piSessionIdOrState: string | null | SessionState,
+		state?: SessionState | null,
+	) {
+		if (arguments.length === 1) setSessionStateFor(null, piSessionIdOrState as SessionState);
+		else setSessionStateFor(piSessionIdOrState as string | null, state ?? null);
 	},
 	getSharedSession(piSessionId: string | null = null) {
 		return sessionStateFor(piSessionId);
@@ -898,7 +924,9 @@ export const __test = {
 	isolatedStreamFn,
 	effortForReasoning,
 	syncSharedSession,
-	markRebuild,
+	markRebuild(event: string) {
+		markRebuildForSession(null, event);
+	},
 	recordQueryCompletion,
 	extractUserPromptBlocks,
 	consumeQuery,
@@ -1964,7 +1992,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Read before the consume below: with no query parked (an overflow retried
 	// after compaction), the session's mark is the only sign of the rewrite.
 	const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, { reentrant: isReentrant });
+	const syncResult = syncSharedSession(
+		context.messages,
+		cwd,
+		customToolNameToSdk,
+		cliModel,
+		piSessionId,
+		{ reentrant: isReentrant && ctx().piSessionId === piSessionId },
+	);
 	// This query starts from the history pi has now: consume this session's
 	// armed rewrite — a sibling pi session's stays armed for its own queries.
 	if (piSessionId) historyRewrittenBySession.delete(piSessionId);
@@ -2154,7 +2189,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
 					// A missed steer may precede the first mirror or arrive while this
 					// query is still able to complete. Preserve both rebuild signals.
-					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: queryCtx.missedSteer || state?.needsRebuild });
+					recordQueryCompletion(sessionId, cursor, cwd, queryCtx.missedSteer, queryCtx.piSessionId);
 				}
 			}
 
@@ -2591,34 +2626,6 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// Branch summarization runs through the agent stream function, so take it
-	// over with an isolated Claude Code subprocess before its internal prompt
-	// reaches the provider.
-	pi.on("session_before_tree", async (event, ctx) => {
-		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
-		const { entriesToSummarize, userWantsSummary, customInstructions, replaceInstructions } = event.preparation;
-		if (!userWantsSummary || entriesToSummarize.length === 0) return undefined;
-		debug(`session_before_tree: takeover entries=${entriesToSummarize.length} target=${event.preparation.targetId.slice(0, 8)}`);
-		try {
-			const result = await generateBranchSummary(entriesToSummarize, {
-				model: ctx.model,
-				signal: event.signal,
-				customInstructions,
-				replaceInstructions,
-				streamFn: isolatedStreamFn,
-			});
-			return branchSummaryOutcome(result);
-		} catch (err) {
-			debug("session_before_tree: takeover failed; cancelling navigation", err);
-			ctx.ui?.notify?.(
-				`Claude bridge branch summary failed (${errorMessage(err)}); navigation cancelled.`,
-				"error",
-			);
-			return { cancel: true };
-		}
-	});
-
-	// --- Provider ---
 	//
 	// Registration policy across module instances (a subagent session can load
 	// this module fresh): the FIRST instance registers unconditionally at load,
@@ -2632,9 +2639,7 @@ export default function (pi: ExtensionAPI) {
 	//   stream fn, and the parent's next tool-result delivery would route into it.
 	// - Registry lacks the provider (host gives the child its own, e.g. older
 	//   pi-subagents forks): register, or every claude-bridge/* dispatch in the
-	//   child fails with "Model not found" (#91). Even loading the bridge via the
-	//   agent's `extensions:` frontmatter didn't help there — the module loaded,
-	//   hit the old skip-guard, and the child's registry stayed empty.
+	//   child fails with "Model not found" (#91).
 	//
 	// A per-instance stream fn registered into a per-instance registry is
 	// self-consistent: that session's traffic flows through this module state,
