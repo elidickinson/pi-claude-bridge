@@ -4,6 +4,7 @@
 
 - **Bump: Claude Agent SDK 0.3.308 (Claude Code 2.1.308)** — Claude Code's new per-request log in session files is turned off; it made them about a third larger.
 - **Fix: abort ignored after a terminated tool batch (#200, issue #199)** — when a run ended with Claude Code's query parked at a tool call (`terminate: true`), aborting the next run did nothing. Each run that continues the query now binds its own signal. Thanks @orshih6 and @cootue.
+- **Fix: a stateless host's per-request abort no longer discards a completed continuation (follow-up to #200)** — a host that opens a separate request per model turn (pi-durable) aborts the opening request's signal once its stream has ended, while its query sits parked at a tool call. That late abort killed the parked query and discarded the tool-result continuation as "Operation aborted". The opening run's own signal now gets the same stream-ended guard #200 gave continuing runs, in both the abort listener and the completion path. Verified end-to-end against pi-durable.
 
 ## 0.9.3 — 2026-10-13
 
