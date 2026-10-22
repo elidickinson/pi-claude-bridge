@@ -2094,9 +2094,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		drainForAbort(abortCtx, promptStream);
 		requestAbort();
 	};
+	// This run's own abort counts only while its stream is live — the same guard a
+	// continuing run's signal gets below. A stateless host (e.g. pi-durable) opens a
+	// separate request per model turn and aborts the prior request's signal once its
+	// stream has ended; without this, that late abort would kill the query this run
+	// left parked at a tool call, discarding the continuation.
+	const onOwnAbort = () => { if (!completedStreams.has(stream as object)) onAbort(); };
 	if (options?.signal) {
-		if (options.signal.aborted) onAbort();
-		else options.signal.addEventListener("abort", onAbort, { once: true });
+		if (options.signal.aborted) onOwnAbort();
+		else options.signal.addEventListener("abort", onOwnAbort, { once: true });
 	}
 	// A later run continuing this query from a tool result brings its own signal;
 	// only the latest one is bound, and it is unbound when the query ends. Its abort
@@ -2128,7 +2134,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			}
 
 			// --- Abort detection in normal completion path ---
-			if (wasAborted || options?.signal?.aborted) {
+			// `wasAborted` is the real mid-run interrupt (onAbort/onOwnAbort fired while the
+			// stream was live). The bare signal check is gated the same way: a stateless
+			// host's late abort, after this run's stream already ended, must not discard a
+			// turn that reached its terminal — the answer is already produced.
+			const interrupted = wasAborted || (options?.signal?.aborted === true && !completedStreams.has(stream as object));
+			if (interrupted) {
 				// The killed subprocess may flush a late record into this session's
 				// JSONL — its own mirror's next sync must rebuild and rotate.
 				const state = sessionStateFor(queryCtx.piSessionId);
@@ -2210,7 +2221,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			queryCtx.currentPiStream = null;
 		})
 		.finally(() => {
-			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
+			if (options?.signal) options.signal.removeEventListener("abort", onOwnAbort);
 			unbindRunSignal();
 			if (queryCtx.bindRunSignal === bindRunSignal) queryCtx.bindRunSignal = null;
 			// Settle any ack still parked in the generator — the CLI is gone, so
