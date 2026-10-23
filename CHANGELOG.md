@@ -4,6 +4,7 @@
 
 - **Bump: Claude Agent SDK 0.3.308 (Claude Code 2.1.308)** — Claude Code's new per-request log in session files is turned off; it made them about a third larger.
 - **Fix: abort ignored after a terminated tool batch (#200, issue #199)** — when a run ended with Claude Code's query parked at a tool call (`terminate: true`), aborting the next run did nothing. Each run that continues the query now binds its own signal. Thanks @orshih6 and @cootue.
+- **Fix: parallel tool calls after a non-streaming fallback lost all but the first** — when a response stream stalls before any tool call has finished, Claude Code discards it and asks again without streaming. The SDK yields that single API message as one `assistant` message per content block, back to back, and the bridge ended pi's turn on the first `tool_use`, so the other tool calls never reached pi while Claude Code waited in the MCP handlers for their results; the turn hung until aborted. A fallback's tool-use stop now waits until 100 ms pass with no further block (or the SDK moves on) before ending pi's stream, and the blocks of one message id accumulate instead of resetting the turn's tool calls.
 
 ## 0.9.3 — 2026-10-13
 
