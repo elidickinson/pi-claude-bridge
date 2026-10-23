@@ -604,7 +604,7 @@ test("claudeMdExcludes prevents native AGENTS.md from duplicating forwarded inst
 
 test("a string systemPrompt replaces the preset, and \"\" is the bare SDK default", { timeout: 120_000 }, async () => {
 	// systemPromptMode "replace" sends pi's portable parts as a plain string and
-	// false sends "". Pin that a string drops the claude_code preset entirely and
+	// "" when pi has none. Pin that a string drops the claude_code preset entirely and
 	// that "" does not fall back to it.
 	const requests = [];
 	const api = await stubApi(requests);

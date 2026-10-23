@@ -37,13 +37,13 @@ describe("claudeCodeSettings", () => {
 describe("resolveSystemPromptMode", () => {
 	it("defaults to append and keeps valid modes", () => {
 		assert.equal(resolveSystemPromptMode(undefined), "append");
-		for (const mode of ["append", "replace", false]) assert.equal(resolveSystemPromptMode(mode), mode);
+		for (const mode of ["append", "replace"]) assert.equal(resolveSystemPromptMode(mode), mode);
 	});
 
 	it("falls back to append on an invalid value instead of dropping pi's prompt", (t) => {
 		const error = t.mock.method(console, "error", () => {});
-		for (const bad of ["Replace", "none", true, null, 0]) assert.equal(resolveSystemPromptMode(bad), "append");
-		assert.equal(error.mock.callCount(), 5);
+		for (const bad of ["Replace", "none", true, false, null, 0]) assert.equal(resolveSystemPromptMode(bad), "append");
+		assert.equal(error.mock.callCount(), 6);
 	});
 });
 

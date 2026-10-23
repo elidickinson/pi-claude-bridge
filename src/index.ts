@@ -71,9 +71,8 @@ const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**
 // Provider path only: AskClaude runs CC's native tools and always needs the preset's guidance.
 // "" is the SDK's bare default (identity line only), not a fallback to the preset.
 function claudeSystemPrompt(piPart: string | undefined): NonNullable<Parameters<typeof query>[0]["options"]>["systemPrompt"] {
-	const mode = providerSettings.systemPromptMode;
-	if (mode === "append") return { type: "preset", preset: "claude_code", append: piPart || undefined };
-	return mode === "replace" ? piPart ?? "" : "";
+	if (providerSettings.systemPromptMode === "replace") return piPart ?? "";
+	return { type: "preset", preset: "claude_code", append: piPart || undefined };
 }
 
 // Unique per module evaluation — confirms whether subagents share module state
@@ -2503,8 +2502,8 @@ export default function (pi: ExtensionAPI) {
 		rememberSummarySession(event.signal, ctx.sessionManager.getSessionId());
 	});
 	// `--system-prompt` replaces pi's default rather than adding to it, but Claude
-	// Code's preset carries its own tool and permission guidance that the bridge
-	// still depends on, so both flags are forwarded as an append.
+	// Code's preset carries its own tool and permission guidance, so by default both
+	// flags are forwarded as an append (systemPromptMode "replace" drops the preset).
 	//
 	// The options (custom/append/contextFiles/skills/sections) are pi config, stable across a
 	// turn; only the auto-generated tool list in the rendered prompt varies. Stash them

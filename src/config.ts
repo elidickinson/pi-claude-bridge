@@ -27,7 +27,7 @@ export interface Config {
 	provider?: {
 		// Provider-path system prompt. "append" (default): CC's claude_code preset +
 		// pi's portable parts (context files, skills, custom/append). "replace": only
-		// pi's portable parts, no preset. false: neither.
+		// pi's portable parts, no preset.
 		systemPromptMode?: SystemPromptMode;
 		strictMcpConfig?: boolean;
 		autoMemoryEnabled?: boolean;
@@ -54,13 +54,13 @@ export function tryParseJson(path: string): Partial<Config> {
 	}
 }
 
-export type SystemPromptMode = "append" | "replace" | false;
+export type SystemPromptMode = "append" | "replace";
 
 /** Validate at the boundary: a typo must not silently drop all of pi's instructions. */
 export function resolveSystemPromptMode(value: unknown): SystemPromptMode {
 	if (value === undefined) return "append";
-	if (value === "append" || value === "replace" || value === false) return value;
-	console.error(`claude-bridge: ignoring provider.systemPromptMode ${JSON.stringify(value)}; expected "append", "replace" or false`);
+	if (value === "append" || value === "replace") return value;
+	console.error(`claude-bridge: ignoring provider.systemPromptMode ${JSON.stringify(value)}; expected "append" or "replace"`);
 	return "append";
 }
 
