@@ -54,7 +54,7 @@ describe("streamSimple", () => {
 		__test.setQuery(({ options }) => {
 			queryCwd = options.cwd;
 			const gen = (async function* () {
-				yield { type: "system", subtype: "init", session_id: "cc-web" };
+				yield { type: "system", subtype: "init", session_id: options.sessionId ?? options.resume };
 				yield { type: "result", subtype: "success", is_error: false, result: "ok" };
 			})();
 			gen.interrupt = async () => {};

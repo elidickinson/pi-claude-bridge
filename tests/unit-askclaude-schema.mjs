@@ -15,9 +15,9 @@ const tags = (args, conf) => askClaudeCallTags(args, resolveAskClaudeDefaults(co
 describe("default configuration", () => {
 	it("keeps the existing descriptions", () => {
 		const parameters = props(undefined);
-		assert.equal(parameters.prompt.description, "The question or task for Claude Code. By default Claude sees the full conversation history. Don't research up front, let Claude explore.");
+		assert.equal(parameters.prompt.description, "The question or task for Claude Code. By default Claude sees the recorded conversation history. Don't research up front, let Claude explore.");
 		assert.equal(parameters.mode.description, '"read" (default): questions about the codebase — review, analysis, explain. "none": general knowledge only (no file access). "full": allows writing and bash execution (careful: runs without feedback to pi).');
-		assert.equal(parameters.isolated.description, "When true, Claude sees only this prompt (clean session). When false (default), Claude sees the full conversation history.");
+		assert.equal(parameters.isolated.description, "When true, Claude sees only this prompt (clean session). When false (default), Claude sees the recorded conversation history.");
 		assert.equal(toolDescription(undefined), "Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself.");
 	});
 
@@ -52,7 +52,7 @@ describe("defaultIsolated: true", () => {
 
 	it("states isolation as the default", () => {
 		const parameters = props(conf);
-		assert.equal(parameters.isolated.description, "When true (default), Claude sees only this prompt (clean session). When false, Claude sees the full conversation history.");
+		assert.equal(parameters.isolated.description, "When true (default), Claude sees only this prompt (clean session). When false, Claude sees the recorded conversation history.");
 		assert.match(parameters.prompt.description, /By default Claude sees only this prompt \(isolated session\)\./);
 	});
 

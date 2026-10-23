@@ -29,7 +29,7 @@ const streamSimple = providerConfig.streamSimple;
 const model = providerConfig.models[0];
 
 const ev = (event) => ({ type: "stream_event", event });
-const init = { type: "system", subtype: "init", session_id: "cc-continued" };
+const init = (options) => ({ type: "system", subtype: "init", session_id: options.sessionId ?? options.resume });
 const toolUse = (id) => [
 	ev({ type: "message_start", message: { id: `msg_${id}`, usage: {} } }),
 	ev({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id, name: "mcp__custom-tools__read", input: {} } }),
@@ -56,12 +56,13 @@ beforeEach(() => {
 	activeQueryContexts.clear();
 	closes = 0;
 	// Parks at a tool call, then, once the result is in, streams text until killed.
-	setQuery(({ prompt }) => {
+	setQuery(({ prompt, options }) => {
 		let onClose;
 		const killed = new Promise((r) => { onClose = r; });
 		const gen = (async function* () {
-			await prompt[Symbol.asyncIterator]().next();
-			yield init;
+			const first = (await prompt[Symbol.asyncIterator]().next()).value;
+			yield init(options);
+			yield { ...first, isReplay: true, session_id: options.sessionId ?? options.resume };
 			for (const step of toolUse("toolu_1")) yield step;
 			for (const step of textStart) yield step;
 			await killed;
@@ -108,10 +109,11 @@ describe("abort on a run that continues a parked query", () => {
 	// Hosts that abort each request's signal once it ends (omp) must not kill the
 	// query that run left parked at its own tool call.
 	it("ignores the abort once that run has ended at the next tool call", async () => {
-		setQuery(({ prompt }) => {
+		setQuery(({ prompt, options }) => {
 			const gen = (async function* () {
-				await prompt[Symbol.asyncIterator]().next();
-				yield init;
+				const first = (await prompt[Symbol.asyncIterator]().next()).value;
+				yield init(options);
+				yield { ...first, isReplay: true, session_id: options.sessionId ?? options.resume };
 				for (const step of toolUse("toolu_1")) yield step;
 				await settle(); // the second run picks up the query
 				for (const step of toolUse("toolu_2")) yield step;

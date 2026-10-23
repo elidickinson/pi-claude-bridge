@@ -1,12 +1,6 @@
 #!/usr/bin/env node
-// Regression test: cursor after a tool-using first turn.
-//
-// When the first provider turn triggers tool calls (Case 1 clean start),
-// sharedSession is null throughout, so tool-result cursor tracking never
-// fires. Without the latestCursor fix, the .then handler falls back to the
-// stale closure's context.messages.length (=1), causing a spurious rebuild
-// on the next turn.
-//
+// Regression test: a tool-using first turn records its complete content prefix,
+// including results and the final assistant, so the next turn resumes unchanged.
 // See: https://github.com/elidickinson/pi-claude-bridge/issues/4
 
 import { test } from "node:test";
@@ -45,13 +39,10 @@ test("turn 2 reuses session after tool-using turn 1 (no spurious rebuild)", { ti
 			paths.push(match[1]);
 		}
 
-		const rebuilds = paths.filter((p) => p === "rebuild").length;
-		const reuses = paths.filter((p) => p === "reuse").length;
-
-		assert.strictEqual(rebuilds, 0,
-			`spurious rebuild(s) — cursor likely stuck at 1 after tool-using first turn (issue #4). sync paths: ${paths.join(", ")}`);
-		assert.ok(reuses >= 1,
-			`expected at least 1 reuse for turn 2, got ${reuses}. sync paths: ${paths.join(", ")}`);
+		assert.ok(paths.length >= 2, `expected two fresh-query decisions, got ${paths.join(", ")}`);
+		assert.strictEqual(paths[0], "clean-start");
+		assert.ok(paths.slice(1).every((path) => path === "reuse"),
+			`tool results and the final assistant must be covered without a fork or rewrite: ${paths.join(", ")}`);
 	} finally {
 		await harness.stop();
 	}

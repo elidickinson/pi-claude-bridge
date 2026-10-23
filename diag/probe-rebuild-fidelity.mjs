@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Does a rebuilt Claude Code session read back the prompt cache the live one left?
 //
-// "Always rebuild" (eli/structural-ideas.md) would rewrite CC's session file from
-// pi's history before every prompt. That is affordable only if the request CC
+// An "always rebuild" design would rewrite CC's session file from pi's history
+// before every prompt. That is affordable only if the request CC
 // sends after a rebuild matches, element for element, the prefix the previous
 // request cached. This probe runs one pi session through the real bridge under
 // diag/capture-proxy.mjs and forces the bridge's in-process REBUILD before chosen
@@ -38,6 +38,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { FIRST_PARTY_ENV } from "./lib/first-party.mjs";
 import { compareRequestBodies, requestElements } from "./lib/request-diff.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -215,6 +216,7 @@ async function run(runIndex, extensionPath) {
 			env: {
 				...process.env,
 				PATH,
+				...FIRST_PARTY_ENV,
 				ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
 				CLAUDE_BRIDGE_DEBUG: "1",
 				CLAUDE_BRIDGE_DEBUG_PATH: debugLog,

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Verifies the bridge clears its sharedSession after a pi-side /new.
+// Verifies the first query after a pi-side /new starts a clean CC session.
 //
-// This already works today (the bridge subscribes to `session_start` with
-// reason="new" and clears sharedSession). This is a regression test so the
+// Mirrors are keyed by pi session id and retained across switches, so the
+// fresh pi session has no mirror of its own. This is a regression test so the
 // behavior stays wired up.
 
 console.log("=== int-session-new.mjs ===");
@@ -29,26 +29,24 @@ try {
 	console.log("Turn 2: more history...");
 	await promptAndWait("Now pick a color. Reply with just the color. Do not use the memory system.");
 
-	const NEW_MARKER_LOG = readFileSync(DEBUG_LOG, "utf8").length;
-
 	console.log("Triggering /new...");
 	await send({ type: "new_session" });
 
 	console.log("Turn 3: prompt after /new (should be a clean start)...");
 	await promptAndWait("Hello fresh session. Reply with just 'hi'.");
 
+	// The bridge logs `session_start:new: retaining N shared sessions` when it
+	// observes the event; everything after it belongs to the fresh session.
 	const fullLog = readFileSync(DEBUG_LOG, "utf8");
-	const postNewLog = fullLog.slice(NEW_MARKER_LOG);
-
-	// The bridge logs `session_start:new: clearing ... shared sessions` when it
-	// observes the event. Make sure we saw it.
-	if (!/session_start:new: clearing \d+ shared session/.test(postNewLog)) {
-		throw new Error("no `session_start:new: clearing session` marker — bridge didn't observe /new");
+	const newMarker = /session_start:new: retaining \d+ shared sessions?\n/.exec(fullLog);
+	if (!newMarker) {
+		throw new Error("no `session_start:new: retaining` marker — bridge didn't observe /new");
 	}
+	const postNewLog = fullLog.slice(newMarker.index + newMarker[0].length);
 
 	// First syncResult after /new must be clean-start (sharedSession=null,
 	// no prior messages on the fresh agent state).
-	const syncResults = [...postNewLog.matchAll(/syncResult: path=(reuse|rebuild|clean-start)/g)].map((m) => m[1]);
+	const syncResults = [...postNewLog.matchAll(/syncResult: path=([a-z-]+)/g)].map((m) => m[1]);
 	console.log(`  Post-/new syncResults: ${JSON.stringify(syncResults)}`);
 	if (syncResults.length === 0) {
 		throw new Error("no syncResult markers after /new (Turn 3 didn't reach the provider?)");
@@ -56,7 +54,7 @@ try {
 	if (syncResults[0] !== "clean-start") {
 		throw new Error(
 			`bridge took ${syncResults[0]} path after /new — expected clean-start.\n` +
-			`       sharedSession should be cleared by the session_start:new handler.`);
+			`       the fresh pi session must not inherit the previous session's mirror.`);
 	}
 
 	console.log("PASS");

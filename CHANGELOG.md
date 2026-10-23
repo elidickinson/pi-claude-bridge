@@ -2,8 +2,15 @@
 
 ## UNRELEASED
 
+- **Fix: preserve matching conversation history (#222)** — Detect content edits and retain matching Claude Code records through rewinds, interruptions and restarts.
+- **Fix: AskClaude's shared-mode description overstated its context** — it said Claude sees the full conversation history, but same-model calls see the recorded history. The tool description now says so.
+
+- **Fix: queued steering keeps MCP input open through later turns (#172)** — Keep Claude Code's input open until each steer is replayed into a turn, then close after that turn completes. An error result still ends the query, so a steer Claude Code had queued can no longer run on and replace the failure.
+
 - **Bump: Claude Agent SDK 0.3.308 (Claude Code 2.1.308)** — Claude Code's new per-request log in session files is turned off; it made them about a third larger.
+- **Add: opt-in cache trace for diagnosing prompt-cache loss** — `CLAUDE_BRIDGE_TRACE_DIR` records provider inputs, session decisions and query lifecycle, linked by id, and keeps Claude Code's session files before a rebuild replaces them; `diag/capture-proxy.mjs` now streams responses and ties each API request to the query that sent it. Traced requests make Claude Code treat the proxy as first-party, so they match untraced ones. Off by default. See `diag/CACHE-TRACE.md` and `diag/CACHE-REBUILD-FINDINGS.md`.
 - **Fix: abort ignored after a terminated tool batch (#200, issue #199)** — when a run ended with Claude Code's query parked at a tool call (`terminate: true`), aborting the next run did nothing. Each run that continues the query now binds its own signal. Thanks @orshih6 and @cootue.
+- **Fix: teardown rewrote a finished tool-call turn (issue #181)** — an abort, crash or error after a turn ended on a tool call changed pi's copy of that message to aborted/error, which could later orphan its tool result on Codex. Thanks @good-nightmoon.
 
 ## 0.9.3 — 2026-10-13
 

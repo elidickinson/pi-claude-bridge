@@ -97,6 +97,67 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
     applicable to AskClaude subagents. See `fractary/pi-claude-code`
     `PlanMode.ts`.
 
+17. **Session-sync simplifications.** Verified dead or redundant by the final
+    reviews. Each is independent, but land the writer-tracking item before the
+    child-lifecycle one.
+    - **Writer-tracking teardown is duplicated in four places.** `stopWriting`
+      and the CAS-checked delete pair up at `src/index.ts:2137`/`2145`,
+      `2289`/`2293`, `2389`/`2420`, `2509`/`2514`. A `trackSessionWriter()`
+      returning `{stop, release}` makes the ownership check impossible to
+      forget on a future teardown path.
+    - **AskClaude's writer registration is never read.** `src/index.ts:2389`
+      and its call sites `2416`, `2428`, `2509`. Ask always forks a fresh
+      target id and never commits state, so no reader can wait on it. Removing
+      it also makes the `sync.created` checks at `2419` and `2513`
+      unconditional. Deprecated path: delete machinery, don't add it.
+    - **The `"(none)"` mirror bucket is test-only.** `sessionKey`,
+      `src/index.ts:196`. `syncSharedSession` reads state only for a non-null
+      id and null ids are never writable. Key the map by the id and drop the
+      bucket comments. Needs updates in `unit-discard-rewritten-query.mjs`,
+      `unit-sync-shared-session.mjs`, `unit-deliver-tool-results.mjs`.
+    - **`knownSessionIds` / `registry.known` is test-only state.**
+      `src/index.ts:228`, `235`, `245`. Its only reader is
+      `__test.resetSharedSession`, and tests already isolate
+      `PI_CODING_AGENT_DIR`. Have the reset remove the sessions dir instead.
+    - **`LiveRecording` keeps parameters only tests use.**
+      `src/session-sync.ts:149`, `186`. Production always passes
+      `acknowledged=false` and `uuid=undefined` since replay became the sole
+      acknowledgement. Shrink to `users(messages, start, uuid, steering)` and
+      `assistant(digest, toolCalls, resetTools)`.
+    - **`dropParkedQuery`'s else branch is unreachable.**
+      `src/index.ts:1794-1797`. `activeQuery` and `stopProcess` are set in the
+      same synchronous block. `unit-discard-rewritten-query.mjs` currently
+      exercises the dead branch and should set `stopProcess` instead, so it
+      covers the real abort.
+    - **The AskClaude launch-identity spread duplicates the provider's.**
+      `src/index.ts:2123` vs `2396-2404`. The `resume`/`forkAt`/`created &&
+      (!resume || forkAt)` trio belongs in one helper: that expression is the
+      mutual-exclusion rule between resume and fork.
+    - **`done` waits for the CC child to exit before finalizing the stream.**
+      `src/index.ts:2289-2293`, so every successful turn's terminal event is
+      delayed until the child is gone (bounded: the SDK escalates SIGTERM to
+      SIGKILL). Reordering `finalizeCurrentStream` ahead of the deferred save
+      restores responsiveness if the rare stale-`activeQuery` re-entrant path
+      during that window ever matters.
+    - **Child-lifecycle cleanup repeats terminate/wait/delete/unregister** in
+      the query-constructor failure handler and the provider and AskClaude
+      `finally` blocks. One helper is possible, but the three differ in
+      ordering and persistence; only worth it after the writer-tracking item.
+    - **`extractIsolatedSummaryPrompt` and its `isOneOffSummary` branch are
+      dead.** `src/index.ts:425`, `514-517`. The sole caller is gated on
+      `cacheRetention === "none"`. Also a redundant `toBridgeContext` at
+      `504`. Predates the session-sync work: remove only if already touching
+      that area.
+    - **`SnapshotWriter`'s `"no-known-writer"` arm is never passed.**
+      `src/cache-trace.ts:321`. The snapshot taken at rotation no longer
+      precedes a deletion. Belongs to the cache trace, not session sync.
+    - **The pending-tool rule lives in two places.** `updatePendingTools`
+      (`src/session-sync.ts:53`, import cuts) and `LiveRecording.flush`
+      (`src/session-sync.ts:211-218`, live cuts) both decide whether a cut is
+      safe. Their shapes differ (pi messages vs slots), so a shared helper is
+      thin -- but divergence between the two would silently disagree about
+      cut safety. Unify when next in that code.
+
 ## Open questions
 
 - **18 never-answered tool calls** (`[no tool result recorded]` as the lone stub of
