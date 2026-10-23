@@ -4,6 +4,7 @@
 
 - **Bump: Claude Agent SDK 0.3.308 (Claude Code 2.1.308)** — Claude Code's new per-request log in session files is turned off; it made them about a third larger.
 - **Fix: abort ignored after a terminated tool batch (#200, issue #199)** — when a run ended with Claude Code's query parked at a tool call (`terminate: true`), aborting the next run did nothing. Each run that continues the query now binds its own signal. Thanks @orshih6 and @cootue.
+- **Add: a tool call pi never received fails the turn instead of hanging it** — Claude Code waits in the bridge's MCP handler for every tool call it dispatched, and results only come from pi running the calls it was handed, so a call lost between the two (for example a parallel call dropped after a non-streaming fallback) left the handler waiting forever. A handler now checks two minutes after it parks that pi has its call, as a tool call of a stream the bridge ended on `toolUse` or one still being built, and re-checks every two minutes while it waits. If not, the query is killed the way a history rewrite kills one, the session mirror is marked for rebuild, a stream pi is waiting on ends with an error naming the tool and call id, the user gets a notice, and `claude-bridge-diag.log` gets a `lost_tool_call` entry with the ids involved. A call pi did receive is never failed, however long its tool runs. Covered by `tests/unit-lost-tool-call-watchdog.mjs`.
 
 ## 0.9.3 — 2026-10-13
 
