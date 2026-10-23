@@ -115,3 +115,20 @@ it("a real session round-trips with every tool result intact", () => {
 	assert.deepEqual(blocks.map((b) => b.tool_use_id), expected.map((m) => m.toolCallId));
 	assert.deepEqual(blocks.filter((b) => String(b.content).includes("no tool result recorded")), []);
 });
+
+// The Anthropic API rejects an error tool_result with empty content: 400
+// "content cannot be empty if is_error is true". A tool that fails with no stdout
+// (its output all on stderr) records content:"" with isError:true — the exotic
+// fixture's "tool call#2@x". Replaying it verbatim poisons every rebuild of that
+// history: the whole session 400s on each turn until the record is gone.
+it("an errored tool result never converts to empty content", () => {
+	const errored = repairToolPairing(convertPiMessages(exotic).anthropicMessages)
+		.flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+		.filter((b) => b.type === "tool_result" && b.is_error);
+
+	assert.ok(errored.length > 0, "fixture must exercise an errored tool result");
+	for (const b of errored) {
+		const empty = b.content === "" || (Array.isArray(b.content) && b.content.length === 0);
+		assert.ok(!empty, `errored tool_result ${b.tool_use_id} has empty content — the API will 400`);
+	}
+});

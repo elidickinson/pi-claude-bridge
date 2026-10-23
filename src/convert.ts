@@ -206,7 +206,12 @@ export function convertPiMessages(
 			// reorderAttachmentsForAPI (claude-code-rip src/utils/messages.ts:1481)
 			// bubbles attachments up to the nearest assistant or tool_result message
 			// and re-inserts them after it. The on-disk form differs, the order does not.
-			const block = { type: "tool_result", tool_use_id: sanitizeToolId(msg.toolCallId, sanitizedIds), content: toolResultContent(msg.content), is_error: msg.isError };
+			// The Anthropic API rejects an error tool_result with empty content (400
+			// "content cannot be empty if is_error is true"). A tool that fails with no
+			// stdout — e.g. a sudo_exec whose output all went to stderr — records exactly
+			// that. Substitute a placeholder so the errored result still round-trips.
+			const resultContent = toolResultContent(msg.content);
+			const block = { type: "tool_result", tool_use_id: sanitizeToolId(msg.toolCallId, sanitizedIds), content: msg.isError && resultContent === "" ? "[tool failed with no output]" : resultContent, is_error: msg.isError };
 			if (turnResults) {
 				turnResults.content.push(block);
 			} else {
