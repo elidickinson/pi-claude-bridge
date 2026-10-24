@@ -260,6 +260,24 @@ function setSessionStateFor(piSessionId: string | null | undefined, state: Sessi
 	else sharedSessions.set(sessionKey(piSessionId), state);
 }
 
+function recordQueryCompletion(
+	sessionId: string,
+	cursor: number,
+	cwd: string,
+	missedSteer = false,
+	piSessionId: string | null = null,
+): void {
+	const state = sessionStateFor(piSessionId);
+	setSessionStateFor(piSessionId, {
+		...state,
+		sessionId,
+		cursor,
+		cwd,
+		...(piSessionId === null ? {} : { piSessionId }),
+		needsRebuild: missedSteer || state?.needsRebuild,
+	});
+}
+
 // pi replaced one of its sessions' history (compact, tree) rather than appending
 // to it. Read on the tool-result path — the one provider call that never reaches
 // syncSharedSession — so a query parked at a tool boundary is discarded rather
@@ -752,13 +770,18 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 //
 // Log strings still say "Case 1/2/3/4" so existing diagnostics (int-cache.sh,
 // int-session-resume.mjs) keep grepping the same anchors.
-	function syncSharedSession(
+function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
-	piSessionId?: string | null,
+	piSessionId?: string | null | { reentrant?: boolean },
+	options?: { reentrant?: boolean },
 ): SyncResult {
+	if (typeof piSessionId === "object" && piSessionId !== null) {
+		options = piSessionId;
+		piSessionId = null;
+	}
 	// System messages are pi's transcript representation of prompt and tool state, not
 	// conversation history — they are never imported into a CC session, so exclude them from
 	// the history space (priorMessages, cursor, missed) everywhere below (issue #106).
@@ -769,6 +792,16 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	const sharedSession = sessionStateFor(piSessionId);
 	const history = nonSystemMessages(messages);
 	const priorMessages = history.slice(0, turnStart(history)); // everything before the current user turn
+	if (options?.reentrant) {
+		if (sharedSession) {
+			debug(`Case 1 synthetic: clean start, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
+			debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
+		} else {
+			debug("Case 1 synthetic: clean start without shared session");
+		}
+		// Completion deletes every reentrant session, even when no parent exists.
+		return { sessionId: null, preserveSharedSession: true };
+	}
 
 	// REUSE path
 	//
@@ -809,9 +842,7 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	// (/compact, session_tree, /new, fork) always set needsRebuild or clear
 	// sharedSession before the next syncSharedSession call.
 	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
-		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
-		debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
-		return { sessionId: null, preserveSharedSession: true };
+		debug(`Case 3→4: Pi history compressed ${sharedSession.cursor}→${priorMessages.length} msgs on a top-level turn, forcing rebuild`);
 	}
 
 	// REBUILD path
@@ -882,8 +913,12 @@ export const __test = {
 	get activeQueryContexts() {
 		return activeQueryContexts;
 	},
-	setSharedSession(piSessionId: string | null, state: SessionState | null) {
-		setSessionStateFor(piSessionId, state);
+	setSharedSession(
+		piSessionIdOrState: string | null | SessionState,
+		state?: SessionState | null,
+	) {
+		if (arguments.length === 1) setSessionStateFor(null, piSessionIdOrState as SessionState);
+		else setSessionStateFor(piSessionIdOrState as string | null, state ?? null);
 	},
 	getSharedSession(piSessionId: string | null = null) {
 		return sessionStateFor(piSessionId);
@@ -895,6 +930,10 @@ export const __test = {
 	isolatedStreamFn,
 	effortForReasoning,
 	syncSharedSession,
+	markRebuild(event: string) {
+		markRebuildForSession(null, event);
+	},
+	recordQueryCompletion,
 	extractUserPromptBlocks,
 	consumeQuery,
 	finalizeCurrentStream,
@@ -1977,7 +2016,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Read before the consume below: with no query parked (an overflow retried
 	// after compaction), the session's mark is the only sign of the rewrite.
 	const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId);
+	const syncResult = syncSharedSession(
+		context.messages,
+		cwd,
+		customToolNameToSdk,
+		cliModel,
+		piSessionId,
+		{ reentrant: isReentrant && ctx().piSessionId === piSessionId },
+	);
 	// This query starts from the history pi has now: consume this session's
 	// armed rewrite — a sibling pi session's stays armed for its own queries.
 	if (piSessionId) historyRewrittenBySession.delete(piSessionId);
@@ -2188,7 +2234,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
 					// A missed steer may precede the first mirror or arrive while this
 					// query is still able to complete. Preserve both rebuild signals.
-					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: queryCtx.missedSteer || state?.needsRebuild });
+					recordQueryCompletion(sessionId, cursor, cwd, queryCtx.missedSteer, queryCtx.piSessionId);
 				}
 			}
 
@@ -2293,14 +2339,28 @@ async function promptAndWait(
 	// carries it — passed here as piSessionId and used for every map access.
 	const askClaudeSessionId = options?.piSessionId ?? null;
 	let resumeSessionId: string | null = null;
+	let ephemeralSessionId: string | null = null;
 	if (!options?.isolated && options?.context?.length) {
 		const askClaudeState = sessionStateFor(askClaudeSessionId);
-		if (askClaudeState) {
-			// Provider already has a session — just resume from it
-			// Any missed messages from other providers were already handled by the provider's Case 4
+		if (askClaudeState && !askClaudeState.needsRebuild) {
+			// Provider already has a session — just resume from it.
+			// Any missed messages from other providers were already handled by the provider's Case 4.
 			resumeSessionId = askClaudeState.sessionId;
+		} else if (askClaudeState) {
+			// A pending provider rebuild belongs to its next provider turn, not this
+			// random-origin AskClaude context. Keep it untouched.
+			const session = createSession({
+				projectPath: cwd,
+				claudeDir: process.env.CLAUDE_CONFIG_DIR,
+				...(cliModel ? { model: cliModel } : {}),
+			});
+			convertAndImportMessages(session, options.context);
+			session.save();
+			verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
+			ephemeralSessionId = resumeSessionId = session.sessionId;
+			debug(`askClaude: created ephemeral session ${session.sessionId.slice(0, 8)} without a reusable shared session`);
 		} else {
-			// No provider session yet — create one from pi's context
+			// No provider session yet — create one from pi's context.
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
 			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel, askClaudeSessionId);
 			resumeSessionId = sync.sessionId;
@@ -2450,6 +2510,8 @@ async function promptAndWait(
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
 		sdkQuery.close();
+		// Ephemeral sessions exist only for this call.
+		if (ephemeralSessionId) deleteSession(ephemeralSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
 	}
 }
 
@@ -2605,8 +2667,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", (event, ctx) =>
 		sponsorMarkRebuildForSession(ctx.sessionManager.getSessionId(), `session_compact:${event.reason}:willRetry=${event.willRetry}`));
 	pi.on("session_tree", (_event, ctx) => sponsorMarkRebuildForSession(ctx.sessionManager.getSessionId(), "session_tree"));
+	pi.on("model_select", (event) => {
+		for (const piSessionId of sharedSessions.keys()) {
+			sponsorMarkRebuildForSession(piSessionId, `model_select:${event.previousModel?.id ?? "?"}->${event.model?.id ?? "?"}`);
+		}
+	});
 
-	// --- Provider ---
 	//
 	// Registration policy across module instances (a subagent session can load
 	// this module fresh): the FIRST instance registers unconditionally at load,
@@ -2620,9 +2686,7 @@ export default function (pi: ExtensionAPI) {
 	//   stream fn, and the parent's next tool-result delivery would route into it.
 	// - Registry lacks the provider (host gives the child its own, e.g. older
 	//   pi-subagents forks): register, or every claude-bridge/* dispatch in the
-	//   child fails with "Model not found" (#91). Even loading the bridge via the
-	//   agent's `extensions:` frontmatter didn't help there — the module loaded,
-	//   hit the old skip-guard, and the child's registry stayed empty.
+	//   child fails with "Model not found" (#91).
 	//
 	// A per-instance stream fn registered into a per-instance registry is
 	// self-consistent: that session's traffic flows through this module state,
