@@ -74,6 +74,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `forceTwoHundredK` — array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)
+- `engramOwnership` — when [gentle-engram](https://www.npmjs.com/package/gentle-engram) owns the pi session, keep Claude Code's own Engram out of provider turns (default `true`). See [Engram](#engram).
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
 
@@ -124,6 +125,12 @@ To add instructions, use `message`, `context`, or a system-message edit that kee
 ```
 
 Hooks do not fire on isolated summary queries.
+
+### Engram
+
+With both gentle-engram in pi and the `engram@engram` plugin in Claude Code, a bridge turn would get two Engram integrations: the plugin's hooks register the Claude Code session and capture prompts there, and its MCP tools save memories under it, alongside pi's own `mem_*` tools bound to the pi session.
+
+The bridge asks gentle-engram over its local ownership protocol (`engram:bridge:claim:v1`, `session-register`) in `before_agent_start`, once per pi session. When it answers `owned`, provider turns disable the `engram@engram` plugin through flag settings and disallow the `mcp__engram` and `mcp__plugin_engram_engram` tools, so memory lands in the pi session only. Any other answer, or no answer within 1.5s, leaves Claude Code unchanged. AskClaude sessions are not affected. Set `provider.engramOwnership` to `false` to turn this off.
 
 ### Compaction and branch summaries
 

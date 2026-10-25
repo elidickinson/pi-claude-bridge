@@ -25,6 +25,7 @@ import {
 } from "./prompt-capture.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
+import { createEngramOwnershipCache, ENGRAM_MCP_TOOL_PREFIXES, ENGRAM_PLUGIN_IDS } from "./engram-ownership.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
@@ -139,6 +140,8 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
+// Whether native Engram owns the Pi session; resolved in before_agent_start, only peeked on the provider path.
+let engramOwnership = createEngramOwnershipCache();
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
 
 function resolveModel(input: string) {
@@ -863,6 +866,14 @@ let queryImpl: typeof query = query;
 
 // @internal
 export const __test = {
+	// Replace the ownership memo (e.g. with a short claim timeout).
+	configureEngramOwnership(opts: { timeoutMs?: number } = {}) {
+		engramOwnership = createEngramOwnershipCache(opts);
+	},
+	setProviderSettings(settings: NonNullable<Config["provider"]>) {
+		providerSettings = settings;
+	},
+	streamClaudeAgentSdk,
 	setQuery(fn: typeof query | null) {
 		queryImpl = fn ?? query;
 	},
@@ -2085,11 +2096,20 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		...makeCliDebugOptions("provider"),
 	};
 
+	// Native Engram owns memory for this Pi session: keep Claude Code's own Engram out.
+	// Peek only (never await): the claim is resolved in before_agent_start.
+	const ownership = providerSettings.engramOwnership === false ? undefined : engramOwnership.peek(piSessionId ?? undefined);
+	if (ownership === "owned") {
+		queryOptions.settings = { ...(queryOptions.settings as object), enabledPlugins: Object.fromEntries(ENGRAM_PLUGIN_IDS.map((id) => [id, false])) };
+		queryOptions.disallowedTools = [...ENGRAM_MCP_TOOL_PREFIXES];
+	}
+
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
 		`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
-		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
+		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`,
+		`engramOwnership=${ownership ?? "not-asked"}`);
 
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
@@ -2507,6 +2527,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 	pi.on("session_start", (event, ctx) => {
+		engramOwnership.reset();
 		piUI = ctx.ui;
 		piMode = ctx.mode;
 		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
@@ -2547,9 +2568,17 @@ export default function (pi: ExtensionAPI) {
 			sections: options?.sections,
 		}, source);
 	}
-	pi.on("before_agent_start", (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		lastSystemPromptOptions = event.systemPromptOptions;
 		recordSystemPrompt("before_agent_start", event.systemPrompt, event.systemPromptOptions);
+		// Pi awaits these handlers in order after session_start, so gentle-engram's
+		// responder is subscribed. Cached per session; the provider only peeks.
+		if (providerSettings.engramOwnership === false || !pi.events || ctx.model?.provider !== PROVIDER_ID) return;
+		try {
+			await engramOwnership.get(pi.events, ctx.sessionManager.getSessionId());
+		} catch (error) {
+			debug("engram ownership claim failed:", error);
+		}
 	});
 	// The prompt the provider actually queries with is the fully-widened one: MCP tool
 	// descriptions merge into the system prompt only after their servers connect, which
@@ -2580,6 +2609,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", (_event, ctx) => {
 		forgetSessionCwd(ctx.sessionManager.getSessionId());
 		reportLeaks("session_shutdown");
+		engramOwnership.reset();
 		clearSession("session_shutdown");
 	});
 

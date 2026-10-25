@@ -37,6 +37,8 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Consult gentle-engram's bridge ownership protocol and, when native Engram owns the Pi session, disable Claude Code's engram plugin and its MCP tools in provider turns (default true)
+		engramOwnership?: boolean;
 	};
 }
 
