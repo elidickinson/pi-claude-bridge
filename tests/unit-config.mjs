@@ -32,6 +32,13 @@ describe("claudeCodeSettings", () => {
 	it("allows auto-memory to be enabled", () => {
 		assert.deepEqual(claudeCodeSettings({ autoMemoryEnabled: true }), { autoMemoryEnabled: true });
 	});
+
+	it("passes claudeCodeSettings through, with autoMemoryEnabled taking precedence", () => {
+		assert.deepEqual(
+			claudeCodeSettings({ claudeCodeSettings: { disableAllHooks: true, autoMemoryEnabled: true } }),
+			{ disableAllHooks: true, autoMemoryEnabled: false },
+		);
+	});
 });
 
 describe("loadConfig", () => {

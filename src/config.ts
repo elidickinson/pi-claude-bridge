@@ -37,6 +37,9 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Claude Code settings for the provider and AskClaude queries, passed as flag settings, which outrank
+		// user, project and local settings. Keys the bridge sets itself win.
+		claudeCodeSettings?: Record<string, unknown>;
 	};
 }
 
@@ -50,8 +53,8 @@ export function tryParseJson(path: string): Partial<Config> {
 	}
 }
 
-export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMemoryEnabled: boolean } {
-	return { autoMemoryEnabled: provider.autoMemoryEnabled ?? false };
+export function claudeCodeSettings(provider: Config["provider"] = {}): Record<string, unknown> & { autoMemoryEnabled: boolean } {
+	return { ...provider.claudeCodeSettings, autoMemoryEnabled: provider.autoMemoryEnabled ?? false };
 }
 
 export function globalConfigPath(): string {
