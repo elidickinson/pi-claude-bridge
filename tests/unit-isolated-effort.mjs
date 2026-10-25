@@ -74,3 +74,36 @@ describe("isolated path effort", () => {
 		assert.ok(!("effort" in options));
 	});
 });
+
+// Haiku 4.5 style: reasoning model whose thinking can be turned off.
+const haiku = { ...unmapped, id: "claude-haiku-4-5", name: "Claude Haiku 4.5", thinkingLevelMap: undefined };
+
+describe("thinkingForReasoning", () => {
+	it("disables thinking when pi sends no reasoning level (thinking off)", () => {
+		assert.deepStrictEqual(__test.thinkingForReasoning(haiku, undefined), { type: "disabled" });
+	});
+
+	it("sends nothing when a reasoning level is set", () => {
+		assert.strictEqual(__test.thinkingForReasoning(haiku, "high"), undefined);
+	});
+
+	it("sends nothing when the model can't turn thinking off", () => {
+		assert.strictEqual(__test.thinkingForReasoning(fable, undefined), undefined);
+	});
+
+	it("sends nothing for models without reasoning", () => {
+		assert.strictEqual(__test.thinkingForReasoning({ ...haiku, reasoning: false }, undefined), undefined);
+	});
+});
+
+describe("isolated path thinking", () => {
+	it("disables thinking when thinking is off", async () => {
+		const options = await runIsolated(haiku, {});
+		assert.deepStrictEqual(options.thinking, { type: "disabled" });
+	});
+
+	it("leaves thinking alone with a reasoning level", async () => {
+		const options = await runIsolated(haiku, { reasoning: "high" });
+		assert.ok(!("thinking" in options));
+	});
+});

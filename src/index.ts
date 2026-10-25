@@ -1,7 +1,7 @@
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { query, type EffortLevel, type SDKMessage, type SettingSource, type ThinkingConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
@@ -590,7 +590,8 @@ async function runIsolatedSummary(
 		const cliModel = claudeCodeModelId(model, longContextSettings);
 		// Honour the caller's reasoning level, same mapping as the provider path.
 		const effort = effortForReasoning(model, options?.reasoning);
-		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} effort=${effort ?? "default"} promptLen=${promptText.length}`);
+		const thinking = thinkingForReasoning(model, options?.reasoning);
+		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} effort=${effort ?? "default"}${thinking ? " thinking=disabled" : ""} promptLen=${promptText.length}`);
 
 		sdkQuery = queryImpl({
 			prompt: promptText,
@@ -607,6 +608,7 @@ async function runIsolatedSummary(
 				model: cliModel,
 				maxTurns: 1,
 				...(effort ? { effort } : {}),
+				...(thinking ? { thinking } : {}),
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 				...makeCliDebugOptions("compact-summary"),
 			},
@@ -894,6 +896,7 @@ export const __test = {
 	toBridgeContext,
 	isolatedStreamFn,
 	effortForReasoning,
+	thinkingForReasoning,
 	syncSharedSession,
 	extractUserPromptBlocks,
 	consumeQuery,
@@ -1140,6 +1143,15 @@ function effortForReasoning(model: Model<any>, reasoning: string | undefined): E
 	const mapped = model.thinkingLevelMap?.[reasoning];
 	if (mapped === undefined) return REASONING_TO_EFFORT[reasoning];
 	return VALID_EFFORTS.has(mapped as EffortLevel) ? mapped as EffortLevel : undefined;
+}
+
+// Pi sends no reasoning level when thinking is off, and Claude Code then applies
+// its own default (thinking on). Disable thinking the way pi-ai's Anthropic
+// provider does: for reasoning models, unless the model's thinkingLevelMap marks
+// "off" unsupported (null), as on models that always think.
+function thinkingForReasoning(model: Model<any>, reasoning: string | undefined): ThinkingConfig | undefined {
+	if (reasoning || !model.reasoning || model.thinkingLevelMap?.off === null) return undefined;
+	return { type: "disabled" };
 }
 
 // --- Provider helpers: misc ---
@@ -2035,6 +2047,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
 	const effort = effortForReasoning(model, options?.reasoning);
+	const thinking = thinkingForReasoning(model, options?.reasoning);
 
 	const extraArgs: Record<string, string | null> = { model: cliModel, "replay-user-messages": null };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
@@ -2079,6 +2092,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		},
 		extraArgs,
 		...(effort ? { effort } : {}),
+		...(thinking ? { thinking } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
