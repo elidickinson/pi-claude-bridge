@@ -63,6 +63,8 @@ export function claimEngramSession(
 
 export interface EngramOwnershipCache {
 	get(events: EventBus | undefined, runtimeSessionId: string | undefined): Promise<EngramOwnership>;
+	/** Settled cached answer ("owned" | "no-reply") or undefined; never in-flight. */
+	peek(runtimeSessionId: string | undefined): EngramOwnership | undefined;
 	reset(): void;
 }
 
@@ -97,6 +99,9 @@ export function createEngramOwnershipCache(opts: { timeoutMs?: number } = {}): E
 			});
 			inFlight.set(runtimeSessionId, p);
 			return p;
+		},
+		peek(runtimeSessionId) {
+			return typeof runtimeSessionId === "string" ? settled.get(runtimeSessionId) : undefined;
 		},
 		reset() {
 			generation++;

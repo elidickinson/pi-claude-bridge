@@ -187,6 +187,37 @@ describe("createEngramOwnershipCache", () => {
 	});
 });
 
+describe("createEngramOwnershipCache peek", () => {
+	it("is undefined before, the settled value after, undefined for unknown ids, and cleared by reset", async () => {
+		const bus = fakeBus(reply("owned"));
+		const cache = createEngramOwnershipCache();
+		assert.equal(cache.peek("s1"), undefined);
+		await cache.get(bus, "s1");
+		assert.equal(cache.peek("s1"), "owned");
+		assert.equal(cache.peek("other"), undefined);
+		assert.equal(cache.peek(undefined), undefined);
+		cache.reset();
+		assert.equal(cache.peek("s1"), undefined);
+	});
+
+	it("never exposes an in-flight claim", async () => {
+		const bus = fakeBus((req, b) => setTimeout(() => reply("owned")(req, b), 20));
+		const cache = createEngramOwnershipCache();
+		const p = cache.get(bus, "s1");
+		assert.equal(cache.peek("s1"), undefined);
+		await p;
+		assert.equal(cache.peek("s1"), "owned");
+	});
+
+	it("caches no-reply but not unknown", async () => {
+		const cache = createEngramOwnershipCache({ timeoutMs: 20 });
+		await cache.get(fakeBus(), "s1");
+		assert.equal(cache.peek("s1"), "no-reply");
+		await cache.get(fakeBus(reply("unknown")), "s2");
+		assert.equal(cache.peek("s2"), undefined);
+	});
+});
+
 describe("Engram identifiers", () => {
 	it("exports the plugin id and MCP tool prefixes", () => {
 		assert.deepEqual(ENGRAM_PLUGIN_IDS, ["engram@engram"]);
