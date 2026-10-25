@@ -11,8 +11,8 @@
 // as soon as the message they care about arrives. Run the whole file on every
 // @anthropic-ai/claude-agent-sdk or Claude Code bump.
 //
-// Verified against: SDK 0.3.293 / Claude Code 2.1.293. package.json declares
-// ^0.3.293 and package-lock.json resolves 0.3.293.
+// Verified against: SDK 0.3.308 / Claude Code 2.1.308. package.json declares
+// ^0.3.308 and package-lock.json resolves 0.3.308.
 //
 // Assumptions that are NOT covered here, and why:
 //   - DISABLE_AUTO_COMPACT=1 stops CC-side autocompaction. Provoking it needs a
@@ -455,7 +455,7 @@ test("CC writes each tool result of a parallel turn as its own transcript record
 	const jsonlPath = openSession({ sessionId: init.session_id, projectPath: CWD, claudeDir: process.env.CLAUDE_CONFIG_DIR }).jsonlPath;
 	const records = readFileSync(jsonlPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 	const perRecord = records
-		.map((record) => (Array.isArray(record.message?.content) ? record.message.content.filter((b) => b.type === "tool_result").length : 0))
+		.map((record) => (record.type === "user" && Array.isArray(record.message?.content) ? record.message.content.filter((b) => b.type === "tool_result").length : 0))
 		.filter((count) => count > 0);
 
 	assert.deepEqual(perRecord, [1, 1],
@@ -632,7 +632,7 @@ test("includeGitInstructions:false strips gitStatus and keeps the preset static 
 		// Filter to our own requests by a preset anchor: if CC ever adds
 		// background side requests, slicing the last two off the raw log could
 		// compare those and pass for the wrong reason.
-		const presetReqs = () => requests.filter((b) => sysText(b).includes("You are an interactive agent"));
+		const presetReqs = () => requests.filter((b) => sysText(b).includes("You are a Claude agent, built on Anthropic's Claude Agent SDK"));
 
 		// Control: default preset carries the git snapshot, and a git transition
 		// moves it — the very break this test's positive side pins away. Grep the

@@ -21,14 +21,11 @@
 //   P5  reuse    control after rebuilds
 //
 // For each prompt's first request it reports the bridge's sync path, cacheRead
-// against what the previous request left cached (cacheRead + cacheWrite, the
-// corrected expectation in diag/AUDIT.md), and the first element of the previous
-// request's prompt that the new request changed, down to the field. Three things
-// are excluded from the comparison because they differ between requests without
-// affecting the cache: system[0], CC's per-request billing header; cache_control,
-// whose breakpoint moves to the newest message each request; and whether a
-// message's content is a string or a single text block, since CC switches a
-// message to the block form to hold that breakpoint.
+// against what the previous request left cached (cacheRead + cacheWrite), and all
+// aligned differences in both raw and normalized views. Only the known billing
+// header, moving cache_control fields, and a one-text-block/string representation
+// are normalized; nested tool-result shapes and object key order remain candidates.
+// Each run saves raw request pairs with the full captured bodies in request-pairs.json.
 //
 // The run is rejected, rather than reported, if any prompt cannot be located in
 // the capture or any sync path differs from the plan: a forced rebuild that
@@ -41,8 +38,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { compareRequestBodies, requestElements } from "./lib/request-diff.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
+const SDK_META = JSON.parse(readFileSync(join(REPO, "node_modules/@anthropic-ai/claude-agent-sdk/package.json"), "utf8"));
 
 const args = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -53,8 +52,6 @@ const MODEL = flag("model", "claude-bridge/claude-haiku-4-5");
 const THINKING = flag("thinking", "low");
 const RUNS = Number(flag("runs", 1));
 const OUT = flag("out") ?? mkdtempSync(join(tmpdir(), "rebuild-fidelity-"));
-
-const BILLING_HEADER = "x-anthropic-billing-header";
 
 // Each prompt opens with its tag, which is how its first request is found in the
 // capture. Every prompt runs a tool so the history holds tool_use/tool_result
@@ -142,83 +139,10 @@ function turnOf(messages, index) {
 	return "?";
 }
 
-function withoutCacheControl(value) {
-	if (Array.isArray(value)) return value.map(withoutCacheControl);
-	if (value && typeof value === "object") {
-		return Object.fromEntries(Object.entries(value).filter(([k]) => k !== "cache_control").map(([k, v]) => [k, withoutCacheControl(v)]));
-	}
-	return value;
-}
-
-const kinds = (message) => typeof message.content === "string" ? "text" : message.content.map((b) => b.type).join("+");
-
-/** A message whose content is one plain text block, with that content as a string.
- *  The API caches both forms alike: a reuse control read back in full after CC sent
- *  the same system message as a block, then as a string. Applied after
- *  withoutCacheControl, so a block holding the breakpoint counts as plain. */
-function contentAsString(message) {
-	const c = message.content;
-	const plain = Array.isArray(c) && c.length === 1 && c[0].type === "text" && Object.keys(c[0]).length === 2;
-	return plain ? { ...message, content: c[0].text } : message;
-}
-
-/** The prompt prefix in wire order (tools, system, messages), minus the billing header. */
-function elements(body) {
-	const system = Array.isArray(body.system) ? body.system : body.system ? [{ type: "text", text: body.system }] : [];
-	return [
-		{ label: "tools", value: withoutCacheControl(body.tools ?? []) },
-		...system.flatMap((block, i) => String(block.text ?? "").startsWith(BILLING_HEADER) ? []
-			: [{ label: `system[${i}]`, value: withoutCacheControl(block) }]),
-		...body.messages.map((message, i) => {
-			const value = contentAsString(withoutCacheControl(message));
-			return { label: `messages[${i}] ${value.role}/${kinds(value)}`, index: i, value };
-		}),
-	];
-}
-
-/** First structural difference, key order included: it changes the serialized bytes. */
-function firstDiff(a, b, path = "") {
-	if (typeof a !== typeof b || Array.isArray(a) !== Array.isArray(b) || (a === null) !== (b === null)) return { path, a, b };
-	if (Array.isArray(a)) {
-		for (let i = 0; i < Math.min(a.length, b.length); i++) {
-			const d = firstDiff(a[i], b[i], `${path}[${i}]`);
-			if (d) return d;
-		}
-		return a.length === b.length ? null : { path: `${path}.length`, a: a.length, b: b.length };
-	}
-	if (a && typeof a === "object") {
-		const ka = Object.keys(a);
-		const kb = Object.keys(b);
-		for (const k of ka) if (!(k in b)) return { path: `${path}.${k}`, a: a[k], b: "<absent>" };
-		for (const k of kb) if (!(k in a)) return { path: `${path}.${k}`, a: "<absent>", b: b[k] };
-		for (const k of ka) {
-			const d = firstDiff(a[k], b[k], `${path}.${k}`);
-			if (d) return d;
-		}
-		return ka.join() === kb.join() ? null : { path, keyOrder: true, a: ka, b: kb };
-	}
-	return a === b ? null : { path, a, b };
-}
-
-function describeDiff(d) {
-	if (d.keyOrder) return `${d.path} key order only: [${d.a}] -> [${d.b}]`;
-	if (typeof d.a === "string" && typeof d.b === "string") {
-		let i = 0;
-		while (i < d.a.length && i < d.b.length && d.a[i] === d.b[i]) i++;
-		const around = (s) => JSON.stringify(s.slice(Math.max(0, i - 60), i + 60));
-		return `${d.path} differs at char ${i} (length ${d.a.length} -> ${d.b.length})\n            before: ${around(d.a)}\n            after:  ${around(d.b)}`;
-	}
-	const show = (v) => {
-		const s = JSON.stringify(v);
-		return s.length > 240 ? `${s.slice(0, 240)}...(${s.length}b)` : s;
-	};
-	return `${d.path}\n            before: ${show(d.a)}\n            after:  ${show(d.b)}`;
-}
-
 /** How the step from `prev` to `curr` treated the prefix `prev` cached. */
 function boundary(prev, curr) {
-	const before = elements(prev.body);
-	const after = elements(curr.body);
+	const comparison = compareRequestBodies(prev.body, curr.body, { prefixBody: prev.body });
+	const before = requestElements(prev.body, true);
 	const expected = prev.usage ? prev.usage.cacheRead + prev.usage.cacheWrite : null;
 	const result = {
 		from: prev.n,
@@ -229,20 +153,18 @@ function boundary(prev, curr) {
 		shortfall: expected !== null && curr.usage ? expected - curr.usage.cacheRead : null,
 		sharedElements: before.length,
 		divergence: null,
+		rawDifferences: comparison.raw.aligned,
+		normalizedDifferences: comparison.normalized.aligned,
 	};
-	if (after.length < before.length) {
-		result.divergence = { label: `prompt shrank ${before.length} -> ${after.length} elements` };
-		return result;
-	}
-	for (let k = 0; k < before.length; k++) {
-		const d = firstDiff(before[k].value, after[k].value);
-		if (!d) continue;
+	const d = comparison.normalized.aligned[0];
+	if (d) {
+		const messageIndex = d.path?.match(/^messages\[(\d+)\]/)?.[1] ?? d.label.match(/^messages\[(\d+)\]/)?.[1];
 		result.divergence = {
-			label: before[k].label === after[k].label ? before[k].label : `${before[k].label} -> ${after[k].label}`,
-			turn: before[k].index === undefined ? null : turnOf(prev.body.messages, before[k].index),
-			detail: describeDiff({ ...d, path: `${before[k].label.split(" ")[0]}${d.path}` }),
+			label: d.label,
+			turn: messageIndex === undefined ? null : turnOf(prev.body.messages, Number(messageIndex)),
+			detail: d.kind === "element-label" ? d.label
+				: `${d.kind}${d.path ? ` at ${d.path}` : ""}: ${JSON.stringify(d.before)} -> ${JSON.stringify(d.after)}`,
 		};
-		break;
 	}
 	return result;
 }
@@ -326,8 +248,16 @@ async function run(runIndex, extensionPath) {
 	}));
 	const promptStarts = new Set(firstIndex);
 	const inTurn = requests.slice(1).map((r, k) => ({ at: k + 1, b: boundary(requests[k], r) })).filter(({ at }) => !promptStarts.has(at)).map(({ b }) => b);
+	const requestPairs = requests.slice(1).map((to, index) => ({
+		from: requests[index],
+		to,
+		comparison: compareRequestBodies(requests[index].body, to.body),
+	}));
+	const requestPairsFile = join(runDir, "request-pairs.json");
+	writeFileSync(requestPairsFile, JSON.stringify(requestPairs, null, 1));
 	return {
 		runDir,
+		requestPairsFile,
 		requests: requests.length,
 		failedRequests: failed,
 		prompts,
@@ -350,15 +280,17 @@ function print(result, runIndex) {
 			: p.divergence ? `diverges at ${p.divergence.label}${p.divergence.turn ? ` (in ${p.divergence.turn}'s turn)` : ""}`
 			: `identical for all ${p.sharedElements} elements`;
 		console.log(`  ${p.tag.padEnd(7)} ${p.path.padEnd(18)} ${String(p.cacheRead ?? "?").padStart(9)} ${String(p.expected ?? "-").padStart(9)} ${String(p.shortfall ?? "-").padStart(9)}  ${prefix}`);
-		if (p.divergence?.detail) console.log(`          ${p.divergence.detail}`);
-		if (p.divergence === null && (p.shortfall ?? 0) > 200) console.log("          >>> identical prefix but cache fell short: not our bytes");
+		if (p.rawDifferences) {
+			console.log(`          aligned differences: raw ${p.rawDifferences.length}, normalized ${p.normalizedDifferences.length}`);
+			for (const d of p.normalizedDifferences) console.log(`            ${d.kind} ${d.path ?? d.afterPath ?? d.label ?? ""}`);
+		}
 	}
 }
 
 mkdirSync(OUT, { recursive: true });
 const extensionPath = join(OUT, "force-rebuild.ts");
 writeFileSync(extensionPath, FORCE_EXTENSION);
-console.log(`model ${MODEL}, thinking ${THINKING}, ${RUNS} run(s), output ${OUT}`);
+console.log(`model ${MODEL}, thinking ${THINKING}, SDK ${SDK_META.version}, bundled CC ${SDK_META.claudeCodeVersion}, ${RUNS} run(s), output ${OUT}`);
 
 const results = [];
 for (let i = 1; i <= RUNS; i++) {
@@ -366,7 +298,7 @@ for (let i = 1; i <= RUNS; i++) {
 	print(result, i);
 	results.push(result);
 }
-writeFileSync(join(OUT, "report.json"), JSON.stringify({ model: MODEL, thinking: THINKING, results }, null, 1));
+writeFileSync(join(OUT, "report.json"), JSON.stringify({ model: MODEL, thinking: THINKING, versions: { sdk: SDK_META.version, bundledClaudeCode: SDK_META.claudeCodeVersion }, results }, null, 1));
 
 console.log("\nsummary");
 for (const step of PLAN.slice(1)) {

@@ -20,6 +20,22 @@ node --import tsx diag/replay-write-path.mjs <pi-session.jsonl>
 
 Defaults are `~/.claude/projects` and the bridge log in pi's agent dir (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`).
 
+For live request/cache experiments, run `node diag/probe-rebuild-fidelity.mjs` and
+`node diag/probe-cache-mutations.mjs` (Haiku by default for the latter). The first
+writes every adjacent raw request pair plus all raw and known-normalized aligned
+differences under its output directory. The second starts a dedicated native
+session under a unique temporary project, snapshots it, and tests each mutation
+against an unchanged REUSE continuation before restoring the snapshot; it deletes
+only that generated session afterward. Both capture directories contain sensitive
+conversation data. The mutation probe pins SDK settings to `user` and `project`,
+restores one native snapshot between arms, and gives each case a unique continuation
+marker. Its report separates target-only attribution from measured cache-read loss:
+loss is capped at the seed's actually cached prefix, any positive loss is retained,
+and incomplete controls or unrelated request changes are inconclusive/confounded.
+Raw pairs remain artifacts; normalized diff output aligns sequence edits and keeps
+original wire indices. Reports include observed seed prefix token totals and exact
+matches only, not inferred per-element token positions.
+
 **`--since` is what makes these gates rather than reports.** Everything found is
 always printed, but the exit code counts only records and log lines inside the
 window. Most of what is on disk is damage from bugs already fixed, and correctness
