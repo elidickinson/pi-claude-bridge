@@ -5,7 +5,7 @@ import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@a
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
@@ -188,6 +188,11 @@ interface SessionState {
 	sessionId: string;
 	cursor: number;
 	cwd: string;
+	/** Fingerprint of the first `cursor` non-system messages at the last sync
+	 *  or tool-result delivery. A context transform (ACP, compaction) can rewrite
+	 *  the history without changing its length; comparing this catches the
+	 *  rewrite before resuming a Claude Code session built from the old shape. */
+	historyDigest?: string;
 	// The pi session this CC conversation serves, from the provider call's
 	// options.sessionId. Attribution for history rewrites: a subagent's
 	// session_compact must not force a rebuild of a conversation that belongs
@@ -415,6 +420,21 @@ function turnStart(messages: Context["messages"]): number {
 	let i = messages.length;
 	while (i > 0 && messages[i - 1].role === "user") i--;
 	return i;
+}
+
+/** Stable fingerprint of conversation history, ignoring timestamps and model
+ *  metadata. A context-transform extension may replace the same number of
+ *  messages with summaries; the count stays put while the content changes. */
+function historyFingerprint(messages: Context["messages"]): string {
+	const hash = createHash("sha256");
+	for (const message of messages) {
+		const record = message.role === "toolResult"
+			? { role: message.role, toolCallId: message.toolCallId, toolName: message.toolName, isError: message.isError, content: message.content }
+			: { role: message.role, content: message.content };
+		hash.update(JSON.stringify(record));
+		hash.update("\n");
+	}
+	return hash.digest("hex");
 }
 
 /** Extract the current user turn as a prompt string. Returns null if the last message is not a user message. */
@@ -781,26 +801,34 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 		const missed = priorMessages.slice(sharedSession.cursor);
 		const trailingAssistantOnly =
 			missed.length === 1 && (missed[0] as { role?: string }).role === "assistant";
-		if (missed.length === 0 || trailingAssistantOnly) {
-		if (trailingAssistantOnly) {
-			setSessionStateFor(piSessionId, { ...sharedSession, cursor: priorMessages.length, cwd });
-			debug(`Case 3: advanced cursor past trailing assistant, resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${priorMessages.length}`);
-		} else {
-			debug(`Case 3: resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
-		}
+		// A context transform can rewrite the imported prefix without changing its
+		// length. Counting messages alone would then resume a CC session built from
+		// history that no longer exists. Compare the prefix content instead.
+		const prefixDigest = historyFingerprint(history.slice(0, sharedSession.cursor));
+		const prefixMatches = sharedSession.historyDigest === undefined || prefixDigest === sharedSession.historyDigest;
+		if (prefixMatches && (missed.length === 0 || trailingAssistantOnly)) {
+			if (trailingAssistantOnly) {
+				setSessionStateFor(piSessionId, { ...sharedSession, cursor: priorMessages.length, cwd, historyDigest: historyFingerprint(priorMessages) });
+				debug(`Case 3: advanced cursor past trailing assistant, resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${priorMessages.length}`);
+			} else {
+				// Older in-memory mirrors predate the digest; seed it on first reuse.
+				if (sharedSession.historyDigest === undefined) {
+					setSessionStateFor(piSessionId, { ...sharedSession, cwd, historyDigest: prefixDigest });
+				}
+				debug(`Case 3: resuming session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
+			}
 		debug(`syncResult: path=reuse sessionId=${sharedSession.sessionId} cursor=${sharedSession?.cursor}`);
 		return { sessionId: sharedSession.sessionId };
 		}
+		if (!prefixMatches) {
+			debug(`Case 4: context transform rewrote the imported prefix, rebuilding session ${sharedSession.sessionId.slice(0, 8)} from ${priorMessages.length} priors`);
+		}
 	}
-	// This is what keeps a caller with a pruned or short context from resuming
-	// — then overwriting — the bucket's session: shorter-than-cursor means the
-	// incoming history cannot be a continuation, so start clean and preserve.
-	// Historically this also caught reentrant subagents (a subagent's priors are
-	// shorter than the parent's cursor); with per-session mirrors it now catches
-	// the pruned-context shapes on a session's own bucket, and the non-isolated
-	// AskClaude path on the "(none)" bucket. The captured ephemeral session is
-	// deleted once its query completes (see preserveSharedSession in the
-	// completion handler).
+	// A shorter-than-cursor context cannot be a continuation of the cached
+	// session. For an unattributed caller this is the non-isolated AskClaude
+	// path on the "(none)" bucket: start clean and preserve that bucket's
+	// session. For an attributed pi session it is a rewritten context, and the
+	// mirror must be rebuilt from the new history rather than resumed.
 	//
 	// It is NOT, despite an earlier comment here, the isolated compact-summary
 	// path: runIsolatedSummary never calls syncSharedSession at all.
@@ -809,13 +837,24 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	// (/compact, session_tree, /new, fork) always set needsRebuild or clear
 	// sharedSession before the next syncSharedSession call.
 	if (sharedSession && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor) {
-		debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
-		debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
-		return { sessionId: null, preserveSharedSession: true };
+		// Unattributed calls share the "(none)" bucket: preserve the bucket's
+		// session rather than overwriting it with an unrelated short context.
+		// Attributed sessions are safe to rebuild: the key owns its mirror, and
+		// the short context is the rewritten history this turn must import.
+		if (piSessionId == null) {
+			debug(`Case 1 synthetic: clean start for shorter context, preserving shared session ${sharedSession.sessionId.slice(0, 8)}, cursor=${sharedSession.cursor}`);
+			debug(`syncResult: path=clean-start preserve-shared sessionId=${sharedSession.sessionId} cursor=${sharedSession.cursor}`);
+			return { sessionId: null, preserveSharedSession: true };
+		}
+		debug(`Case 4: shorter context for pi session ${piSessionId.slice(0, 8)}, rebuilding instead of resuming cursor=${sharedSession.cursor}`);
 	}
 
 	// REBUILD path
 	if (priorMessages.length === 0) {
+		// A clean start from an attributed session means the old mirror no longer
+		// matches the rewrite. Drop it so a tool result cannot compare against the
+		// stale digest and discard the healthy replacement query.
+		if (piSessionId != null) setSessionStateFor(piSessionId, null);
 		debug(`Case 1: clean start, ${history.length} total messages`);
 		debug(`syncResult: path=clean-start`);
 		return { sessionId: null };
@@ -844,7 +883,7 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	// records, not messages: `messages` filters out the attachment records that
 	// carrying an `@file` expansion across a rebuild writes into the same file.
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
-	setSessionStateFor(piSessionId, { sessionId: session.sessionId, cursor: priorMessages.length, cwd, piSessionId: piSessionId ?? undefined });
+	setSessionStateFor(piSessionId, { sessionId: session.sessionId, cursor: priorMessages.length, cwd, piSessionId: piSessionId ?? undefined, historyDigest: historyFingerprint(priorMessages) });
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.records.length} records`);
 	} else if (preserveId) {
@@ -895,6 +934,7 @@ export const __test = {
 	isolatedStreamFn,
 	effortForReasoning,
 	syncSharedSession,
+	historyFingerprint,
 	extractUserPromptBlocks,
 	consumeQuery,
 	finalizeCurrentStream,
@@ -1810,6 +1850,27 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const allResults = activeQueryContexts.size > 0 ? extractAllToolResults(context) : [];
 	let resultCtx = allResults.length > 0 ? contextForToolResults(allResults) : undefined;
 
+	// A context transform (ACP compaction/rewrite) can replace history while this
+	// query is parked. The query was opened over the snapshot stored at its start;
+	// compare that same prefix of the incoming conversation against it. Everything
+	// after the prefix was appended while the query ran: its own tool calls and
+	// results from every earlier round, and steers added while it was parked.
+	//
+	// The query still keeps the turn. Discarding it would resume a rebuilt session
+	// that ends in this tool result, and Claude Code answers such a resume with a
+	// synthetic "No response requested." turn. The mirror rebuilds from the
+	// rewritten history at the next fresh query instead, which ends at a reply.
+	if (resultCtx && !resultCtx.rebuildAfterTurn) {
+		const incoming = nonSystemMessages(context.messages);
+		const snapshotDigest = incoming.length >= resultCtx.historyLength
+			? historyFingerprint(incoming.slice(0, resultCtx.historyLength))
+			: null;
+		if (snapshotDigest !== resultCtx.historyDigest) {
+			resultCtx.rebuildAfterTurn = true;
+			debug(`provider: context transform rewrote history under parked query (msgs=${context.messages.length}, snapshot=${resultCtx.historyLength}), rebuilding after this turn`);
+		}
+	}
+
 	// pi rewrote its history while this query sat parked at a tool boundary, so the
 	// query answers about a conversation that no longer exists. Discard it and let
 	// this tool result carry the turn into a fresh query over the rewritten history.
@@ -1854,8 +1915,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// delivering its own results would drag it to that subagent's message count
 		// — observed pulling a parent from 5 back to 3, which cost the parent's next
 		// turn a full rebuild and a flushed prompt cache.
+		const deliveredDigest = historyFingerprint(context.messages);
 		const state = sessionStateFor(resultCtx.piSessionId);
-		if (state) state.cursor = context.messages.length;
+		if (state) {
+			state.cursor = context.messages.length;
+			state.historyDigest = deliveredDigest;
+			if (resultCtx.rebuildAfterTurn) state.needsRebuild = true;
+		}
+		resultCtx.deliveredDigest = deliveredDigest;
 		resultCtx.latestCursor = Math.max(resultCtx.latestCursor, context.messages.length);
 		return stream;
 	}
@@ -1880,7 +1947,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// count the result (options.sessionId is that session — pi emits the
 		// result event through the same session's streamSimple call).
 		const orphanState = sessionStateFor(options?.sessionId ?? null);
-		if (orphanState && activeQueryContexts.size === 0) orphanState.cursor = context.messages.length;
+		if (orphanState && activeQueryContexts.size === 0) {
+			orphanState.cursor = context.messages.length;
+			orphanState.historyDigest = historyFingerprint(context.messages);
+		}
 		// No query owns this result, so there is no context to reset: resetTurnState
 		// on the top-level ctx() would replace a live parent's turnOutput mid-stream,
 		// stranding the blocks it had already emitted. A throwaway context just
@@ -1966,6 +2036,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// from the set, not from here) and re-discard a healthy query.
 	queryCtx.historyStale = false;
 	queryCtx.missedSteer = false;
+	queryCtx.rebuildAfterTurn = false;
+	queryCtx.deliveredDigest = null;
 
 	const cwd = sessionCwdFor(options?.sessionId);
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
@@ -1982,6 +2054,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// armed rewrite — a sibling pi session's stays armed for its own queries.
 	if (piSessionId) historyRewrittenBySession.delete(piSessionId);
 	const { sessionId: resumeSessionId } = syncResult;
+	// The full context this provider call serves (including the current prompt),
+	// for detecting a later transform rewrite before a parked tool result.
+	queryCtx.historyDigest = historyFingerprint(context.messages);
+	queryCtx.historyLength = context.messages.length;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
 
@@ -2186,9 +2262,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				if (sessionId) {
 					const cursor = Math.max(context.messages.length, queryCtx.latestCursor, state?.cursor ?? 0);
 					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
-					// A missed steer may precede the first mirror or arrive while this
-					// query is still able to complete. Preserve both rebuild signals.
-					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: queryCtx.missedSteer || state?.needsRebuild });
+					// A missed steer or a transform rewrite may precede the first mirror
+					// or arrive while this query is still able to complete. Preserve
+					// every rebuild signal.
+					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, historyDigest: queryCtx.deliveredDigest ?? historyFingerprint(context.messages), needsRebuild: queryCtx.missedSteer || queryCtx.rebuildAfterTurn || state?.needsRebuild });
 				}
 			}
 

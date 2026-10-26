@@ -112,6 +112,97 @@ describe("syncSharedSession", () => {
 		}
 	});
 
+	// A context transform (ACP/compaction) can rewrite the imported history while
+	// leaving the message count at or above the cursor. Resuming by count alone
+	// hands Claude Code a conversation that no longer exists; the prefix digest
+	// must force a rebuild.
+	it("rebuilds when a context transform rewrites the same number of messages", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+		const sessionId = randomUUID();
+		const piSessionId = "pi-attributed";
+		try {
+			const seed = [
+				{ role: "user", content: "Original question" },
+				{ role: "assistant", content: [{ type: "text", text: "Original answer" }] },
+			];
+			const seeded = createSession({ sessionId, projectPath: cwd });
+			seeded.importMessages(seed);
+			seeded.save();
+			__test.setSharedSession(piSessionId, {
+				sessionId,
+				cursor: seed.length,
+				cwd,
+				piSessionId,
+				historyDigest: __test.historyFingerprint(seed),
+			});
+
+			const rewritten = [
+				{ role: "user", content: "[compacted] Original question", timestamp: Date.now() },
+				{ role: "assistant", content: [{ type: "text", text: "[compacted] Original answer" }], timestamp: Date.now() },
+				{ role: "user", content: "Next", timestamp: Date.now() },
+			];
+			const result = __test.syncSharedSession(rewritten, cwd, undefined, undefined, piSessionId);
+
+			assert.equal(result.sessionId, sessionId, "the attributed mirror is rebuilt in place");
+			assert.equal(result.preserveSharedSession, undefined, "an attributed rebuild must replace the stale session");
+			assert.equal(__test.getSharedSession(piSessionId).cursor, 2, "the rebuilt cursor follows the rewritten priors");
+			const session = openSession({ sessionId, projectPath: cwd });
+			assert.equal(session.messages.length, 2, "the rewritten two-message history is imported");
+			assert.equal(
+				session.messages[0].message.content,
+				"[compacted] Original question",
+				"the old question was not silently retained",
+			);
+		} finally {
+			deleteSession(sessionId, cwd);
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	// A shorter context attributed to a pi session is exactly the shape left by
+	// ACP's rewrite: the old mirror's cursor points past the new history. It must
+	// be rebuilt from the rewritten history, not left on a clean-start CC session.
+	it("rebuilds an attributed session when a context transform shortens history", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+		const sessionId = randomUUID();
+		const piSessionId = "pi-short";
+		try {
+			const seed = [
+				{ role: "user", content: "Long question" },
+				{ role: "assistant", content: [{ type: "text", text: "Long answer" }] },
+				{ role: "user", content: "Follow-up" },
+			];
+			const seeded = createSession({ sessionId, projectPath: cwd });
+			seeded.importMessages(seed);
+			seeded.save();
+			__test.setSharedSession(piSessionId, {
+				sessionId,
+				cursor: seed.length,
+				cwd,
+				piSessionId,
+				historyDigest: __test.historyFingerprint(seed),
+			});
+
+			const rewritten = [
+				{ role: "user", content: "Summarized history", timestamp: Date.now() },
+				{ role: "assistant", content: [{ type: "text", text: "Summarized answer" }], timestamp: Date.now() },
+				{ role: "user", content: "Next", timestamp: Date.now() },
+			];
+			const result = __test.syncSharedSession(rewritten, cwd, undefined, undefined, piSessionId);
+
+			assert.equal(result.sessionId, sessionId, "the attributed mirror is rebuilt in place");
+			assert.equal(result.preserveSharedSession, undefined, "the stale session is not preserved");
+			assert.equal(__test.getSharedSession(piSessionId).cursor, 2, "cursor follows the rewritten priors");
+			const session = openSession({ sessionId, projectPath: cwd });
+			assert.equal(session.messages.length, 2, "the rewritten history is imported");
+			assert.equal(session.messages[0].message.content, "Summarized history");
+			assert.equal(session.messages[1].message.content[0].text, "Summarized answer");
+		} finally {
+			deleteSession(sessionId, cwd);
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	// The rebuilt file holds one line per record, and a carried `@file` expansion
 	// is an `attachment` record — which `session.messages` filters out. Counting
 	// messages told every user who at-mentioned a file before switching providers
