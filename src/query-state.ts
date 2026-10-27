@@ -34,6 +34,8 @@ export class QueryContext {
 	turnToolCallIds: string[] = [];
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
+	/** Steers written or awaiting a write, not yet replayed as incorporated into a turn. */
+	pendingSteerUuids = new Set<string>();
 	/** Binds a later run's abort signal to this query. Set by the run that opened it;
 	 *  a run that continues it from a tool result (e.g. after pi terminated a tool
 	 *  batch and ended the opening run) has no other way to stop it. */
