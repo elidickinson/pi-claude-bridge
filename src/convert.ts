@@ -4,6 +4,7 @@
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
 import type { Message as SessionMessage } from "cc-session-io";
 import { pascalCase } from "change-case";
+import { NARRATION_KIND, signatureBlockKind } from "./narration.js";
 import { MCP_TOOL_PREFIX } from "./skills.js";
 
 export const PROVIDER_ID = "claude-bridge";
@@ -136,7 +137,14 @@ export function convertPiMessages(
 			const blocks = [];
 			for (const block of content) {
 				if (block.type === "text" && block.text) {
-					blocks.push({ type: "text", text: block.text });
+					// A progress update the bridge showed as text keeps the API's signature on the
+					// block, and goes back as the signed thinking block it arrived as: the API wants a
+					// turn's thinking blocks returned verbatim, and reads the full note from the signature.
+					if (msg.provider === PROVIDER_ID && signatureBlockKind(block.textSignature) === NARRATION_KIND) {
+						blocks.push({ type: "thinking", thinking: block.text, signature: block.textSignature });
+					} else {
+						blocks.push({ type: "text", text: block.text });
+					}
 				} else if (block.type === "thinking") {
 					// Only replay thinking Claude Code itself produced. A signature minted
 					// by any other provider — including pi's own Anthropic provider — is

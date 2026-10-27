@@ -6,6 +6,7 @@
 - **Fix: queued steering keeps MCP input open through later turns (#172)** — Keep Claude Code's input open until each steer is replayed into a turn, then close after that turn completes. An error result still ends the query, so a steer Claude Code had queued can no longer run on and replace the failure. Thanks @Maverobot.
 - **Fix: abort ignored after a terminated tool batch (#200, issue #199)** — when a run ended with Claude Code's query parked at a tool call (`terminate: true`), aborting the next run did nothing. Each run that continues the query now binds its own signal. Thanks @orshih6 and @cootue.
 - **Fix: teardown rewrote a finished tool-call turn (issue #181)** — an abort, crash or error after a turn ended on a tool call changed pi's copy of that message to aborted/error, which could later orphan its tool result on Codex. Thanks @good-nightmoon.
+- **Fix: Claude 5 progress updates show as text, not reasoning (issue #211)** — They arrive as signed `thinking` blocks, so pi showed them as reasoning. The bridge now reads the `narration` tag in the signature, as Claude Code does.
 
 ## 0.9.3 — 2026-10-13
 
