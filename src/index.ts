@@ -1667,8 +1667,10 @@ async function consumeQuery(
 	}
 
 	// The query ended behind a fallback's last block: nothing more is coming to wait for.
-	// An abort is not that — the caller ends the stream as aborted, so only drop the wait.
-	if (wasAborted()) queryCtx.clearToolUseSettle();
+	// An abort or a failure is not that — the caller ends the stream as aborted or
+	// failed, and the calls Claude Code dispatched will never be answered, so only
+	// drop the wait.
+	if (wasAborted() || failure) queryCtx.clearToolUseSettle();
 	else flushFallbackToolUse(queryCtx);
 
 	// DEBUG: trace when consumeQuery exits

@@ -139,6 +139,23 @@ describe("non-streaming fallback delivered one block per assistant message", () 
 		assert.deepStrictEqual(c.turnOutput.content.filter((b) => b.type === "toolCall").map((b) => b.id), ["toolu_bash", "toolu_monitor"]);
 	});
 
+	// An error result inside the settle window ends the query: the calls Claude Code
+	// dispatched will never be answered, so ending pi's turn on toolUse would hide the
+	// failure and send pi to run tools for a query that no longer exists.
+	it("leaves the turn to fail when an error result arrives before the fallback settles", async () => {
+		const c = makeCtx();
+		const stream = c.currentPiStream;
+		const failed = { type: "result", subtype: "success", is_error: true, result: "API Error: 529 overloaded" };
+		async function* gen() { yield* [...deadStream, ...fallbackBlocks, failed]; }
+		const { failure } = await __test.consumeQuery(gen(), toolMap, fakeModel, () => false, c);
+
+		assert.strictEqual(failure?.message, "API Error: 529 overloaded");
+		assert.strictEqual(stream.events.find((e) => e.type === "done"), undefined);
+		assert.strictEqual(c.currentPiStream, stream);
+		assert.strictEqual(c.turnOutput.stopReason, "error");
+		assert.strictEqual(c.turnOutput.errorMessage, "API Error: 529 overloaded");
+	});
+
 	it("still ends a single-call fallback on toolUse", async () => {
 		const c = makeCtx();
 		const stream = c.currentPiStream;
