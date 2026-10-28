@@ -592,25 +592,24 @@ async function runIsolatedSummary(
 		const effort = effortForReasoning(model, options?.reasoning);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} effort=${effort ?? "default"} promptLen=${promptText.length}`);
 
-		sdkQuery = queryImpl({
-			prompt: promptText,
-			options: {
-				cwd,
-				env: { ...process.env, ...CC_CHILD_ENV },
-				settings: { autoMemoryEnabled: false },
-				tools: [],
-				strictMcpConfig: true,
-				settingSources: [] as SettingSource[],
-				skills: [],
-				persistSession: false,
-				systemPrompt: context.systemPrompt,
-				model: cliModel,
-				maxTurns: 1,
-				...(effort ? { effort } : {}),
-				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-				...makeCliDebugOptions("compact-summary"),
-			},
-		});
+		const summaryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+			cwd,
+			env: { ...process.env, ...CC_CHILD_ENV },
+			settings: { autoMemoryEnabled: false },
+			tools: [],
+			strictMcpConfig: true,
+			settingSources: [] as SettingSource[],
+			skills: [],
+			persistSession: false,
+			systemPrompt: context.systemPrompt,
+			model: cliModel,
+			maxTurns: 1,
+			...(effort ? { effort } : {}),
+			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+			...makeCliDebugOptions("compact-summary"),
+		};
+		await notifyPayload(options, observablePayload(summaryOptions, promptText), model);
+		sdkQuery = queryImpl({ prompt: promptText, options: summaryOptions });
 
 		if (options?.signal) {
 			if (options.signal.aborted) onAbort();
@@ -1092,6 +1091,44 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 		},
 	}));
 	return { [MCP_SERVER_NAME]: createToolServer(MCP_SERVER_NAME, mcpTools) };
+}
+
+// --- Provider request hook ---
+
+/** How long a request waits for pi's `onPayload` hook before going ahead without it. */
+const ON_PAYLOAD_TIMEOUT_MS = 5_000;
+const ON_PAYLOAD_TIMED_OUT = Symbol("onPayload timed out");
+
+/** Calls pi's `onPayload` for one model request, as pi-ai's HTTP providers do before
+ *  sending theirs. pi raises `before_provider_request` only from this hook, so
+ *  extensions that trace or meter requests (Langfuse, LangSmith) see Claude turns only
+ *  when it runs. Observe-only: a Claude Code query's options cannot be swapped for a
+ *  returned payload, so a replacement is logged and ignored. Never throws and never
+ *  waits longer than ON_PAYLOAD_TIMEOUT_MS — the prompt or tool result waits on it,
+ *  and a failing or stalled observer must not fail or hang the turn. */
+async function notifyPayload(options: SimpleStreamOptions | undefined, payload: unknown, model: Model<any>): Promise<void> {
+	if (!options?.onPayload) return;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timedOut = new Promise<typeof ON_PAYLOAD_TIMED_OUT>((resolve) => {
+		timer = setTimeout(() => resolve(ON_PAYLOAD_TIMED_OUT), ON_PAYLOAD_TIMEOUT_MS);
+	});
+	try {
+		const next = await Promise.race([Promise.resolve(options.onPayload(payload, model)), timedOut]);
+		if (next === ON_PAYLOAD_TIMED_OUT) debug(`provider: onPayload still pending after ${ON_PAYLOAD_TIMEOUT_MS}ms; continuing without it`);
+		else if (next !== undefined && next !== payload) debug("provider: onPayload returned a replacement payload; ignored (query options are fixed)");
+	} catch (error) {
+		debug("provider: onPayload threw; continuing:", error);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** The payload observers see for a Claude Code query: its options without `env`
+ *  (the whole process environment, secrets included) and with MCP servers by name
+ *  (live server objects), plus the prompt. */
+function observablePayload(queryOptions: NonNullable<Parameters<typeof query>[0]["options"]>, prompt: unknown): Record<string, unknown> {
+	const { env: _env, mcpServers, ...rest } = queryOptions;
+	return { ...rest, ...(mcpServers ? { mcpServers: Object.keys(mcpServers) } : {}), prompt };
 }
 
 // --- Usage helpers ---
@@ -1849,7 +1886,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// Delivery is async because the steer must reach CC's stdin *before* the
 		// tool result does — see deliverToolResults. Detached so the provider
 		// still returns its stream synchronously.
-		void deliverToolResults(resultCtx, allResults, steer, context.messages.length);
+		// Each tool-result call is a model request of its own to pi: the hook runs
+		// before Claude Code gets the result it needs to write the next message.
+		const deliverTo = resultCtx;
+		const contextLength = context.messages.length;
+		void notifyPayload(options, { model: claudeCodeModelId(model, longContextSettings), toolResults: allResults.map((r) => r.toolCallId) }, model)
+			.then(() => deliverToolResults(deliverTo, allResults, steer, contextLength))
+			.catch((error) => debug(`provider: tool result delivery failed:`, error));
 		// The shared cursor tracks the top-level conversation. A reentrant subagent
 		// delivering its own results would drag it to that subagent's message count
 		// — observed pulling a parent from 5 back to 3, which cost the parent's next
@@ -2021,8 +2064,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// first result — consumeQuery ends the stream explicitly instead, or the
 	// query would never terminate.
 	const promptStream = makePromptStream();
-	void promptStream.push(userMessage(promptBlocks ?? [{ type: "text", text: promptText }]))
-		.catch((error) => debug(`provider: initial prompt push rejected:`, error));
 	queryCtx.promptStream = promptStream;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 
@@ -2090,6 +2131,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
 		`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
+
+	// The prompt is pushed once pi's request hook has run, so before_provider_request
+	// precedes the assistant message, as it does for an HTTP provider: Claude Code has
+	// nothing to answer until the prompt arrives.
+	const promptContent = promptBlocks ?? [{ type: "text" as const, text: promptText }];
+	void notifyPayload(options, observablePayload(queryOptions, promptContent), model)
+		.then(() => promptStream.push(userMessage(promptContent)))
+		.catch((error) => debug(`provider: initial prompt push rejected:`, error));
 
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;

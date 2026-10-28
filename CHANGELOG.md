@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: Claude turns reach pi's `before_provider_request` and price 1-hour cache writes** — the provider now calls pi's `onPayload` hook once per request (before the opening prompt, each tool-result continuation and one-off summaries), as pi-ai's HTTP providers do, so tracing extensions such as the Langfuse and LangSmith plugins record a generation with model and token usage for Claude turns. Bounded at 5 s; the payload omits the child environment. `cache_creation.ephemeral_1h_input_tokens` now maps to `usage.cacheWrite1h`, which pi-ai bills at 2x input instead of the 5-minute rate.
 - **Bump: Claude Agent SDK 0.3.308 (Claude Code 2.1.308)** — Claude Code's new per-request log in session files is turned off; it made them about a third larger.
 - **Fix: queued steering keeps MCP input open through later turns (#172)** — Keep Claude Code's input open until each steer is replayed into a turn, then close after that turn completes. An error result still ends the query, so a steer Claude Code had queued can no longer run on and replace the failure. Thanks @Maverobot.
 - **Fix: abort ignored after a terminated tool batch (#200, issue #199)** — when a run ended with Claude Code's query parked at a tool call (`terminate: true`), aborting the next run did nothing. Each run that continues the query now binds its own signal. Thanks @orshih6 and @cootue.
