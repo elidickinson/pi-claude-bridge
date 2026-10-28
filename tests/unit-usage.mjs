@@ -116,4 +116,29 @@ describe("updateUsage", () => {
 		assert.equal(report.reasoning, undefined);
 		assert.equal(output.usage.reasoning, 40);
 	});
+
+	it("maps the 1-hour cache writes onto cacheWrite1h", () => {
+		const output = emptyOutput();
+		updateUsage(output, { cache_creation_input_tokens: 40, cache_creation: { ephemeral_5m_input_tokens: 10, ephemeral_1h_input_tokens: 30 } }, model);
+		assert.equal(output.usage.cacheWrite, 40);
+		assert.equal(output.usage.cacheWrite1h, 30);
+	});
+
+	it("keeps cacheWrite1h through a frame without the split", () => {
+		const output = emptyOutput();
+		// message_delta carries cache_creation_input_tokens but not the TTL split.
+		updateUsage(output, { cache_creation_input_tokens: 40, cache_creation: { ephemeral_1h_input_tokens: 30 } }, model);
+		updateUsage(output, { output_tokens: 5, cache_creation_input_tokens: 40 }, model);
+		assert.equal(output.usage.cacheWrite1h, 30);
+	});
+
+	it("bills 1-hour cache writes at twice base input", () => {
+		const output = emptyOutput();
+		const cachePriced = { ...pricedModel, cost: { ...pricedModel.cost, cacheWrite: 1_250_000 } };
+		updateUsage(output, { cache_creation_input_tokens: 40, cache_creation: { ephemeral_5m_input_tokens: 10, ephemeral_1h_input_tokens: 30 } }, cachePriced);
+
+		// 10 five-minute writes at 1.25 plus 30 one-hour writes at 2 (pi-ai's calculateCost).
+		// Without the split all 40 bill at 1.25: 50 instead of 72.5.
+		assert.equal(output.usage.cost.cacheWrite, 72.5);
+	});
 });

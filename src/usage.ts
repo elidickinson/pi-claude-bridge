@@ -18,6 +18,8 @@ export type SdkUsage = {
 	output_tokens?: number | null;
 	cache_read_input_tokens?: number | null;
 	cache_creation_input_tokens?: number | null;
+	/** The TTL split of cache_creation_input_tokens. Only message_start and complete messages carry it. */
+	cache_creation?: { ephemeral_5m_input_tokens?: number | null; ephemeral_1h_input_tokens?: number | null } | null;
 	output_tokens_details?: { thinking_tokens?: number | null } | null;
 };
 
@@ -41,6 +43,11 @@ export function updateUsage(output: AssistantMessage, usage: SdkUsage, model: Mo
 	if (usage.output_tokens != null) output.usage.output = usage.output_tokens;
 	if (usage.cache_read_input_tokens != null) output.usage.cacheRead = usage.cache_read_input_tokens;
 	if (usage.cache_creation_input_tokens != null) output.usage.cacheWrite = usage.cache_creation_input_tokens;
+	// The 1-hour share of cacheWrite, which calculateCost prices at twice base input
+	// (Claude Code writes much of its prompt cache with a 1-hour TTL). Without it every
+	// write is priced at the 5-minute rate.
+	const write1h = usage.cache_creation?.ephemeral_1h_input_tokens;
+	if (write1h != null) output.usage.cacheWrite1h = write1h;
 	// A subset of output_tokens, never a separate addend in the total or in cost.
 	const reasoning = usage.output_tokens_details?.thinking_tokens;
 	if (reasoning != null) output.usage.reasoning = reasoning;
