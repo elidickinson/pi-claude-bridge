@@ -55,6 +55,51 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 		}));
 }
 
+// The picker is the anthropic catalog, so an endpoint that serves ids outside it
+// (a gateway or router behind ANTHROPIC_BASE_URL) offers nothing selectable and a
+// turn cannot target its models. Extras are opt-in, never baked in: the env var
+// holds a comma-separated list of `id[:contextWindow[:maxTokens]]`. Empty by
+// default, which leaves the catalog alone.
+const EXTRA_CONTEXT_WINDOW = TWO_HUNDRED_K_CONTEXT;
+const EXTRA_MAX_TOKENS = 32_000;
+
+// A window that does not parse is a typo, not a request for a zero-token model.
+function positiveInt(raw: string | undefined, fallback: number): number {
+	if (raw === undefined || !/^\d+$/.test(raw)) return fallback;
+	const value = Number(raw);
+	return value > 0 ? value : fallback;
+}
+
+// Project the extra ids to the same shape as buildModels' entries. Cost is zero —
+// the endpoint's billing is unknown to us — and input is text-only: an image sent
+// to a model that does not take one fails the turn.
+export function buildExtraModels(spec: string | undefined, knownIds: Iterable<string> = []) {
+	const known = new Set(knownIds);
+	const seen = new Set<string>();
+	const models: {
+		id: string; name: string; reasoning: boolean; input: ("text" | "image")[];
+		contextWindow: number; maxTokens: number;
+		cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	}[] = [];
+	for (const entry of (spec ?? "").split(",")) {
+		const [id, contextWindow, maxTokens] = entry.trim().split(":");
+		// An id the catalog already lists keeps the catalog's metadata (and its
+		// [1m]/200K policy); registering it again would list it twice in the picker.
+		if (!id || seen.has(id) || known.has(id)) continue;
+		seen.add(id);
+		models.push({
+			id,
+			name: id,
+			reasoning: false,
+			input: ["text"],
+			contextWindow: positiveInt(contextWindow, EXTRA_CONTEXT_WINDOW),
+			maxTokens: positiveInt(maxTokens, EXTRA_MAX_TOKENS),
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		});
+	}
+	return models;
+}
+
 export type LongContextSettings = {
 	plan: "pro" | "max";
 	longContextExtraUsage: boolean;

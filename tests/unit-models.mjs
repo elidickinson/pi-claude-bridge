@@ -2,12 +2,14 @@
  * Tests for MODELS construction + resolveModel.
  * Pins: catalog-driven picker excludes pi-ai's dated snapshot aliases, family
  * shortcuts resolve newest-first regardless of sort order, projection strips
- * pi-ai's baseUrl/api/provider/headers, and the runtime policy gates [1m] ids
- * on measurement and plan settings.
+ * pi-ai's baseUrl/api/provider/headers, extra ids from
+ * CLAUDE_BRIDGE_EXTRA_MODELS register after the catalog and only when set, and
+ * the runtime policy gates [1m] ids on measurement and plan settings.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { applyLongContext, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel, resolveModel } from "../src/models.js";
+import { execFileSync } from "node:child_process";
+import { applyLongContext, buildExtraModels, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel, resolveModel } from "../src/models.js";
 import { getModels } from "@earendil-works/pi-ai/compat";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
@@ -192,4 +194,73 @@ describe("applyLongContext", () => {
 
 it("claude-opus-5-5 requests 1M on Pro", () => {
 	assert.deepEqual(resolveClaudeCodeRuntimeModel({ id: "claude-opus-5-5" }, PRO), { cliModelId: "claude-opus-5-5[1m]", contextWindow: 1000000 });
+});
+
+// The model list is composed at import time, so a fresh process is the honest
+// probe: in-process the env var is read before any test could set it, and the
+// provider is already registered.
+function registeredModelsInChild(extraModels) {
+	const env = { ...process.env };
+	delete env.CLAUDE_BRIDGE_DEBUG;
+	if (extraModels === undefined) delete env.CLAUDE_BRIDGE_EXTRA_MODELS;
+	else env.CLAUDE_BRIDGE_EXTRA_MODELS = extraModels;
+	const src = new URL("../src/index.ts", import.meta.url).href;
+	const probe = `
+		const { default: activate } = await import(${JSON.stringify(src)});
+		let models;
+		activate({
+			on: () => {},
+			registerProvider: (_name, config) => { models = config.models; },
+			registerTool: () => {},
+		});
+		console.log(JSON.stringify(models));
+	`;
+	const out = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", probe], {
+		env, encoding: "utf8", timeout: 60_000,
+	});
+	return JSON.parse(out);
+}
+
+describe("CLAUDE_BRIDGE_EXTRA_MODELS", () => {
+	const catalogIds = () => buildModels(getModels("anthropic")).map((m) => m.id);
+
+	it("registers the catalog alone when the variable is unset", () => {
+		const registered = registeredModelsInChild(undefined);
+		const expected = applyLongContext(buildModels(getModels("anthropic")), PRO);
+		assert.deepEqual(registered, JSON.parse(JSON.stringify(expected)));
+	});
+
+	it("registers the listed ids after the catalog", () => {
+		const registered = registeredModelsInChild("my-model,my-long-model:128000:8192");
+		const catalogLength = catalogIds().length;
+		assert.deepEqual(registered.slice(0, catalogLength).map((m) => m.id), catalogIds());
+		assert.deepEqual(registered.slice(catalogLength), [
+			{
+				id: "my-model", name: "my-model", reasoning: false, input: ["text"],
+				contextWindow: 200000, maxTokens: 32000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+			{
+				id: "my-long-model", name: "my-long-model", reasoning: false, input: ["text"],
+				// A declared window and cap survive registration: the [1m]/200K policy
+				// is measured Claude behavior and must not rewrite a foreign id.
+				contextWindow: 128000, maxTokens: 8192,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+		]);
+	});
+
+	it("adds nothing for a blank list, and skips repeats and catalog ids", () => {
+		assert.deepEqual(buildExtraModels(undefined), []);
+		assert.deepEqual(buildExtraModels(""), []);
+		assert.deepEqual(buildExtraModels(" , ,"), []);
+		assert.deepEqual(buildExtraModels("my-model,my-model").map((m) => m.id), ["my-model"]);
+		assert.deepEqual(buildExtraModels("my-model", ["my-model"]), []);
+	});
+
+	it("keeps the documented defaults for an unparseable window or cap", () => {
+		const [model] = buildExtraModels("my-model:200k:0");
+		assert.equal(model.contextWindow, 200000);
+		assert.equal(model.maxTokens, 32000);
+	});
 });
