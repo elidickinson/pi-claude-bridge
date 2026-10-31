@@ -36,7 +36,7 @@ import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
-import { bridgeRevision, packageVersion, setTraceNotifier, traceAssertReady, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
+import { BRIDGE_VERSION, packageVersion, setTraceNotifier, traceAssertReady, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
 
 // --- Debug logging ---
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to the bridge log in pi's agent
@@ -2592,8 +2592,7 @@ let askClaudeToolName = "AskClaude";
 export default function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
 	let askClaudeDeprecationNoticeShown = Boolean(config.askClaudeDeprecationShown);
-	const rev = bridgeRevision();
-	debug(`bridge: version=${rev.version} commit=${rev.revision?.slice(0, 8)} dirty=${Boolean(rev.dirty)} sdk=${packageVersion("@anthropic-ai/claude-agent-sdk")} pi=${PI_VERSION}`);
+	debug(`bridge: version=${BRIDGE_VERSION} sdk=${packageVersion("@anthropic-ai/claude-agent-sdk")} pi=${PI_VERSION}`);
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
 	// We need these settings to know if we're eligible for 1M context on certain models
