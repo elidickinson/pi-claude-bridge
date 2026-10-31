@@ -49,7 +49,7 @@ const flag = (name, fallback) => {
 	return i === -1 ? fallback : args[i + 1];
 };
 const since = args.includes("--since") ? Date.parse(flag("--since")) : null;
-// The 28% boundary rate documented in diag/AUDIT.md is an open
+// The boundary rate documented in diag/AUDIT.md is an open
 // finding, not a regression, so the ceiling is a knob: set it just above the
 // current rate to catch it getting *worse* while the root cause is unresolved.
 const ceiling = Number(flag("--ceiling", BOUNDARY_RATE_CEILING));
