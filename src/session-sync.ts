@@ -143,15 +143,18 @@ export class LiveRecording {
 		this.nextIndex = this.recorded.digests.length;
 		for (const message of messages.slice(0, this.nextIndex)) updatePendingTools(this.outstanding, message);
 	}
-	/** Live equality includes pending slots: a missing acknowledgement neither
-	 * conceals a rewrite nor invalidates an unchanged tool continuation. */
-	continues(messages: PiMessage[]): boolean {
-		if (this.duplicated || messages.length < this.nextIndex) return false;
+	/** Where pi's live history first leaves this recording: a message index,
+	 * "duplicate" when CC holds a record no pi slot represents, or undefined while
+	 * the history still continues it. Live equality includes pending slots: a
+	 * missing acknowledgement neither conceals a rewrite nor invalidates an
+	 * unchanged tool continuation. */
+	divergence(messages: PiMessage[]): number | "duplicate" | undefined {
+		if (this.duplicated) return "duplicate";
 		for (let i = 0; i < this.nextIndex; i++) {
 			const digest = this.recorded.digests[i] ?? this.slots.get(i)?.digest;
-			if (digest === undefined || digestMessage(messages[i]) !== digest) return false;
+			if (digest === undefined || i >= messages.length || digestMessage(messages[i]) !== digest) return i;
 		}
-		return true;
+		return undefined;
 	}
 	/** A receipt binds to the exact slots it delivered. An index already covered,
 	 * or pending with other content, keeps its first snapshot; an identical

@@ -192,6 +192,7 @@ it("continuation digest failures report provider errors instead of throwing", { 
 	assert.equal(output.stopReason, "error");
 	assert.match(output.errorMessage, /JSON|finite/);
 	assert.equal(calls.length, 1);
+	assert.equal(__test.activeQueryContexts.size, 0, "the unverifiable query is discarded, not left parked");
 });
 
 it("quota retries delete each new file only after the child finishes its late writes", async () => {

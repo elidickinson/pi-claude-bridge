@@ -1639,11 +1639,11 @@ async function consumeQuery(
 				queryCtx.lastRateLimitWarnStep = null;
 				queryCtx.lastRateLimitWarnThreshold = undefined;
 				// resetsAt is Unix seconds, not milliseconds.
-				const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString() : "unknown";
+				const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString() : undefined;
 				// isUsingOverage: the plan limit is hit but Extra Usage is serving (and billing) requests.
 				piUI?.notify(info.isUsingOverage
-					? `Claude subscription rate limit reached (${info.rateLimitType ?? "unknown"}) — requests are now billed to Extra Usage until ${resetsAt}`
-					: `Claude subscription rate limit reached (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+					? `Claude subscription rate limit reached (${info.rateLimitType ?? "unknown"}) — requests are now billed to Extra Usage${resetsAt ? ` until ${resetsAt}` : ""}`
+					: `Claude subscription rate limit reached (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt ?? "unknown"}`, "warning");
 			} else if (info?.status === "allowed") {
 				// Back under the threshold (window reset) — re-arm the warning dedupe.
 				queryCtx.lastRateLimitWarnStep = null;
@@ -1914,13 +1914,21 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// AgentSession, sharing this process) must not discard the parent's parked
 	// query, and vice versa. Extensions can also edit the selected history without
 	// a rewrite event; compare the live prefix before feeding this query a result.
-	let rewrittenUnderQuery: boolean;
+	let divergence: ReturnType<LiveRecording["divergence"]>;
 	try {
-		rewrittenUnderQuery = Boolean(resultCtx && (resultCtx.historyStale
-			|| !resultCtx.recording.continues(nonSystemMessages(context.messages))));
-	} catch (error) { return failBeforeQuery(error); }
+		divergence = resultCtx && !resultCtx.historyStale ? resultCtx.recording.divergence(nonSystemMessages(context.messages)) : undefined;
+	} catch (error) {
+		// A history that can't be checked can't continue the query either.
+		try { discardRewrittenQuery(resultCtx!); }
+		catch (discardError) { return failBeforeQuery(discardError); }
+		return failBeforeQuery(error);
+	}
+	const rewrittenUnderQuery = Boolean(resultCtx && (resultCtx.historyStale || divergence !== undefined));
 	if (resultCtx && rewrittenUnderQuery) {
-		traceEvent("route", { callId: traceCallId, route: "discard-rewritten", queryId: resultCtx.traceQueryId });
+		traceEvent("route", {
+			callId: traceCallId, route: "discard-rewritten", queryId: resultCtx.traceQueryId,
+			reason: resultCtx.historyStale ? "rewrite-event" : "history-diverged", divergence,
+		});
 		try { discardRewrittenQuery(resultCtx); }
 		catch (error) { return failBeforeQuery(error); }
 		resultCtx = undefined;
