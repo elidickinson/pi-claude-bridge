@@ -1919,6 +1919,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		divergence = resultCtx && !resultCtx.historyStale ? resultCtx.recording.divergence(nonSystemMessages(context.messages)) : undefined;
 	} catch (error) {
 		// A history that can't be checked can't continue the query either.
+		traceEvent("route", { callId: traceCallId, route: "discard-rewritten", queryId: resultCtx!.traceQueryId, reason: "digest-error" });
 		try { discardRewrittenQuery(resultCtx!); }
 		catch (discardError) { return failBeforeQuery(discardError); }
 		return failBeforeQuery(error);
