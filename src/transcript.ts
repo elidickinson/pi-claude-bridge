@@ -25,7 +25,7 @@ import {
  *  without its content changing — pi's section diff then emits nothing for it, the replay
  *  keeps the stale position, and the exact-key capture lookup throws on that legitimate
  *  turn. */
-const SECTION_RANK = new Map<string, number>([
+export const SECTION_RANK = new Map<string, number>([
 	["preamble", 0], ["tools", 1], ["rules", 2], ["docs", 3], ["addendum", 4],
 	["project_context", 5], ["skills", 6], ["cwd", 7],
 ]);

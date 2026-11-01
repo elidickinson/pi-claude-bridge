@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemMessage, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, isToolCallEventType, keyHint, VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
@@ -25,6 +25,7 @@ import { claudeCodeSettings, loadConfig, markAskClaudeDeprecationNoticeShown, ma
 import {
 	collectPromptSkills,
 	projectPromptCapture,
+	projectSystemMessage,
 	sharedPromptCaptures,
 	type PromptCapture,
 } from "./prompt-capture.js";
@@ -33,7 +34,7 @@ import { createToolServer } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
-import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
+import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, sessionHasHooks, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
 import { bridgeRevision, packageVersion, setTraceNotifier, traceAssertReady, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
@@ -2019,12 +2020,19 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	let systemPromptAppend: string | undefined;
 	try {
 		traceAssertReady();
-		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
+		const skillReadTool = mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none";
+		// A host can serve a session with this provider without loading the extension in it
+		// (pi-subagent-manager and pi-subagents children), so no hook captured its prompt.
+		// What a capture or inheritance cannot account for is then read from the system
+		// message's own sections. A session that did load the extension still throws.
+		const systemMessage = getCurrentSystemMessage(sourceContext.messages);
+		const sessionWithoutHooks = !!systemMessage && !!options?.sessionId && !sessionHasHooks(options.sessionId);
+		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt, { throwOnMiss: !sessionWithoutHooks });
 		systemPromptAppend = promptCapture
-			? projectPromptCapture(promptCapture, {
-				skillReadTool: mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none",
-			})
-			: undefined;
+			? projectPromptCapture(promptCapture, { skillReadTool })
+			: sessionWithoutHooks
+				? projectSystemMessage(systemMessage, { skillReadTool })
+				: undefined;
 	} catch (err) {
 		// resolveOrDerive and projectPromptCapture throw to stop a turn that would lose
 		// its instructions or leak pi's harness text. Report it on the stream, as pi-ai's

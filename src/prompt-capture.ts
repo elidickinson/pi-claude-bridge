@@ -1,7 +1,9 @@
+import { contentText, type SystemMessage } from "@earendil-works/pi-ai";
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { formatProjectContext } from "./agents-md.js";
 import { debugLogPath } from "./log-paths.js";
-import { renderSkillsBlock, type SkillReadTool } from "./skills.js";
+import { renderSkillsBlock, rewriteSkillsBlock, type SkillReadTool } from "./skills.js";
+import { SECTION_RANK } from "./transcript.js";
 
 // What pi assembled for one agent, kept so the bridge can append only the
 // portable parts after Claude Code's own preset.
@@ -144,8 +146,11 @@ export class PromptCaptures {
 	 * files, skills, custom prompt or append text, and say so only in a debug line —
 	 * silently discarding policy the user wrote down. A failed turn is recoverable;
 	 * a turn that quietly ignored its instructions is not.
+	 *
+	 * With `throwOnMiss: false` a miss returns undefined instead, for a caller that has
+	 * another way to account for the prompt.
 	 */
-	resolveOrDerive(systemPrompt?: string): PromptCapture | undefined {
+	resolveOrDerive(systemPrompt?: string, options: { throwOnMiss?: boolean } = {}): PromptCapture | undefined {
 		if (!systemPrompt) return undefined;
 		const exact = this.captures.get(systemPrompt);
 		if (exact) {
@@ -172,6 +177,7 @@ export class PromptCaptures {
 		// instruction loss the throw exists to prevent. If such a route is ever added,
 		// it belongs below this block.
 		const embedded = this.findInheritedPrompts(systemPrompt, systemPrompt);
+		if (embedded.length === 0 && options.throwOnMiss === false) return undefined;
 		if (embedded.length === 0) {
 			const matches = this.closestKnown(systemPrompt);
 			this.onDiagnose({ systemPrompt, matches });
@@ -360,14 +366,15 @@ function projectCapture(
 			if (!content) continue;
 			parts.push({ label: `the ${name} section`, text: `<${name}>\n${content}\n</${name}>` });
 		}
-		assertSendablePrompt(parts, capture);
+		assertSendablePrompt(parts, `${capture.source ?? "unknown"}, ${capture.inherited.length} inherited capture(s) substituted`);
 		return parts.length > 0 ? parts.map((part) => part.text).join("\n\n") : undefined;
 	} finally {
 		visiting.delete(capture);
 	}
 }
 
-function assertSendablePrompt(parts: readonly PromptPart[], capture: PromptCapture): void {
+/** `origin` says where the parts came from, for the refusal message. */
+function assertSendablePrompt(parts: readonly PromptPart[], origin: string): void {
 	const findings: string[] = [];
 	for (const { label, text } of parts) {
 		const offset = preambleAtLineStart(text);
@@ -386,7 +393,7 @@ function assertSendablePrompt(parts: readonly PromptPart[], capture: PromptCaptu
 		"  carrying pi's harness, or the phrase pair its subscription gate rejects, as a third-party",
 		"  app: it fails with 400 or is billed as extra usage.",
 		...findings.map((finding) => `  Found: ${finding}.`),
-		`  Capture: ${capture.source ?? "unknown"}, ${capture.inherited.length} inherited capture(s) substituted.`,
+		`  Capture: ${origin}.`,
 		"  If this came from an inherited pi prompt, see README \"Compatibility with other extensions\".",
 		"  If it is your own text, reword or remove it. CLAUDE_BRIDGE_DEBUG=1 writes the full prompt to",
 		`  ${debugLogPath()}.`,
@@ -417,4 +424,37 @@ function projectCustom(
 		cursor = edge.end;
 	}
 	return result + capture.custom.slice(cursor);
+}
+
+/**
+ * The portable parts of a system message no hook captured, read from its sections.
+ *
+ * A session that never loaded this extension fires none of its hooks, so no capture
+ * exists for its prompt. The system message still names the same parts the hooks would
+ * have reported (pi's section builder), and this forwards them as projectCapture does:
+ * project context, skills, custom prompt, appended instructions, then custom sections.
+ * The remaining built-ins (`tools`, `rules`, `docs`, `cwd`) describe pi or the host.
+ * `rules` and `docs` are rendered only beside pi's own preamble, so their absence marks
+ * `preamble` as an operator's custom prompt.
+ */
+export function projectSystemMessage(message: SystemMessage, options: { skillReadTool: SkillReadTool }): string | undefined {
+	const sections = message.sections ?? {};
+	const hasCustomPreamble = sections.rules === undefined && sections.docs === undefined;
+	const parts: PromptPart[] = [];
+	// A forced prompt is opaque: all of it is in `content`, with no sections.
+	const content = contentText(message.content);
+	if (content) parts.push({ label: "the system message content", text: content });
+	if (sections.project_context) parts.push({ label: "the project context block", text: sections.project_context });
+	if (sections.skills && options.skillReadTool !== "none") {
+		const text = options.skillReadTool === "mcp" ? rewriteSkillsBlock(sections.skills) : sections.skills;
+		parts.push({ label: "the skills block", text });
+	}
+	if (hasCustomPreamble && sections.preamble) parts.push({ label: "the custom prompt", text: sections.preamble });
+	if (sections.addendum) parts.push({ label: "the appended instructions", text: sections.addendum });
+	for (const [name, text] of Object.entries(sections)) {
+		if (!text || SECTION_RANK.has(name)) continue;
+		parts.push({ label: `the ${name} section`, text });
+	}
+	assertSendablePrompt(parts, "system message sections, session without bridge hooks");
+	return parts.length > 0 ? parts.map((part) => part.text).join("\n\n") : undefined;
 }
