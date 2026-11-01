@@ -215,7 +215,7 @@ printf "%-6s  %8s  %8s  %8s  %8s  %s\n" "Turn" "Input" "CacheRd" "CacheWr" "Outp
 MIN_CACHE_HIT_PCT=90
 # Count tool calls, not turns: how many assistant turns the write and read get
 # split across is the model's choice, but both tools have to run for the prompts
-# to be answered, and it is tool results that exercise the cursor/cache path.
+# to be answered, and tool results exercise the recording/cache path.
 MIN_EXPECTED_TOOL_CALLS=2   # write + commit (+ read)
 MIN_CASE3_RESUMES=2
 EXPECTED_CASE1=1
@@ -309,11 +309,8 @@ if [ "$TURN" -lt $((GIT_TURN + 2)) ] || [ "$TURN" -lt 7 ]; then
 fi
 
 # --- Assert session resume (no spurious rebuilds) ---
-# With the off-by-one cursor bug, every follow-up turn triggered a rebuild
-# instead of a resume, because pi appends the final assistant message after
-# streamSimple returns, making the cursor lag by 1.
-#
-# Parses the "syncResult: path=<reuse|rebuild|clean-start> sessionId=<uuid>"
+# Every follow-up turn must match the recorded content exactly.
+# Parses the "syncResult: path=<path> sessionId=<uuid>"
 # marker emitted by syncSharedSession at the end of each call. Gives us both
 # the distribution and sessionId stability in one pass.
 
@@ -331,7 +328,8 @@ while IFS= read -r line; do
   case "$path" in
     clean-start) CLEAN_START_COUNT=$((CLEAN_START_COUNT + 1));;
     reuse)       REUSE_COUNT=$((REUSE_COUNT + 1));;
-    rebuild)     REBUILD_COUNT=$((REBUILD_COUNT + 1));;
+    rebuild|fork|prefix-write) REBUILD_COUNT=$((REBUILD_COUNT + 1));;
+    *) echo "FAIL: unrecognized sync path: $path"; FAIL=$((FAIL + 1));;
   esac
   if [ -n "$sid" ]; then
     SESSION_IDS+=("$sid")
@@ -353,7 +351,7 @@ fi
 
 if [ "$REBUILD_COUNT" -gt 0 ]; then
   echo "  FAIL: $REBUILD_COUNT spurious rebuilds (expected 0 for consecutive same-provider turns)"
-  echo "    Likely cause: off-by-one cursor — trailing assistant message misidentified as missed"
+  echo "    Recorded content does not match the unchanged conversation"
   FAIL=$((FAIL + 1))
 fi
 

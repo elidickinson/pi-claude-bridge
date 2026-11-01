@@ -53,11 +53,11 @@ function parkingQuery(steps, after = async function* () {}) {
 	let park, settle;
 	parked = new Promise((r) => { park = r; });
 	settled = new Promise((r) => { settle = r; });
-	setQuery(({ prompt }) => {
+	setQuery(({ prompt, options }) => {
 		const gate = new Promise((r) => { release = r; });
 		const gen = (async function* () {
 			await prompt[Symbol.asyncIterator]().next();
-			yield { type: "system", subtype: "init", session_id: "cc-finalized" };
+			yield { type: "system", subtype: "init", session_id: options.sessionId ?? options.resume };
 			yield* steps;
 			park();
 			await gate;
@@ -128,7 +128,7 @@ describe("a turn still streaming", () => {
 	}
 });
 
-it("drops the session mirror at an error result, so a queued steer is rebuilt", async () => {
+it("does not publish an imported mirror before any complete assistant progress", async () => {
 	const messages = [
 		{ role: "user", content: "previous prompt", timestamp: 1 },
 		{
@@ -142,7 +142,7 @@ it("drops the session mirror at an error result, so a queued steer is rebuilt", 
 	];
 	const { stream, piSessionId } = run(textStart, lateFailures["an error result"], messages);
 	await parked;
-	assert.ok(getSharedSession(piSessionId), "prior history created a mirror before the query failed");
+	assert.equal(getSharedSession(piSessionId), null, "import seed stays query-local until assistant progress");
 
 	release();
 	await stream.result();

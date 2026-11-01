@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Context continuity test for pi-claude-bridge provider.
 // Verifies that switching away from the provider and back correctly
-// preserves conversation context (all messages are flattened into
-// each query, so "missed" messages are automatically included).
+// preserves conversation context through native-prefix retention and suffix import.
 //
 // Also tests AskClaude shared mode (sees conversation history) vs
 // isolated mode (clean slate).
@@ -49,7 +48,7 @@ const harness = createRpcHarness({
 	defaultTimeout: TIMEOUT,
 });
 
-const { startAndWait, stop, send, addListener, collectText, DEBUG_LOG, RPC_LOG } = harness;
+const { startAndWait, stop, send, addListener, collectText, waitForMatch, DEBUG_LOG, RPC_LOG } = harness;
 
 let lastToolResult = null;
 let lastToolArgs = null;
@@ -95,6 +94,12 @@ async function promptAndWait(message) {
 	return collector.stop();
 }
 
+function latestSync() {
+	const last = [...readFileSync(DEBUG_LOG, "utf8").matchAll(/syncResult: path=([a-z-]+) sessionId=([a-f0-9-]+)/g)].at(-1);
+	if (!last) throw new Error("no syncResult session marker found");
+	return { path: last[1], sessionId: last[2] };
+}
+
 // Start pi
 await startAndWait();
 
@@ -120,6 +125,7 @@ try {
   const lower2 = text2.toLowerCase();
   if (!lower2.includes(WORD_A)) throw new Error(`Turn 2 response missing '${WORD_A}': ${text2}`);
   if (!lower2.includes(WORD_B)) throw new Error(`Turn 2 response missing '${WORD_B}': ${text2}`);
+  const firstProviderSession = latestSync().sessionId;
 
   // Turn 3: AskClaude shared mode — should see CODE, which the non-provider model was told
   console.log(`Switching to ${OTHER_PROVIDER}/${OTHER_MODEL}...`);
@@ -159,13 +165,13 @@ try {
   if (!text5) throw new Error("Turn 5 produced no text");
   console.log(`  Response: ${text5.slice(0, 80)}`);
 
-  // Switch back to provider — context includes all prior turns (Case 4)
+  // Switch back to provider with the intervening non-provider turns.
   console.log(`Switching back to ${BRIDGE_MODEL}...`);
   await send({ type: "set_model", provider: bridgeProvider, modelId: bridgeModelId });
 
 
-  // Turn 6: Provider resumes with missed messages (Case 4)
-  console.log("Turn 6: Provider resume with missed messages (Case 4)...");
+  // Turn 6: retain the native prefix and import the new non-provider history.
+  console.log("Turn 6: Provider continuation after non-provider turns...");
   const text6 = await promptAndWait(
     "What were all three words? Reply with just the three words separated by commas."
   );
@@ -174,13 +180,16 @@ try {
   if (!lower6.includes(WORD_A)) throw new Error(`Turn 6 response missing '${WORD_A}': ${text6}`);
   if (!lower6.includes(WORD_B)) throw new Error(`Turn 6 response missing '${WORD_B}': ${text6}`);
   if (!lower6.includes(WORD_C)) throw new Error(`Turn 6 response missing '${WORD_C}': ${text6}`);
+  const continued = latestSync();
+  if (continued.path !== "prefix-write") throw new Error(`expected prefix-write after foreign turns, got ${continued.path}`);
+  if (continued.sessionId === firstProviderSession) throw new Error("foreign turns overwrote the ancestor session");
 
-  // Turn 7: Abort mid-stream — session should be invalidated, next turn should recover
+  // Turn 7: abort observed streaming, not a timer that may outlast the reply.
   console.log("Turn 7: Abort mid-stream (session recovery)...");
-  await send({ type: "prompt", message: "Write a detailed 500-word essay about the history of timekeeping." });
-  // Set up idle listener before abort so we don't miss agent_end
+  const streaming = waitForMatch((m) => m.type === "message_update" && m.assistantMessageEvent?.type === "text_delta", "streamed text", TIMEOUT);
   const idle7 = waitForIdle();
-  await new Promise((r) => setTimeout(r, 2000));
+  await send({ type: "prompt", message: "Write a detailed 4,000-word essay about the history of timekeeping." });
+  await streaming;
   await send({ type: "abort" });
   await idle7;
 
@@ -196,26 +205,10 @@ try {
   if (!lower8.includes(WORD_B)) throw new Error(`Turn 8 response missing '${WORD_B}': ${text8}`);
   if (!lower8.includes(WORD_C)) throw new Error(`Turn 8 response missing '${WORD_C}': ${text8}`);
 
-  // sessionId stability: sessionId should stay stable across normal
-  // rebuilds (Case 2 → Case 4 → Case 3). It's allowed to rotate exactly
-  // once per abort: the post-abort rebuild takes a fresh UUID on purpose,
-  // to avoid a race with the killed CC subprocess's late interrupt-cleanup
-  // writes (which would otherwise append an orphan record at the same
-  // path and break the parent-uuid chain for the next resume).
-  //
-  // This test exercises one abort (Turn 7), so we expect exactly 2 unique
-  // sessionIds: pre-abort and post-abort.
-  const debugLog = readFileSync(DEBUG_LOG, "utf8");
-  const sessionIds = new Set();
-  const rotatedPostAbort = [];
-  for (const match of debugLog.matchAll(/syncResult: path=(reuse|rebuild) sessionId=([a-f0-9-]+)(?: priors=\d+ (\S+))?/g)) {
-    sessionIds.add(match[2]);
-    if (match[3] === "rotated-post-abort") rotatedPostAbort.push(match[2]);
-  }
-  if (sessionIds.size === 0) throw new Error("no syncResult markers found in debug log");
-  if (sessionIds.size > 2) throw new Error(`expected ≤2 distinct sessionIds (one pre-abort, one post-abort rotation), got ${sessionIds.size}: ${[...sessionIds].join(", ")}`);
-  if (rotatedPostAbort.length !== 1) throw new Error(`expected exactly 1 post-abort rotation, got ${rotatedPostAbort.length}`);
-  console.log(`  sessionIds observed: ${sessionIds.size} (expected 2 due to 1 post-abort rotation)`);
+  const recovered = latestSync();
+  if (!["fork", "prefix-write"].includes(recovered.path)) throw new Error(`expected a retained-prefix recovery, got ${recovered.path}`);
+  if (recovered.sessionId === continued.sessionId) throw new Error("abort recovery reused the interrupted transcript");
+  console.log(`  Recovery: ${recovered.path} into a new session`);
 
   console.log("PASS");
 } catch (e) {

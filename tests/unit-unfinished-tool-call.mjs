@@ -24,8 +24,6 @@ import { QueryContext } from "../src/query-state.js";
 const { __test } = await import("../src/index.js");
 
 const fakeModel = { api: "anthropic-messages", provider: "anthropic", id: "test-model" };
-// notify_parent rather than bash: bash carries a default timeout mapToolArgs
-// injects, which has nothing to do with the block lifecycle under test.
 const toolMap = new Map([["mcp__custom-tools__notify_parent", "notify_parent"]]);
 
 function fakeStream() {

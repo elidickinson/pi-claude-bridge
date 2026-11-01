@@ -55,7 +55,7 @@ describe("tool_use for a tool we do not serve", () => {
 		const toolCalls = c.turnOutput.content.filter((b) => b.type === "toolCall");
 		assert.deepStrictEqual(toolCalls.map((b) => [b.name, b.id]), [["bash", "toolu_retry"]]);
 		assert.deepStrictEqual(c.turnToolCallIds, ["toolu_retry"]);
-		assert.deepStrictEqual(toolCalls[0].arguments, { command: "ls", timeout: 120 });
+		assert.deepStrictEqual(toolCalls[0].arguments, { command: "ls" });
 	});
 
 	it("does not end the pi stream, so the turn continues into the retry", async () => {

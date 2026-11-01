@@ -28,15 +28,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createSession, openSession, repairToolPairing } from "cc-session-io";
+import { createSession, deleteSession, getProjectDir, openSession, repairToolPairing } from "cc-session-io";
 
 const CWD = process.cwd();
 const MODEL = "claude-haiku-4-5";
@@ -77,11 +78,13 @@ const noArgTool = (name) => ({ name, description: `Returns the ${name} value.`, 
 async function collect(q) {
 	const toolUses = [];
 	const toolResults = [];
+	const assistantUuids = [];
 	let init = null;
 	let result = null;
 	for await (const message of q) {
 		if (message.type === "system" && message.subtype === "init") init = message;
 		if (message.type === "assistant") {
+			assistantUuids.push(message.uuid);
 			for (const block of message.message?.content ?? []) {
 				if (block.type === "tool_use") toolUses.push({ id: block.id, name: block.name });
 			}
@@ -93,7 +96,7 @@ async function collect(q) {
 		}
 		if (message.type === "result") result = message;
 	}
-	return { init, result, toolUses, toolResults };
+	return { init, result, toolUses, toolResults, assistantUuids };
 }
 
 /** Run only far enough to read the init message, then kill the CLI. */
@@ -388,8 +391,7 @@ test("JSON Schema is served verbatim — nested objects and anyOf/const survive"
 // --- Session transcripts and --resume ---
 
 test("--resume re-reads the JSONL from disk on every call", { timeout: 180_000 }, async () => {
-	// syncSharedSession's REBUILD path overwrites the session file in place and
-	// keeps the same UUID. That is only correct if CC caches nothing by UUID.
+	// Plain resumes must read the named transcript, not a process-local cached copy.
 	const sessionId = randomUUID();
 	const seed = (token) => {
 		const session = createSession({ sessionId, projectPath: CWD, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
@@ -532,24 +534,37 @@ test("--thinking-display summarized is still an accepted flag value", { timeout:
 // --- Captured request contracts ---
 
 /** One-turn stub API: records every /v1/messages body, answers a canned "OK" SSE.
- *  Lets a contract assert on the exact request CC builds, at zero API cost. */
-function stubApi(requests) {
+ *  Lets a contract assert on the exact request CC builds, at zero API cost.
+ *  `paths` records every request line; `overloadFirst` answers that many
+ *  /v1/messages posts with a 529 first, which CC retries. */
+function stubApi(requests, { paths, overloadFirst = 0, toolCallsFirst = [], stall = false } = {}) {
 	const server = createServer((req, res) => {
 		const chunks = [];
+		paths?.push(`${req.method} ${req.url}`);
 		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => {
-			if (req.method === "POST" && req.url.startsWith("/v1/messages")) {
+			if (req.method === "POST" && req.url.includes("/v1/messages") && overloadFirst > 0) {
+				overloadFirst--;
+				res.writeHead(529, { "content-type": "application/json" });
+				res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }));
+			} else if (req.method === "POST" && req.url.includes("/v1/messages")) {
 				const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 				requests.push(body);
 				const event = (name, obj) => `event: ${name}\ndata: ${JSON.stringify(obj)}\n\n`;
+				const tools = requests.length === 1 ? toolCallsFirst : [];
+				const blocks = tools.length ? tools.map((name, i) => ({ type: "tool_use", id: `toolu_stub_${i}`, name, input: {} })) : [{ type: "text", text: "" }];
+				const contentEvents = blocks.map((block, index) =>
+					event("content_block_start", { type: "content_block_start", index, content_block: block })
+					+ event("content_block_delta", { type: "content_block_delta", index, delta: block.type === "tool_use" ? { type: "input_json_delta", partial_json: "{}" } : { type: "text_delta", text: "OK" } })
+					+ event("content_block_stop", { type: "content_block_stop", index })).join("");
+				const start = event("message_start", { type: "message_start", message: { id: `msg_stub_${requests.length}`, type: "message", role: "assistant", content: [], model: body.model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } });
 				res.writeHead(200, { "content-type": "text/event-stream" });
+				if (stall) { res.write(start + contentEvents); return; }
 				res.end(
-					event("message_start", { type: "message_start", message: { id: `msg_stub_${requests.length}`, type: "message", role: "assistant", content: [], model: body.model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } })
-					+ event("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+					start
 					+ event("ping", { type: "ping" })
-					+ event("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } })
-					+ event("content_block_stop", { type: "content_block_stop", index: 0 })
-					+ event("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } })
+					+ contentEvents
+					+ event("message_delta", { type: "message_delta", delta: { stop_reason: tools.length ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } })
 					+ event("message_stop", { type: "message_stop" }));
 			} else {
 				res.writeHead(404).end();
@@ -561,6 +576,278 @@ function stubApi(requests) {
 		close: () => server.close(),
 	})));
 }
+
+test("resumeSessionAt + forkSession keeps the cut UUIDs and leaves the ancestor untouched", { timeout: 120_000 }, async () => {
+	const requests = [];
+	const api = await stubApi(requests);
+	const cwd = mkdtempSync(join(tmpdir(), "cc-fork-contract-"));
+	const source = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
+	const forkId = randomUUID();
+	try {
+		source.addUserMessage("Remember KEPT-FORK-MARKER.");
+		source.addAssistantMessage([{ type: "text", text: "Remembered KEPT-FORK-MARKER." }]);
+		source.save();
+		const kept = source.records.map((r) => r.uuid);
+		const cut = kept.at(-1);
+		source.addUserMessage("Remember DROPPED-FORK-MARKER instead.");
+		source.addAssistantMessage([{ type: "text", text: "Remembered DROPPED-FORK-MARKER." }]);
+		source.save();
+		const dropped = source.records.slice(kept.length).map((r) => r.uuid);
+		const before = readFileSync(source.jsonlPath);
+		const mtime = statSync(source.jsonlPath).mtimeMs;
+		const promptUuid = randomUUID();
+		async function* prompt() {
+			yield { type: "user", message: { role: "user", content: "Reply OK to FORK-CONTRACT-PROMPT." }, parent_tool_use_id: null, uuid: promptUuid };
+		}
+		const { init, result } = await collect(query({
+			prompt: prompt(),
+			options: providerOptions({
+				cwd, maxTurns: 1, resume: source.sessionId, resumeSessionAt: cut, forkSession: true, sessionId: forkId,
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0" },
+			}),
+		}));
+		assert.equal(init?.session_id, forkId, "fork must honor its pre-minted target id");
+		assert.equal(result?.subtype, "success", JSON.stringify(result));
+		assert.ok(forkId && forkId !== source.sessionId, "fork must have a new session id");
+		const fork = openSession({ sessionId: forkId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		const ids = fork.records.filter((r) => r.uuid).map((r) => r.uuid);
+		assert.deepEqual(ids.slice(0, kept.length), kept, "kept record UUIDs must survive the fork");
+		assert.ok(dropped.every((id) => !ids.includes(id)), "discarded record UUIDs survived the cut");
+		const next = fork.records.find((r) => r.uuid === promptUuid);
+		assert.equal(next?.parentUuid, cut, "supplied prompt UUID must be parented on the cut");
+		const body = requests.find((r) => JSON.stringify(r.messages).includes("FORK-CONTRACT-PROMPT"));
+		assert.ok(body, "CC sent no fork request");
+		assert.match(JSON.stringify(body.messages), /KEPT-FORK-MARKER/);
+		assert.doesNotMatch(JSON.stringify(body.messages), /DROPPED-FORK-MARKER/);
+		assert.deepEqual(readFileSync(source.jsonlPath), before, "fork mutated the ancestor bytes");
+		assert.equal(statSync(source.jsonlPath).mtimeMs, mtime, "fork touched the ancestor mtime");
+	} finally {
+		api.close();
+		deleteSession(source.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		deleteSession(forkId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("a truncating fork preserves parallel results outside the leaf's parent path", { timeout: 120_000 }, async () => {
+	const requests = [];
+	const api = await stubApi(requests, { toolCallsFirst: ["mcp__custom-tools__alpha", "mcp__custom-tools__beta"] });
+	const cwd = mkdtempSync(join(tmpdir(), "cc-parallel-fork-"));
+	const calls = [];
+	const options = providerOptions({
+		cwd, maxTurns: 3,
+		mcpServers: toolServer([noArgTool("alpha"), noArgTool("beta")], calls),
+		env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0" },
+	});
+	try {
+		const seed = await collect(query({ prompt: "Call alpha and beta in parallel.", options }));
+		assert.equal(seed.result?.subtype, "success", JSON.stringify(seed.result));
+		assert.equal(calls.length, 2);
+		const source = openSession({ sessionId: seed.init.session_id, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		const cut = seed.assistantUuids.at(-1);
+		const byId = new Map(source.records.map((r) => [r.uuid, r]));
+		const parentPath = new Set();
+		for (let record = byId.get(cut); record; record = byId.get(record.parentUuid)) parentPath.add(record.uuid);
+		const results = source.records.filter((r) => r.type === "user" && Array.isArray(r.message.content) && r.message.content.some((b) => b.type === "tool_result"));
+		assert.equal(results.length, 2);
+		assert.ok(results.some((r) => !parentPath.has(r.uuid)), "the seed must exercise sibling result records");
+		const before = readFileSync(source.jsonlPath);
+		for (const forkCut of [results.at(-1).uuid, cut]) {
+			const marker = `PARALLEL-FORK-${forkCut}`;
+			const forked = await collect(query({ prompt: `Reply OK to ${marker}.`, options: { ...options, resume: seed.init.session_id, resumeSessionAt: forkCut, forkSession: true } }));
+			assert.equal(forked.result?.subtype, "success", JSON.stringify(forked.result));
+			const fork = openSession({ sessionId: forked.init.session_id, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+			assert.ok(results.every((r) => fork.records.some((f) => f.uuid === r.uuid)), "fork dropped a sibling result record");
+			const sent = requests.find((r) => JSON.stringify(r.messages).includes(marker));
+			assert.ok(sent, "fork sent no request");
+			for (const value of ["alpha-VALUE", "beta-VALUE"]) assert.ok(JSON.stringify(sent.messages).includes(value), `fork dropped ${value}`);
+			assert.deepEqual(readFileSync(source.jsonlPath), before);
+		}
+	} finally {
+		api.close();
+		rmSync(getProjectDir(cwd, process.env.CLAUDE_CONFIG_DIR), { recursive: true, force: true });
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("a steer replayed after a completed turn has its own user record after that assistant", { timeout: 120_000 }, async () => {
+	const requests = [];
+	const api = await stubApi(requests);
+	const cwd = mkdtempSync(join(tmpdir(), "cc-late-steer-"));
+	const sessionId = randomUUID();
+	const steerUuid = randomUUID();
+	const promptUuid = randomUUID();
+	let release;
+	const completed = new Promise((resolve) => { release = resolve; });
+	async function* prompts() {
+		yield { type: "user", message: { role: "user", content: "Reply OK to FIRST-TURN." }, parent_tool_use_id: null, uuid: promptUuid };
+		await completed;
+		yield { type: "user", message: { role: "user", content: "Reply OK to LATE-STEER." }, parent_tool_use_id: null, uuid: steerUuid, priority: "next" };
+	}
+	try {
+		const messages = [];
+		let results = 0;
+		for await (const message of query({
+			prompt: prompts(),
+			options: providerOptions({
+				cwd, sessionId,
+				extraArgs: { "strict-mcp-config": null, "replay-user-messages": null },
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0" },
+			}),
+		})) {
+			messages.push(message);
+			if (message.type === "result") { assert.equal(message.subtype, "success"); if (++results === 1) release(); }
+		}
+		assert.equal(results, 2, "both turns must complete");
+		assert.ok(messages.some((m) => m.type === "user" && m.isReplay && m.uuid === promptUuid), "CC must replay-acknowledge the initial supplied UUID");
+		const firstAssistant = messages.find((m) => m.type === "assistant");
+		const replay = messages.find((m) => m.type === "user" && m.isReplay && m.uuid === steerUuid);
+		assert.ok(firstAssistant && replay, "the late steer must be replay-acknowledged");
+		assert.ok(messages.indexOf(firstAssistant) < messages.indexOf(replay));
+		const session = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		const firstAt = session.records.findIndex((r) => r.uuid === firstAssistant.uuid);
+		const promptAt = session.records.findIndex((r) => r.uuid === promptUuid);
+		assert.ok(promptAt >= 0 && promptAt < firstAt, "initial replay UUID must name the recorded prompt");
+		const steerAt = session.records.findIndex((r) => r.uuid === steerUuid);
+		assert.ok(firstAt >= 0 && steerAt > firstAt, "late steer must follow the already completed assistant");
+		assert.equal(session.records[steerAt].type, "user", "a later-turn steer is a user record, not a queued_command attachment");
+		assert.ok(requests.some((r) => JSON.stringify(r.messages).includes("LATE-STEER")));
+	} finally {
+		release();
+		api.close();
+		rmSync(getProjectDir(cwd, process.env.CLAUDE_CONFIG_DIR), { recursive: true, force: true });
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("an initial replay's prompt UUID survives abort once the real child exits", { timeout: 120_000 }, async () => {
+	const requests = [];
+	const api = await stubApi(requests, { stall: true });
+	const cwd = mkdtempSync(join(tmpdir(), "cc-prompt-replay-abort-"));
+	const source = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
+	source.addUserMessage("Remember the old prefix.");
+	source.addAssistantMessage([{ type: "text", text: "Remembered." }]);
+	source.save();
+	const promptUuid = randomUUID();
+	let release, resolveExit, replayed = false;
+	const held = new Promise((resolve) => { release = resolve; });
+	const exited = new Promise((resolve) => { resolveExit = resolve; });
+	async function* prompt() {
+		yield { type: "user", message: { role: "user", content: "Replay this prompt before answering." }, parent_tool_use_id: null, uuid: promptUuid };
+		await held;
+	}
+	const q = query({ prompt: prompt(), options: providerOptions({
+		cwd, resume: source.sessionId, includePartialMessages: true,
+		extraArgs: { "strict-mcp-config": null, "replay-user-messages": null },
+		spawnClaudeCodeProcess(options) {
+			const child = spawn(options.command, options.args, { cwd: options.cwd, env: options.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] });
+			child.stderr.on("data", () => {});
+			child.once("close", resolveExit);
+			return child;
+		},
+		env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0" },
+	}) });
+	const watchdog = setTimeout(() => { release(); q.close(); }, 15_000);
+	try {
+		for await (const message of q) {
+			if (message.type === "user" && message.isReplay && message.uuid === promptUuid) {
+				replayed = true;
+				release();
+				void q.interrupt().catch(() => {});
+				q.close();
+				break;
+			}
+		}
+		assert.ok(replayed, "CC must acknowledge the supplied initial prompt UUID");
+	} finally {
+		clearTimeout(watchdog);
+		q.close();
+		release();
+		await exited;
+		try {
+			// A replay proves consumption, not an immediate disk flush.
+			const saved = openSession({ sessionId: source.sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+			assert.ok(saved.records.some((r) => r.uuid === promptUuid), "replayed prompt must be written by real process exit");
+		} finally {
+			api.close();
+			rmSync(getProjectDir(cwd, process.env.CLAUDE_CONFIG_DIR), { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}
+});
+
+// --- Per-query proxy routing ---
+
+test("a path prefix on ANTHROPIC_BASE_URL is kept on every request, retries included", { timeout: 120_000 }, async () => {
+	// The bridge's trace mode gives each query its own base URL path,
+	// http://proxy/q/<queryId>, and diag/capture-proxy.mjs strips it to tie a
+	// request to its query. That only works if CC keeps the prefix on every
+	// request it sends — first attempts, retries after a 529, and anything else.
+	const requests = [];
+	const paths = [];
+	const api = await stubApi(requests, { paths, overloadFirst: 1 });
+	try {
+		const { result } = await collect(query({
+			prompt: "Reply OK.",
+			options: providerOptions({
+				maxTurns: 1, persistSession: false,
+				env: { ...process.env, ANTHROPIC_BASE_URL: `${api.url}/q/route-probe`, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
+			}),
+		}));
+		assert.equal(result?.subtype, "success", JSON.stringify(result));
+		const posts = paths.filter((p) => p.includes("/v1/messages"));
+		assert.ok(posts.length >= 2, `CC did not retry the 529, so the retry path went unchecked: ${JSON.stringify(paths)}`);
+		const unrouted = paths.filter((p) => !p.split(" ")[1].startsWith("/q/route-probe/"));
+		assert.deepEqual(unrouted, [], `requests lost the base URL prefix: ${JSON.stringify(paths)}`);
+	} finally {
+		api.close();
+	}
+});
+
+test("routing through the capture proxy does not change what CC sends", { timeout: 180_000 }, async () => {
+	// The cache trace points ANTHROPIC_BASE_URL at diag/capture-proxy.mjs, and
+	// Claude Code gates some behavior on the API host (CC source: tool search,
+	// thinking-binding beta), so the trace also sets _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL
+	// (src/cache-trace.ts traceQueryStart). Same prompt, tools and settings
+	// with and without the proxy: CC's loaded tools and the prompt size of its first
+	// request (input + cache read + cache write) must match, or traced runs do not
+	// stand for untraced ones. Reads the size off message_start, which the SDK
+	// streams either way.
+	const out = mkdtempSync(join(tmpdir(), "cc-proxy-neutral-"));
+	const proxy = spawn(process.execPath, ["diag/capture-proxy.mjs", "--port", "0", "--out", out], { stdio: ["ignore", "ignore", "pipe"] });
+	let log = "";
+	const url = await new Promise((resolve) => proxy.stderr.on("data", (d) => { log += d; const m = log.match(/capture proxy on (http:\S+)/); if (m) resolve(m[1]); }));
+	const run = async (extraEnv) => {
+		let tools = null;
+		let usage = null;
+		const q = query({
+			prompt: "Reply OK.",
+			options: providerOptions({
+				maxTurns: 1, persistSession: false, includePartialMessages: true,
+				mcpServers: toolServer([noArgTool("alpha")], []),
+				env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", ...extraEnv },
+			}),
+		});
+		for await (const message of q) {
+			if (message.type === "system" && message.subtype === "init") tools = [...message.tools].sort();
+			if (message.type === "stream_event" && message.event.type === "message_start" && !usage) usage = message.event.message.usage;
+		}
+		return { tools, size: usage && usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens };
+	};
+	try {
+		const direct = await run({});
+		const proxied = await run({ _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1", ANTHROPIC_BASE_URL: `${url}/q/neutral` });
+		assert.ok(direct.size > 0 && proxied.size > 0, "no usage on message_start");
+		assert.ok(readFileSync(join(out, "index.jsonl"), "utf8").includes("/v1/messages"), "the proxied run did not go through the proxy");
+		assert.deepEqual(proxied.tools, direct.tools, "CC loaded different tools behind the proxy");
+		assert.equal(proxied.size, direct.size, "CC's first request is a different size behind the proxy");
+	} finally {
+		const exited = once(proxy, "exit");
+		proxy.kill("SIGTERM");
+		await exited; // it writes its end manifest first
+		rmSync(out, { recursive: true, force: true });
+	}
+});
 
 /** cache_control markers are breakpoint directives, not cache-keyed content — CC 2.1.280
  *  moves them (and a 1h ttl) between turns, so payload comparisons strip them. */
@@ -677,5 +964,48 @@ test("includeGitInstructions:false strips gitStatus and keeps the preset static 
 	} finally {
 		api.close();
 		rmSync(repo, { recursive: true, force: true });
+	}
+});
+
+// --- Resuming a session that ends at a tool result ---
+
+test("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1 stops CC resuming a turn that ends at a tool result", { timeout: 120_000 }, async () => {
+	// A rebuild after a terminating tool, or after a parked query was discarded, ends
+	// at a tool result, which CC reads as an interrupted turn. Behind a server flag it
+	// then inserts a meta "Continue from where you left off." user message ahead of our
+	// prompt; CLAUDE_CODE_RESUME_INTERRUPTED_TURN forces that path here, so the control
+	// doesn't depend on the flag. src/index.ts CC_CHILD_ENV sets the bound. (PR #145)
+	const requests = [];
+	const api = await stubApi(requests);
+	const cwd = mkdtempSync(join(tmpdir(), "cc-resume-contract-"));
+	const resumePrompt = "Continue from where you left off.";
+	const sessionIds = [];
+	const run = async (extraEnv) => {
+		const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
+		sessionIds.push(session.sessionId);
+		session.importMessages([
+			{ role: "user", content: "Compact now." },
+			{ role: "assistant", content: [{ type: "tool_use", id: "toolu_compact_1", name: "mcp__custom-tools__compact", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_compact_1", content: "Compaction scheduled." }] },
+		]);
+		session.save();
+		await collect(query({
+			prompt: "PI-RESUME-NOTE",
+			options: providerOptions({
+				cwd, resume: session.sessionId, maxTurns: 1,
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_RESUME_INTERRUPTED_TURN: "1", ...extraEnv },
+			}),
+		}));
+		const body = requests.filter((b) => JSON.stringify(b.messages).includes("PI-RESUME-NOTE")).at(-1);
+		assert.ok(body, "the resumed query never reached the stub API");
+		return JSON.stringify(body.messages);
+	};
+	try {
+		assert.ok((await run({})).includes(resumePrompt), "CC no longer inserts its resume prompt when forced; this guard may be obsolete");
+		assert.ok(!(await run({ CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1" })).includes(resumePrompt), "CC still inserted its resume prompt with the bound set");
+	} finally {
+		api.close();
+		for (const id of sessionIds) deleteSession(id, cwd, process.env.CLAUDE_CONFIG_DIR);
+		rmSync(cwd, { recursive: true, force: true });
 	}
 });

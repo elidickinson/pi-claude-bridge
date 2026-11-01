@@ -4,187 +4,58 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
 ## Ideas
 
-1. **#30: pruning costs Claude all context for that turn.** When `pi-context-prune`
-   shrinks pi's history below our cursor we clean-start, so Claude answers that turn
-   with no prior conversation. Rebuilding from the pruned messages keeps the
-   (compressed) context and still bounds the JSONL, which is what the issue asks
-   for. The discriminator must be **reentrancy, not message count**: the
-   shorter-context branch in `syncSharedSession` is also the guard that stops a
-   subagent resuming and overwriting the parent's session, and a subagent's priors
-   are not empty. `isReentrant` is computed immediately before the main
-   `syncSharedSession` call (`src/index.ts:1642`; AskClaude's at `:1903`) and just
-   isn't passed in. The stale `fix/issue-30-pruned-history` branch discriminates on
-   `priorMessages.length === 0` and would break subagent isolation -- do not merge
-   it. Decide deliberately what the AskClaude caller should pass. Guarded by
-   `unit-sync-shared-session.mjs` plus `int-subagent-rpiv-codebase-locator.mjs`.
+1. **Session-sync simplifications.** Each is independent, except do the writer-tracking item first.
+    - **Writer-tracking teardown is repeated in four places.** `stopWriting` and the CAS-checked delete pair up at `src/index.ts:2137`/`2145`, `2289`/`2293`, `2389`/`2420`, `2509`/`2514`. A `trackSessionWriter()` returning `{stop, release}` would make the ownership check impossible to forget.
+    - **AskClaude's writer registration is never read.** `src/index.ts:2389`, used at `2416`, `2428`, `2509`. Ask always forks to a fresh id and never commits state, so nothing waits on it. Removing it makes the `sync.created` checks at `2419` and `2513` unconditional.
+    - **The `"(none)"` mirror bucket is test-only.** `sessionKey`, `src/index.ts:196`. Null ids are never read or written in production. Key the map by id. Touches `unit-discard-rewritten-query.mjs`, `unit-sync-shared-session.mjs`, `unit-deliver-tool-results.mjs`.
+    - **`knownSessionIds` / `registry.known` is test-only.** `src/index.ts:228`, `235`, `245`. Only `__test.resetSharedSession` reads it; have the reset remove the sessions dir instead.
+    - **`LiveRecording` has parameters only tests use.** `src/session-sync.ts:149`, `186`. Production always passes `acknowledged=false` and `uuid=undefined`. Shrink to `users(messages, start, uuid, steering)` and `assistant(digest, toolCalls, resetTools)`.
+    - **`dropParkedQuery`'s else branch is unreachable.** `src/index.ts:1794-1797`: `activeQuery` and `stopProcess` are set together. `unit-discard-rewritten-query.mjs` tests the dead branch; it should set `stopProcess` so it covers the real abort.
+    - **AskClaude's launch-identity spread duplicates the provider's.** `src/index.ts:2119-2123` vs `2407-2409`. Move the `resume`/`forkAt`/`created && (!resume || forkAt)` trio, which is the rule that keeps resume and fork exclusive, into one helper.
+    - **`extractIsolatedSummaryPrompt` and its `isOneOffSummary` branch are dead.** `src/index.ts:425`, `514-517`; the only caller is gated on `cacheRetention === "none"`. Also a redundant `toBridgeContext` at `498`.
+    - **`SnapshotWriter`'s `"possible-writer"` and `"query-ended"` values are never passed.** `src/cache-trace.ts:321`. The only snapshot (`src/index.ts:746`) passes `"no-known-writer"`.
+    - **The pending-tool rule is in two places.** `updatePendingTools` (`src/session-sync.ts:53`, import cuts) and `LiveRecording.flush` (`src/session-sync.ts:211-218`, live cuts) both decide whether a cut is safe. Their inputs differ, so a shared helper would be thin, but if the two drift apart they'll silently disagree about cut safety.
 
-2. **Synthetic all-zero usage overwrites real counters.** A `<synthetic>` failure
-   message carries all-zero usage, and `recordUsage`/`updateUsage` (`src/usage.ts`)
-   guard absence, not zeros — so a failure after real output in the same turn erases
-   input/output/cache totals. Pre-existing (the synthetic message always reached
-   `recordUsage`); reachable pre-#162 too, since synthetic ids are UUIDs and always
-   pass the different-id check.
+2. **Surface errors that arrive with no open pi stream.** When a result lands after the turn already ended on a tool call, `consumeQuery` records the error but has no `currentPiStream` to push it to, so the user sees a stall instead of "rate limited". Surfacing it means synthesizing a turn pi didn't ask for. `tests/unit-error-result.mjs` covers the recording, nothing covers surfacing. One of the stall causes behind #35.
 
-3. **CC's typed error fields are ignored.** The SDK assistant frame declares only
-   `error?: SDKAssistantMessageError` (`sdk.d.ts:3605`), the result a snake_case
-   `api_error_status`; the camelCase `apiErrorStatus` / `isApiErrorMessage: true`
-   seen on disk are transcript-record fields, and `error: "rate_limit"` rides on the
-   assistant frame. `resultErrorText` already types off `is_error`/`subtype`/`errors[]`
-   — the word-matching lives downstream (`describeRateLimitFailure` and consumers).
-   A contract pin on these fields would let failure classification stop relying on
-   wording. The `rate_limit_event` path covers the common case.
+3. **Use CC's native /compact for pi /compact instead of the isolated summary query.** Today `session_before_compact` lets pi run, `runIsolatedSummary` (`src/index.ts:487`) spawns a separate uncached CC query that re-reads the whole history, and the post-compact REBUILD makes the live session read its new (compacted) prefix back. Native compaction does both jobs in-session: CC summarizes its own cached conversation, appends the boundary to its session file, and the bridge returns `{compaction: {summary, firstKeptEntryId, tokensBefore: pre_tokens, ...}}` so pi rewrites to a shape CC already has — next query is a plain REUSE. No SDK control request exists (no `compact` subtype in sdk.d.ts 0.3.308); the only trigger is a `/compact [instructions]` user message dispatched as a slash command, which needs a live query for the session (parked query, or open a resume query when none). Probe first (`int-cc-contracts.mjs`): message shape and completion signals (`SDKCompactBoundaryMessage`, `SDKStatusMessage.compact_result`), whether `DISABLE_AUTO_COMPACT=1` leaves manual /compact working, whether kept-tail metadata (`preserved_messages`) maps cleanly to pi's `firstKeptEntryId` via the recording's uuid mirror, and whether microcompact (tool-result pruning) fires without a boundary — pi would then diverge silently. Then decide: manual-only first, threshold/overflow later (they fire mid-turn with `willRetry`, where the CC child may be parked at a tool boundary); forward `event.customInstructions`; keep CC-side autocompact off regardless. Blocking risk: CC's session copy can lag pi's history (dirty tail), so the summary would be of stale content — sync/REBUILD must complete before dispatching.
 
-4. **Make the dropped-thinking-signature rate visible.** 26 of 2,363
-   `claude-bridge` thinking blocks carry an empty `thinkingSignature`, so
-   `src/convert.ts:144` correctly refuses to replay them (Anthropic rejects
-   unverifiable signatures) -- but silently. A WARNING at the drop site turns a
-   1.1% invisible loss into a number, which is the prerequisite for ever
-   explaining it.
+4. **CC's typed error fields are ignored.** The SDK assistant frame declares `error?: SDKAssistantMessageError` (`sdk.d.ts:3678`) and the result a snake_case `api_error_status`; the camelCase `apiErrorStatus` / `isApiErrorMessage` seen on disk are transcript fields only. Failure classification downstream of `resultErrorText` (`describeRateLimitFailure` and its consumers) still matches on wording. A contract pin on these fields would let it stop. `rate_limit_event` covers the common case.
 
-5. **Per-query rewrite staleness — done for the serving instance; worktree-spawn instances still mark via the `Symbol.for` hook registry** (`claude-bridge:markRebuildHooks`), which relies on every instance loading the same module. If a future pi loader change makes that unreliable, the hook registry needs to grow into a shared state channel (per-session mark records the serving instance reads). Session id attribution rides on `options.sessionId`, which pi-ai documents as ignorable metadata — verify it stays set on `streamSimple` calls (agent.ts passes `sessionManager.getSessionId()` today).
-6. **Decide which other `WARNING:` lines should fail integration runs.** The suite gates bridge-origin `BUG:` and stranded MCP-handler markers; `diag/audit-warnings.mjs` inventories the remaining warnings. Add a warning only when its meaning and any intentional test cases are pinned.
+5. **Pin the SDK exactly and run the contract tests against the newest one on a schedule.** `package.json` declares `^0.3.308`, and the SDK pins its bundled CC binary to its own version, so a user installing the bridge can get an untested CC; the lockfile only applies to this checkout. Pin `0.3.308`. Then run `tests/int-cc-contracts.mjs` regularly against `@anthropic-ai/claude-agent-sdk@latest` to learn when a bump is safe. It needs a logged-in CC and must run outside the sandbox, so either a local scheduled job or a CI job with a credential secret.
 
-7. **Stop the diag replay harness manufacturing the phantom-tool-call condition.**
-   `diag/replay-write-path.mjs` and `diag/lib/write-path.mjs` (also used by
-   `unit-convert-determinism`) call the conversion without a populated
-   `customToolNameToSdk` map, so pi's `bash` is rebuilt as Claude Code's builtin
-   `Bash` -- the prompt condition behind the deadlock fixed in 122914dd. A replay
-   run can therefore reproduce *or mask* that bug for reasons unrelated to the code
-   under test. Fix: pass the recorded tool list through to `convertPiMessages`.
-   Production is unaffected (verified over 86,652 real pi messages).
+6. **Don't load Claude Code settings on the provider path by default.** Provider and AskClaude queries load CC's user settings (`settingSources: ["user"]`; project and local settings are already off), so `~/.claude` hooks, output style (#220) and other settings reach provider turns. The isolated summary query already uses `[]` (`src/index.ts:535`). Settings are loaded because Bedrock/Vertex users keep `env` and `apiKeyHelper` in `settings.json` (`src/index.ts:71`). Add `provider.loadClaudeSettings` (the name proposed in #141), default `false`, for them and for anyone who wants their CC hooks or plugins in pi turns. That breaks Bedrock/Vertex setups until they turn it on, so say so in the changelog. With `[]` the `CLAUDE_MD_EXCLUDES` workaround only matters for the opt-in, and the README's hooks advice changes.
 
-8. **Mirror `eli/lifecycle-coverage-gaps.md` into a tracked file** -- the
-   QueryContext lifecycle x sync-path coverage map is in a gitignored directory, so
-   nobody else gets it. Belongs in `docs/` or as a section of `diag/AUDIT.md`. (The
-   provenance rule is already in `AGENTS.md`.)
+7. **Warn when inherited Anthropic env vars will redirect Claude Code** (#107). An exported `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` reaches the CC child through `env: { ...process.env, ... }` and overrides the subscription login, so every turn fails with the gateway's auth error. Warn at every session start (not once ever, like the startup notice) naming the variables that are set, with a setting such as `provider.warnAnthropicEnv: false` for people who route through a gateway on purpose.
 
-9. **Surface errors that arrive with no open pi stream.** When a result lands
-   after the turn already ended on a tool call, `consumeQuery` records the error
-   (stopReason, errorMessage, log) but there is no open `currentPiStream` to push
-   an error event onto, so the user sees a stalled turn rather than "rate limited".
-   Surfacing it means synthesizing a turn pi did not ask for.
-   `tests/unit-error-result.mjs` covers the recording; nothing covers the
-   surfacing. This is also the third stall cause behind GitHub #35.
+8. **Turn off Claude Code's tool search.** On first-party connections CC adds a `DeferredToolPlaceholder` tool with `defer_loading` to every request, but none of the bridge's 10 MCP tools were deferred (`diag/CACHE-REBUILD-FINDINGS.md:197`), so it adds a tool and does nothing. With enough pi tools CC could start hiding some behind its search tool. Add `ENABLE_TOOL_SEARCH: "false"` to `CC_CHILD_ENV` (`src/index.ts:59`), as pi-claude-code does, and confirm with the capture proxy that the placeholder is gone. The tool list changes, so expect one cache miss per session on upgrade.
 
-10. **Handler timeout / stall watchdog** -- whether the bridge should give up on an
-   MCP handler that has waited implausibly long instead of only warning.
+9. **Synthetic all-zero usage overwrites real counters.** A `<synthetic>` failure message carries all-zero usage, and `recordUsage`/`updateUsage` (`src/usage.ts`) only guard against missing usage, not zeros. A failure after real output in the same turn erases its input/output/cache totals.
 
-11. **Markdown rendering** in expanded tool result view. Currently plain text.
-   Use `Markdown` from `@earendil-works/pi-tui` with a `MarkdownTheme`.
+10. **Mid-session system prompt changes.** CC reuses the prompt recorded when its session started, so changed context files, skills or extension sections don't reach the model until a rewrite (README "System prompt changes mid-session"). When the current prompt parts differ from the recorded ones, send the changed parts as a `<system-reminder>` in the next user message, which keeps the cache. Needs the parts used at session start saved with the session state.
 
-12. **`/claude config` slash command** for runtime configuration. Currently
-    requires editing JSON and `/reload`.
+11. **Replay harness can fake the phantom-tool-call condition.** `diag/replay-write-path.mjs` and `diag/lib/write-path.mjs` (also used by `unit-convert-determinism`) convert without a `customToolNameToSdk` map, so pi's `bash` becomes CC's builtin `Bash`, the condition behind the phantom-tool deadlock. A replay can reproduce or mask that bug for unrelated reasons. Fix: pass the recorded tool list to `convertPiMessages`. Production is unaffected (checked over 86,652 real pi messages).
 
-13. **`/claude:btw` command** for ephemeral questions: response displayed but
-    not added to LLM context.
+12. **Audit tool parameter mismatches.** The bridge adds a 120s bash timeout because pi's bash has none and CC expects one. Compare CC's schemas with pi's for read, write, edit, grep and find for similar mismatches (units, defaults, optional vs required).
 
-14. **Audit tool parameter mismatches**: The bash timeout default (120s) was added
-    because pi's bash has no default while Claude Code expects one. Other bridged
-    tools may have similar mismatches (units, defaults, optional-vs-required params).
-    Compare Claude Code's tool schemas against pi's for read, write, edit, grep, find.
+13. **Log dropped thinking signatures.** 26 of 2,363 `claude-bridge` thinking blocks have an empty `thinkingSignature`, so `src/convert.ts:138` rightly skips them, but silently. A WARNING at the drop site would turn a 1.1% invisible loss into a number someone can explain.
 
-15. **AskUserQuestion pi shim** (main provider only): CC never sees
-    AskUserQuestion (it's in `DISALLOWED_BUILTIN_TOOLS`), so it can't ask the
-    user questions interactively. Port a pi-native version using `ctx.ui.custom()`
-    for an option picker with free-text fallback. Not applicable to AskClaude
-    subagents (can't interact with user). See `fractary/pi-claude-code`
-    `AskUserQuestion.ts` for reference.
-
-16. **PlanMode pi shim** (main provider only): Similarly, EnterPlanMode/
-    ExitPlanMode are blocked. A pi-native plan mode could use
-    `pi.setActiveTools()` to restrict to read-only tools, block destructive bash
-    via `tool_call` event, and surface plan approval through pi's TUI. Not
-    applicable to AskClaude subagents. See `fractary/pi-claude-code`
-    `PlanMode.ts`.
+14. **Check the Claude Code login at startup.** Low priority. When CC isn't logged in, the first turn fails with CC's error. pi-claude-code runs `claude auth status` in its provider check and hides its models when logged out; a warning at session start would be enough here. Run it in the background so startup doesn't wait on it.
 
 ## Open questions
 
-- **18 never-answered tool calls** (`[no tool result recorded]` as the lone stub of
-  a single-`tool_use` turn). 389 of the historical occurrences are the fixed
-  parallel-results bug, but one is NEW since the audit baseline (js13k project,
-  2026-08-31, real session) -- so the cause is not extinct. Two other grep hits
-  are docs quoting the marker, not records. Re-run
-  `diag/audit-transcripts.mjs --since <last good date>` to check for growth.
+- **Never-answered tool calls** (`[no tool result recorded]` as the only stub of a single-`tool_use` turn). 389 historical hits are the fixed parallel-results bug, but one real one appeared after the audit baseline (js13k project, 2026-08-31), so the cause isn't gone. Re-run `diag/audit-transcripts.mjs --since <last good date>` to check for more.
 
-## Lower-priority testing gaps
+- **Do messages starting with `/` reach the model?** The bridge hands pi's user text to CC as typed input, so CC may run a message that starts with `/` as one of its own commands (built-ins or `~/.claude/commands`) instead of sending it to the model. CC also expands `@path` itself, which `src/attachments.ts` relies on. pi-claude-code passes `--disable-slash-commands`; the SDK's per-message `client_composed: true` (see `verbatimPrompts` in `sdk.d.ts`) turns off both. No issue reports it, so it's probably rare. Probe: send "/Users/.../x.ts is broken", an unknown "/word" and a CC built-in name through the bridge and check what reaches the model. Marking pi's messages verbatim must still leave the bridge's own `/compact` (Ideas #3) working.
 
-- **Int tests pollute the audit scan.** `rpc-harness.mjs` defaults `cwd` to the
-  project root, so int sessions (SlowTool fixtures, `token0.txt`) write JSONLs
-  into the real `-Users-esd-projects-pi-claude-code-acp` sessions dir and the
-  transcript scanner counts them as real-project defects -- 123 fake hits
-  in-window as of 2026-09-23. Fix: default test cwd to a temp dir, or teach the
-  scanner to exclude self-authored test sessions.
+- **Can #152 (`--thinking off` still enables thinking) be fixed on 5.x models?** pi-claude-code's issue #2 reports that Opus 5.5 and Fable 5.1 reject `thinking: {type: "disabled"}` with a 400, which broke its `/tree` summaries. If so, "off" can't be passed through on those models; probe each current model before choosing a fix.
 
-- **Structured diagnostics for tests**: Tests grep debug-log strings to verify
-  internal state. The `syncResult:` marker added on `simplify-session-sync`
-  narrows this for session sync (tests parse a single targeted line per
-  decision instead of the old Case-1/2/3/4 labels), but it's still grep-based.
-  A proper diagnostic channel (NDJSON or dedicated diagLog entries) would be
-  cleaner and resilient to log-format churn.
+## Testing gaps
 
-- **`int-cache.sh` asserts on model whim**: the run fails with `Only 1 tool call(s)
-  (expected >= 2)` when Haiku answers the read prompt from context instead of
-  calling the tool. Observed once in 15 runs. The tool-call count is a proxy for
-  "the cursor/cache path got exercised", so it cannot simply be dropped; making the
-  prompt harder to satisfy from context would be the fix.
+- **Int tests pollute the audit scan.** `rpc-harness.mjs` defaults `cwd` to the project root, so int-test sessions land in the real project's sessions dir and the transcript scanner counts them as defects (123 fake hits as of 2026-09-23). Fix: default to a temp dir, or have the scanner skip test sessions.
 
-## Upstream
-
-Nothing to fix here -- filed or inherent in the other project.
-
-- **CC's resume reorders same-millisecond `tool_result` blocks.** 8 of 10 sessions
-  (10 parallel `Read` calls, then a resume): the resumed request's block order
-  differs from the on-disk record order, always as adjacent-pair swaps, and in all
-  8 every swapped pair shared a millisecond timestamp. The live request matched
-  disk 10 of 10, so CC's writer is faithful and its reader is not. Deterministic
-  per session file, so it costs one cache write rather than a recurring tax, and
-  rare: 2 of 417 real parallel groups carry a tie. Repro pattern in
-  `diag/AUDIT.md`.
+- **`int-cache.sh` depends on the model calling a tool.** It fails with `Only 1 tool call(s) (expected >= 2)` when Haiku answers from context instead of reading the file (1 in 15 runs). The count proves the recording/cache path ran, so it can't just be dropped; make the prompt harder to answer from context.
 
 ## Deferred
 
-- **Session JSONL cleanup**: Track session IDs created during a pi session. On
-  `session_shutdown`, delete the JSONL files from `~/.claude/projects/`. Sessions
-  accumulate indefinitely with no cleanup or reuse. (`persistSession: false` is
-  already used on the isolated paths; the main path needs CC to append to the
-  shared session, so the fix is deletion, not suppression.)
-
-- **CC CLI debug log accumulation**: When `CLAUDE_BRIDGE_DEBUG=1`, every
-  `query()` call writes a new file under `~/.pi/agent/cc-cli-logs/`. These
-  accumulate indefinitely.
-
-- **Bun/Node hash mismatch for >200-char paths** (cc-session-io known
-  limitation, documented in its README). Node writes with djb2, Bun reads
-  with wyhash -- for long encoded paths the dirs don't match and CC can't
-  find the session. Rare in practice (requires deep nesting), but the fix is
-  to make cc-session-io's `projectPathToHash` Bun-aware at write time. Would
-  live upstream in cc-session-io.
-
-- **Post-abort rebuild rotates sessionId** (see `Case 4 post-abort` log line).
-  Normal Case 4 rebuilds preserve the sessionId by wiping the file in place
-  (`deleteSession` + `createSession({sessionId})`). The post-abort path can't
-  safely do that: the killed CC subprocess flushes a late `[Request interrupted
-  by user]` record during its own cleanup, and if that write lands on the
-  freshly-rewritten file it appends an orphan record with a dangling
-  `parentUuid`, which breaks CC's parent-uuid chain on the next resume -- CC
-  silently starts with empty context and produces a confidently-wrong
-  answer. Diagnosed in debug log during branch work, see commit e317461.
-
-  Current fix: post-abort rebuild takes a fresh UUID, so the orphan writes can
-  only land on a dead inode. Deterministic, zero-latency, costs one extra UUID
-  in the debug log per abort.
-
-  Options to revisit:
-  - **Short delay (~500ms) before post-abort rebuild**, keep the UUID stable.
-    Overprovisions the observed ~1-2ms race window by 250-500x. Adds visible
-    latency on the post-abort turn. Risk: still probabilistic -- loaded systems
-    could extend subprocess cleanup past the delay.
-  - **Drain the aborted query's AsyncGenerator to completion**, then rebuild.
-    Narrows the race window but doesn't close it (CC's pending `fs.appendFile`
-    calls are invisible to the drain). Also requires making `syncSharedSession`
-    async. Strictly worse than rotation.
-  - **Listen for the ChildProcess `exit` event directly.** Deterministic fix
-    (open-claude-agent-sdk does exactly this). Official SDK's Query interface
-    doesn't expose the child process -- would need to fork the SDK or reach
-    into private state. Rejected unless the SDK grows a `close({ graceful: true
-    })` or equivalent hook.
+- **Superseded session files pile up.** When sync moves a pi session to a new CC session (fork, copied prefix, model or cwd change), the old JSONL in `~/.claude/projects/` is never deleted, nor is an AskClaude fork that made progress. Files from queries with no progress already are. Deleting on `session_shutdown` won't work, since saved state resumes the current CC session after a restart; only superseded files are safe to remove.

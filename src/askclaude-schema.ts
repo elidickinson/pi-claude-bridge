@@ -48,7 +48,7 @@ function modeDescription(defaults: AskClaudeDefaults): string {
 export function buildAskClaudeParams(defaults: AskClaudeDefaults) {
 	const visibility = defaults.isolated
 		? "By default Claude sees only this prompt (isolated session)."
-		: "By default Claude sees the full conversation history.";
+		: "By default Claude sees the recorded conversation history.";
 	const trueDefault = defaults.isolated ? " (default)" : "";
 	const falseDefault = defaults.isolated ? "" : " (default)";
 	const modeValues: readonly AskClaudeMode[] = defaults.allowFull ? ["read", "full", "none"] : ["read", "none"];
@@ -57,7 +57,7 @@ export function buildAskClaudeParams(defaults: AskClaudeDefaults) {
 		mode: Type.Optional(StringEnum(modeValues, { description: modeDescription(defaults) })),
 		model: Type.Optional(Type.String({ description: 'Claude model (e.g. "opus", "sonnet", "haiku", or full ID). Defaults to "opus".' })),
 		thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const, { description: "Thinking effort level. Omit to use Claude Code's default." })),
-		isolated: Type.Optional(Type.Boolean({ description: `When true${trueDefault}, Claude sees only this prompt (clean session). When false${falseDefault}, Claude sees the full conversation history.` })),
+		isolated: Type.Optional(Type.Boolean({ description: `When true${trueDefault}, Claude sees only this prompt (clean session). When false${falseDefault}, Claude sees the recorded conversation history.` })),
 	});
 }
 

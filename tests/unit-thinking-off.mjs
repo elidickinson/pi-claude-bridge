@@ -19,7 +19,7 @@ async function queryOptionsFor(model, streamOptions) {
 	__test.setQuery(({ options }) => {
 		captured = options;
 		const gen = (async function* () {
-			yield { type: "system", subtype: "init", session_id: "cc-thinking" };
+			yield { type: "system", subtype: "init", session_id: options.sessionId ?? options.resume };
 			yield { type: "result", subtype: "success", is_error: false, result: "ok" };
 		})();
 		gen.interrupt = async () => {};

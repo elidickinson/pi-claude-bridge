@@ -1,240 +1,163 @@
-/**
- * Cross-session conversation isolation, at the level of real turn sequences.
- *
- * The bridge serves several pi sessions from one process (pi-subagents children
- * run their own AgentSessions through the same registered streamSimple). These
- * tests drive real turn sequences through the provider with a mocked SDK
- * query() (see setQuery) — no Claude Code subprocess runs — and pin the
- * invariant every smaller unit test cannot check on its own:
- *
- *   A session's CC conversation belongs to that session. A foreign session —
- *   foreground or background, erroring or succeeding — can never claim, resume,
- *   rewrite or delete it.
- *
- * The scenarios come from a reproduced failure of the pre-Map design: a
- * foreground child completing inside the parent's first turn permanently
- * reassigned the shared session slot to the child's conversation, and the
- * parent's own completion then deleted its file.
- */
+// Behavioral provider sequences with a scripted external SDK and real transcripts.
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { getSessionPath } from "cc-session-io";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createSession, getSessionPath } from "cc-session-io";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { digestMessages } from "../src/message-digests.js";
+import { copyRecording } from "../src/session-sync.js";
 
-// Before importing the module: the bridge resolves config and CC paths at import
-// time, and the fake model below exercises claudeCodeModelId's pricing lookup —
-// point both at throwaway dirs so no real state is read or written.
-const claudeDir = mkdtempSync(join(tmpdir(), "claude-bridge-cross-session-cc-"));
-process.env.CLAUDE_CONFIG_DIR = claudeDir;
-process.on("exit", () => rmSync(claudeDir, { recursive: true, force: true }));
-
-const { __test } = await import("../src/index.js");
-const { setQuery, getSharedSession, resetSharedSession } = __test;
-
-// Build the provider entry the way pi hands it to the extension: call the
-// module's default export with stub registration hooks, keep the real
-// streamSimple that lands in the provider config.
+const root = mkdtempSync(join(tmpdir(), "cross-session-"));
+process.env.CLAUDE_CONFIG_DIR = root;
+process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 const mod = await import("../src/index.js");
+const { __test } = mod;
+const { setQuery, getSharedSession, resetSharedSession } = __test;
 let providerConfig;
-mod.default({
-	on: () => {},
-	registerProvider: (_name, config) => { providerConfig = config; },
-	registerTool: () => {},
-});
-const streamSimple = providerConfig.streamSimple;
-// A real registered model object, not a bare {id}: pi-ai's calculateCost reads
-// the pricing tiers off it for every usage update.
+mod.default({ on: () => {}, registerProvider: (_name, config) => { providerConfig = config; }, registerTool: () => {} });
 const model = providerConfig.models[0];
-
-// --- fake SDK query ---
-// scripts is a queue; each turn pops one. init(id) seeds the captured session
-// id; toolUse parks a mid-turn tool call whose delivery the caller controls.
-const calls = [];
-const scripts = [];
-const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { wait: () => p, open }; };
-const init = (id) => ({ type: "system", subtype: "init", session_id: id });
-const ev = (event) => ({ type: "stream_event", event });
-const toolUse = (id) => [
-	ev({ type: "message_start", message: { id: `msg_${id}`, usage: {} } }),
-	ev({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id, name: "mcp__custom-tools__read", input: {} } }),
-	ev({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"path":"a"}' } }),
-	ev({ type: "content_block_stop", index: 0 }),
-	ev({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} }),
-	ev({ type: "message_stop" }),
-];
-const result = (text) => ({ type: "result", subtype: "success", is_error: false, result: text });
-
-// --- pi-side message builders (same shapes pi hands to streamSimple) ---
-let clock = 0;
-const user = (text) => ({ role: "user", content: text, timestamp: clock++ });
-const asst = (content, stopReason = "stop") => ({ role: "assistant", content, api: "claude-bridge", provider: "claude-bridge", model: "claude-bridge/opus",
-	usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: clock++ });
-const toolCall = (id) => asst([{ type: "toolCall", id, name: "read", arguments: { path: "a" } }], "toolUse");
-const toolResult = (id) => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "file" }], isError: false, timestamp: clock++ });
-const say = (text) => asst([{ type: "text", text }]);
-
-const call = (sessionId, messages) => streamSimple(model, { messages, tools: [] }, { sessionId });
+const user = (content) => ({ role: "user", content, timestamp: 1 });
+const result = (id) => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "file" }], isError: false, timestamp: 1 });
+const tools = [{ name: "read", description: "read", parameters: { type: "object", properties: { path: { type: "string" } } } }, { name: "edit", description: "edit", parameters: { type: "object", properties: {} } }];
+const call = (sid, messages) => providerConfig.streamSimple(model, { messages, tools }, { sessionId: sid });
+const gate = () => { let open; const wait = new Promise((r) => { open = r; }); return { wait, open }; };
 const settle = () => new Promise((r) => setTimeout(r, 20));
+let scripts, calls;
 
 beforeEach(() => {
 	resetSharedSession();
-	calls.length = 0;
-	scripts.length = 0;
-	setQuery(({ options }) => {
+	__test.activeQueryContexts.clear();
+	scripts = [];
+	calls = [];
+	setQuery(({ prompt, options }) => {
 		const script = scripts.shift();
-		if (!script) throw new Error("no fake script queued");
-		calls.push({ label: script.label, resume: options.resume });
+		assert.ok(script, "script queued");
+		const sessionId = options.sessionId ?? options.resume;
+		calls.push({ resume: options.resume, sessionId });
+		const path = getSessionPath(sessionId, options.cwd, root);
+		let parentUuid = null;
+		// Only this external SDK double writes its simulated live records.
+		const record = (role, content, uuid) => {
+			const builder = createSession({ projectPath: options.cwd, sessionId });
+			if (role === "assistant") builder.addAssistantMessage(content);
+			else builder.addUserMessage(content);
+			const value = { ...builder.records[0], ...(uuid ? { uuid } : {}), parentUuid };
+			parentUuid = value.uuid;
+			mkdirSync(dirname(path), { recursive: true });
+			appendFileSync(path, JSON.stringify(value) + "\n");
+			return value;
+		};
 		const gen = (async function* () {
-			for (const step of script.steps) {
-				if (typeof step === "function") { await step(); continue; }
-				yield options.resume && step.type === "system" ? { ...step, session_id: options.resume } : step;
+			const input = prompt[Symbol.asyncIterator]();
+			const initial = (await input.next()).value;
+			void input.next().catch(() => {}); // SDK pump acknowledges stdin before waiting for more input
+			record("user", initial.message.content, initial.uuid);
+			yield { type: "system", subtype: "init", session_id: sessionId };
+			yield { type: "user", isReplay: true, parent_tool_use_id: null, uuid: initial.uuid, session_id: sessionId, message: initial.message };
+			const sdkAssistant = (content, id) => {
+				const value = record("assistant", content);
+				return { type: "assistant", parent_tool_use_id: null, uuid: value.uuid, session_id: sessionId, message: { id, model: model.id, content } };
+			};
+			if (script.tool) yield sdkAssistant([{ type: "tool_use", id: script.tool, name: "mcp__custom-tools__read", input: { path: "a" } }], `msg_${script.tool}`);
+			if (script.wait) await script.wait;
+			if (script.result) {
+				const value = record("user", [{ type: "tool_result", tool_use_id: script.result, content: "file" }]);
+				yield { type: "user", parent_tool_use_id: null, uuid: value.uuid, message: value.message };
 			}
+			if (script.edit) yield sdkAssistant([{ type: "tool_use", id: "edit-id", name: "mcp__custom-tools__edit", input: { path: "a", edits: script.edit } }], "msg_edit");
+			else yield sdkAssistant([{ type: "text", text: script.text ?? "answer" }], `msg_final_${sessionId}`);
+			yield { type: "result", subtype: "success", is_error: false, result: script.text ?? "answer", session_id: sessionId };
 		})();
 		gen.interrupt = async () => {};
 		gen.close = () => {};
 		return gen;
 	});
 });
+afterEach(() => setQuery(null));
 
-afterEach(() => {
-	setQuery(null);
-});
+function assertCoverage(sid, history) {
+	const state = getSharedSession(sid);
+	assert.deepEqual(state.digests, digestMessages(history));
+	const records = readFileSync(getSessionPath(state.ccSessionId, state.cwd, root), "utf8").trim().split("\n").map(JSON.parse);
+	for (const uuid of state.uuids) assert.ok(records.some((r) => r.uuid === uuid), `missing ${uuid}`);
+}
 
 describe("cross-session conversation isolation", () => {
-	it("a foreground child in the parent's first turn cannot claim the parent's conversation", async () => {
-		const P = "pi-parent", C = "pi-child";
-		const u1 = user("research X"), a1 = toolCall("toolu_P1"), tr1 = toolResult("toolu_P1"), a2 = say("parent answer"), u2 = user("now fix it");
-		const gP = gate();
-
-		// Parent's first turn parks on a tool call — held open until the child
-		// below has run, so the child's completion lands inside the parent's turn.
-		scripts.push({ label: "P turn 1", steps: [init("cc-P"), ...toolUse("toolu_P1"), gP.wait, result("parent answer")] });
-		const p1 = call(P, [u1]);
-		await settle();
-
-		// A foreground child runs to completion while the parent is parked.
-		scripts.push({ label: "child", steps: [init("cc-C"), result("child answer")] });
-		await call(C, [user("child task")]).result();
-
-		// The parked tool result resumes the parent turn and completes it —
-		// delivery routes into the parked query's stdin (see deliverToolResults),
-		// continuing the one query. The gate opening models that continuation.
-		gP.open();
-		await p1.result();
-
-		scripts.push({ label: "P turn 2", steps: [init("cc-P2"), result("ok")] });
-		await call(P, [u1, a1, tr1, a2, u2]).result();
-
-		assert.equal(calls.at(-1).resume, "cc-P",
-			"the parent's turn 2 resumes its own conversation, not the child's");
+	it("a foreground child cannot claim a parent's tool-using conversation", async () => {
+		const ask = user("research"), g = gate();
+		scripts.push({ id: "cc-parent", tool: "tool-P", result: "tool-P", wait: g.wait, text: "parent answer" });
+		const tool = await call("parent", [ask]).result();
+		scripts.push({ id: "cc-child", text: "child answer" });
+		await call("child", [user("child")]).result();
+		const tr = result("tool-P");
+		const continuation = call("parent", [ask, tool, tr]);
+		g.open();
+		const answer = await continuation.result();
+		assertCoverage("parent", [ask, tool, tr, answer]);
+		scripts.push({ id: "unused", text: "ok" });
+		await call("parent", [ask, tool, tr, answer, user("next")]).result();
+		assert.equal(calls.at(-1).resume, calls[0].sessionId);
+		assert.equal(getSharedSession("child").ccSessionId, calls[1].sessionId);
 	});
-
-	it("a background child finishing after the parent leaves the parent's conversation in place", async () => {
-		const P = "pi-parent", C = "pi-child";
-		const u1 = user("research X"), a2 = say("parent answer"), u2 = user("now fix it");
-		const gC = gate();
-
-		scripts.push({ label: "P turn 1", steps: [init("cc-P"), result("parent answer")] });
-		await call(P, [u1]).result();
-		assert.equal(getSharedSession(P).sessionId, "cc-P");
-
-		// Background child starts and parks; the parent proceeds without it.
-		scripts.push({ label: "child", steps: [init("cc-C"), gC.wait, result("child answer")] });
-		const child = call(C, [user("child task")]);
-
-		scripts.push({ label: "P turn 2", steps: [init("cc-P2"), result("ok")] });
-		await call(P, [u1, a2, u2]).result();
-		assert.equal(calls.at(-1).resume, "cc-P", "the parent keeps resuming its own conversation");
-
-		gC.open();
+	it("a background child finishing after a parent does not overwrite it", async () => {
+		const ask = user("parent");
+		scripts.push({ id: "cc-P", text: "parent answer" });
+		const answer = await call("parent", [ask]).result();
+		const g = gate();
+		scripts.push({ id: "cc-C", wait: g.wait });
+		const child = call("child", [user("child")]);
+		scripts.push({ id: "unused", text: "ok" });
+		await call("parent", [ask, answer, user("next")]).result();
+		assert.equal(calls.at(-1).resume, calls[0].sessionId);
+		g.open();
 		await child.result();
-
-		assert.equal(getSharedSession(P).sessionId, "cc-P",
-			"the child's completion cannot reassign the parent's conversation");
-		const childSlot = getSharedSession(C);
-		assert.ok(childSlot && childSlot.sessionId === "cc-C", "the child keeps its own conversation for its next turn");
-		assert.equal(childSlot.piSessionId, C, "tagged with the session that owns it");
+		assert.equal(getSharedSession("parent").ccSessionId, calls[0].sessionId);
+		assert.equal(getSharedSession("child").ccSessionId, calls[1].sessionId);
 	});
-
-	it("a missed steer survives successful completion and rebuilds the next turn", async () => {
-		const P = "pi-parent";
-		const u1 = user("first"), a1 = say("first answer"), u2 = user("second"), missed = user("missed steer"), a2 = say("second answer"), u3 = user("third");
-		const g = gate();
-
-		scripts.push({ label: "first", steps: [init("cc-missed"), result("first answer")] });
-		await call(P, [u1]).result();
-
-		scripts.push({ label: "second", steps: [init("cc-P2"), g.wait, result("second answer")] });
-		const second = call(P, [u1, a1, u2]);
+	for (const firstTurn of [false, true]) it(`an unacknowledged steer leaves a contiguous gap (${firstTurn ? "first" : "later"} turn)`, async () => {
+		let history = [];
+		if (!firstTurn) {
+			const ask = user("first");
+			scripts.push({ id: "cc-first" });
+			history = [ask, await call("parent", [ask]).result()];
+		}
+		const ask = user("second"), steer = user("missed steer"), g = gate();
+		scripts.push({ id: "cc-second", wait: g.wait });
+		const pending = call("parent", [...history, ask]);
 		await settle();
-		assert.equal(calls.at(-1).resume, "cc-missed");
-
-		// The CLI has stopped accepting input, but still returns a successful
-		// result. Model the provider's tool-result path counting the steer before
-		// the next turn, so cursor-based sync alone cannot recover it.
-		const context = [...__test.activeQueryContexts].find((c) => c.piSessionId === P);
-		assert.ok(context, "second turn is still active");
-		context.promptStream.fail(new Error("prompt stream closed"));
-		await __test.deliverToolResults(context, [], [{ type: "text", text: "missed steer" }], 4);
-		getSharedSession(P).cursor = 4;
-		context.latestCursor = 4;
-		assert.equal(getSharedSession(P).needsRebuild, true);
+		const c = [...__test.activeQueryContexts].find((c) => c.piSessionId === "parent");
+		c.promptStream.fail(new Error("closed"));
+		await __test.deliverToolResults(c, [], [{ type: "text", text: "missed steer" }], history.length + 2, [...history, ask, steer]);
 		g.open();
-		await second.result();
-		assert.equal(getSharedSession(P).needsRebuild, true, "completion must not forget the missed steer");
-
-		const rebuiltFile = getSessionPath("cc-missed", process.cwd(), claudeDir);
-		assert.equal(existsSync(rebuiltFile), false, "the fake SDK has not written a session file");
-		scripts.push({ label: "third", steps: [init("cc-P3"), result("third answer")] });
-		await call(P, [u1, a1, u2, missed, a2, u3]).result();
-		assert.equal(existsSync(rebuiltFile), true, "the next turn imports pi history rather than reusing CC's incomplete session");
-		assert.match(readFileSync(rebuiltFile, "utf8"), /missed steer/, "the rebuilt history includes the undelivered steer");
-		assert.ok(!getSharedSession(P).needsRebuild, "the rebuilt turn clears the query's missed-steer mark");
+		const answer = await pending.result();
+		if (firstTurn) assert.equal(getSharedSession("parent"), null, "no contiguous assistant progress leaves no new mirror");
+		else assert.deepEqual(getSharedSession("parent").digests, digestMessages([...history, ask]));
+		const previous = getSharedSession("parent")?.ccSessionId;
+		const before = previous ? readFileSync(getSessionPath(previous, process.cwd(), root)) : null;
+		scripts.push({ id: "unused" });
+		await call("parent", [...history, ask, steer, answer, user("third")]).result();
+		assert.notEqual(calls.at(-1).sessionId, previous);
+		assert.match(readFileSync(getSessionPath(calls.at(-1).resume, process.cwd(), root), "utf8"), /missed steer/);
+		if (previous) assert.deepEqual(readFileSync(getSessionPath(previous, process.cwd(), root)), before);
 	});
-
-	it("a missed steer in the first turn rebuilds even without an existing mirror", async () => {
-		const P = "pi-first-miss";
-		const u1 = user("first"), missed = user("missed first-turn steer"), a1 = say("first answer"), u2 = user("second");
+	it("completion uses identity CAS and cannot overwrite a replacement state", async () => {
 		const g = gate();
-
-		scripts.push({ label: "first", steps: [init("cc-first-missed"), g.wait, result("first answer")] });
-		const first = call(P, [u1]);
+		scripts.push({ id: "cc-old", wait: g.wait });
+		const pending = call("parent", [user("first")]);
 		await settle();
-		assert.equal(getSharedSession(P), null, "clean start has no mirror until completion");
-
-		const context = [...__test.activeQueryContexts].find((c) => c.piSessionId === P);
-		assert.ok(context, "first turn is still active");
-		context.promptStream.fail(new Error("prompt stream closed"));
-		await __test.deliverToolResults(context, [], [{ type: "text", text: "missed first-turn steer" }], 2);
-		context.latestCursor = 2;
+		const replacement = { ...copyRecording(), ccSessionId: "replacement", cwd: process.cwd(), model: "other" };
+		__test.setSharedSession("parent", replacement);
 		g.open();
-		await first.result();
-		assert.equal(getSharedSession(P).needsRebuild, true, "completion records the miss despite having no earlier mirror");
-
-		const rebuiltFile = getSessionPath("cc-first-missed", process.cwd(), claudeDir);
-		assert.equal(existsSync(rebuiltFile), false);
-		scripts.push({ label: "second", steps: [init("cc-first-missed"), result("second answer")] });
-		await call(P, [u1, missed, a1, u2]).result();
-		assert.match(readFileSync(rebuiltFile, "utf8"), /missed first-turn steer/);
-		assert.ok(!getSharedSession(P).needsRebuild, "the next query starts without the prior miss");
+		await pending.result();
+		assert.strictEqual(getSharedSession("parent"), replacement);
 	});
-
-	it("a parent error followed by a child turn does not hand the child the parent's conversation", async () => {
-		const P = "pi-parent", C = "pi-child";
-		const u1 = user("research X"), a2 = say("parent answer"), u2 = user("now fix it");
-
-		scripts.push({ label: "P turn 1", steps: [init("cc-P"), result("parent answer")] });
-		await call(P, [u1]).result();
-
-		scripts.push({ label: "child during backoff", steps: [init("cc-C"), result("child answer")] });
-		await call(C, [user("child task")]).result();
-
-		scripts.push({ label: "P turn 2", steps: [init("cc-P2"), result("ok")] });
-		await call(P, [u1, a2, u2]).result();
-
-		assert.equal(calls.at(-1).resume, "cc-P",
-			"the parent resumes its own conversation after a child ran while it backed off");
+	for (const edits of ['{"oldText":"a","newText":"b"}', { oldText: "a", newText: "b" }]) it("normalizes edit edits before emitting and hashing", async () => {
+		const ask = user("edit");
+		scripts.push({ id: "cc-edit", edit: edits });
+		const output = await call("parent", [ask]).result();
+		assert.deepEqual(output.content[0].arguments.edits, [{ oldText: "a", newText: "b" }]);
+		await settle();
+		assertCoverage("parent", [ask, output]);
 	});
 });

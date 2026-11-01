@@ -1,21 +1,15 @@
 #!/usr/bin/env node
-// Verifies the bridge rebuilds CC's session JSONL after a pi-side /compact.
-//
-// Bug it guards against: syncSharedSession's REUSE check uses
-// `priorMessages.slice(sharedSession.cursor)`. After /compact, pi shrinks
-// its messages array — slice(N) on a shorter array returns []. Without an
-// explicit signal, REUSE wins and CC keeps `--resume`ing the pre-compact
-// session, which then thrashes its own autocompact (issue #8).
-//
-// Fix: subscribe to pi's `session_compact` event and set
-// sharedSession.needsRebuild = true so the next syncSharedSession call
-// takes the REBUILD path.
+// Compacted content must replace the old conversation in a new CC session,
+// without mutating the ancestor or resuming stale pre-compact history (#8).
 
 console.log("=== int-session-compact.mjs ===");
 
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { getSessionPath } from "cc-session-io";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TIMEOUT = 180_000;
@@ -46,6 +40,12 @@ try {
 	console.log("Turn 3: more history...");
 	await promptAndWait("Now pick a fruit. Reply with just the fruit. Do not use the memory system.");
 
+	const beforeLog = readFileSync(DEBUG_LOG, "utf8");
+	const preCompactSessionId = [...beforeLog.matchAll(/syncResult: path=[a-z-]+ sessionId=([a-f0-9-]+)/g)].at(-1)?.[1];
+	assert.ok(preCompactSessionId, "no pre-compact sessionId found");
+	const ancestorPath = getSessionPath(preCompactSessionId, fileURLToPath(new URL("../", import.meta.url)), process.env.CLAUDE_CONFIG_DIR);
+	const ancestor = readFileSync(ancestorPath);
+
 	console.log("Triggering /compact...");
 	await send({ type: "compact" });
 
@@ -62,20 +62,9 @@ try {
 	if (compactIdx === -1) {
 		throw new Error("no `session_compact:` debug marker — handler not subscribed?");
 	}
-	const preEventLog = fullLog.slice(0, compactIdx);
 	const postEventLog = fullLog.slice(compactIdx);
-
-	const preCompactSessionIds = [...preEventLog.matchAll(/syncResult: path=(?:reuse|rebuild) sessionId=([a-f0-9-]+)/g)]
-		.map((m) => m[1]);
-	const preCompactSessionId = preCompactSessionIds.at(-1);
-	if (!preCompactSessionId) {
-		throw new Error("no pre-compact shared sessionId found in debug log");
-	}
-	console.log(`  Pre-compact sessionId: ${preCompactSessionId}`);
-
-	// Capture both the path and the rebuild flavor (preserved | rotated-post-abort | first).
-	const syncResults = [...postEventLog.matchAll(/syncResult: path=(reuse|rebuild|clean-start)(?: sessionId=([a-f0-9-]+) priors=\d+ (\S+))?/g)]
-		.map((m) => ({ path: m[1], sessionId: m[2], flavor: m[3] }));
+	const syncResults = [...postEventLog.matchAll(/syncResult: path=([a-z-]+)(?: sessionId=([a-f0-9-]+))?/g)]
+		.map((m) => ({ path: m[1], sessionId: m[2] }));
 	console.log(`  Post-event syncResults: ${JSON.stringify(syncResults)}`);
 
 	if (syncResults.length === 0) {
@@ -98,24 +87,10 @@ try {
 			"Symptom: triggers Claude Code's autocompact-thrashing (issue #8) on long sessions.");
 	}
 
-	// Compact has no concurrent CC writer, so the rebuild should preserve
-	// the sessionId and wipe the JSONL in place (preserveId branch). If we
-	// see "rotated-post-abort" here, the needsRebuild → preserveId logic
-	// got re-conflated and we're leaking orphan JSONLs into ~/.claude/projects/
-	// on every compact.
-	if (first.path === "rebuild" && first.flavor !== "preserved") {
-		throw new Error(
-			`post-compact rebuild used flavor=${first.flavor}, expected "preserved". ` +
-			`Compact has no concurrent CC writer — it should rebuild in place (deleteSession + ` +
-			`createSession with the same UUID), not rotate. Rotating leaks orphan JSONL files.`);
-	}
-	if (first.path === "rebuild" && first.sessionId !== preCompactSessionId) {
-		throw new Error(
-			`post-compact rebuild preserved sessionId=${first.sessionId}, but expected the original ` +
-			`pre-compact sessionId=${preCompactSessionId}. This means the compact summarization ` +
-			`session replaced sharedSession before the session_compact handler ran, orphaning the ` +
-			`main pre-compact JSONL.`);
-	}
+	assert.ok(["rebuild", "prefix-write", "fork"].includes(first.path), `unexpected sync path: ${first.path}`);
+	assert.ok(first.sessionId, "the changed history must have a CC session id");
+	assert.notEqual(first.sessionId, preCompactSessionId, "compaction must not overwrite the old transcript");
+	assert.deepEqual(readFileSync(ancestorPath), ancestor, "compaction mutated the ancestor transcript");
 
 	console.log("PASS");
 } catch (e) {

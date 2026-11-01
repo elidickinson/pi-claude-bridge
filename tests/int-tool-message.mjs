@@ -5,7 +5,7 @@
 
 import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { getProjectDir } from "cc-session-io";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
@@ -25,16 +25,19 @@ describe("tool-message integration", () => {
 	const logMark = () => statSync(DEBUG_LOG).size;
 	const logSince = (mark) => readFileSync(DEBUG_LOG, "utf8").slice(mark);
 
-	/** Session id of the last query in a slice of the debug log. Logged
-	 *  abbreviated, which is enough to pick the file out of the project dir. */
+	/** Transcript of the last query in a slice of the debug log: the target
+	 *  session of the last sync decision, which must also be the session of the
+	 *  last query that ran to completion (logged abbreviated). */
 	function sessionIdFrom(log) {
-		const ids = [...log.matchAll(/query done, session=([0-9a-f]+)/g)].map((m) => m[1]);
-		assert.ok(ids.length > 0, "no session id in debug log — the query never completed");
-		const prefix = ids[ids.length - 1];
-		const dir = getProjectDir(harness.DIR);
-		const file = readdirSync(dir).find((f) => f.startsWith(prefix) && f.endsWith(".jsonl"));
-		assert.ok(file, `no session file for ${prefix} in ${dir}`);
-		return `${dir}/${file}`;
+		const targets = [...log.matchAll(/syncResult: path=[a-z-]+ sessionId=([0-9a-f-]+)/g)].map((m) => m[1]);
+		const completed = [...log.matchAll(/for-await loop exited, wasAborted=false, capturedSessionId=([0-9a-f]+)/g)].map((m) => m[1]);
+		assert.ok(targets.length > 0, "no syncResult in debug log — the query never reached the provider");
+		assert.ok(completed.length > 0, "no completed query in debug log — the query never completed");
+		const id = targets.at(-1);
+		assert.ok(id.startsWith(completed.at(-1)), `last completed query ${completed.at(-1)} is not the last synced session ${id}`);
+		const file = `${getProjectDir(harness.DIR)}/${id}.jsonl`;
+		assert.ok(existsSync(file), `no session file ${file}`);
+		return file;
 	}
 
 	/** CC's session transcript as parsed JSONL records, in write order. */

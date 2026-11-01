@@ -20,6 +20,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { FIRST_PARTY_ENV } from "./lib/first-party.mjs";
 
 const PROXY = "http://127.0.0.1:8787";
 const MODEL = "claude-haiku-4-5";
@@ -27,6 +28,7 @@ const GIT_ANCHOR = "gitStatus:";
 
 const ENV = {
 	...process.env,
+	...FIRST_PARTY_ENV,
 	ANTHROPIC_BASE_URL: PROXY,
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",

@@ -77,11 +77,16 @@ beforeEach(() => {
 		let closed = false, onClose;
 		const killed = new Promise((r) => { onClose = r; });
 		const gen = (async function* () {
-			call.prompt = (await prompt[Symbol.asyncIterator]().next()).value.message.content[0].text;
+			const first = (await prompt[Symbol.asyncIterator]().next()).value;
+			call.prompt = first.message.content[0].text;
+			const sessionId = options.sessionId ?? options.resume;
 			for (const step of script.steps) {
 				if (closed) return;
 				if (typeof step === "function") { await step(killed); continue; }
-				yield step;
+				if (step.type === "system" && step.subtype === "init") {
+					yield { ...step, session_id: sessionId };
+					yield { ...first, isReplay: true, session_id: sessionId };
+				} else yield step;
 			}
 		})();
 		gen.interrupt = async () => {};

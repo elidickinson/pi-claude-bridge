@@ -476,31 +476,3 @@ describe("aborted assistant turns", () => {
 		assert.equal(result[1].content[0].tool_use_id, "t1");
 	});
 });
-
-describe("dropped-content accounting", () => {
-	it("counts stripped thinking by provider and aborted turns", () => {
-		const { dropped } = convertPiMessages([
-			{ role: "assistant", provider: "openrouter", content: [
-				{ type: "thinking", thinking: "reasoning" },
-				{ type: "text", text: "the answer" },
-			]},
-			{ role: "assistant", content: [] },
-			{ role: "assistant", provider: "claude-bridge", content: [
-				{ type: "thinking", thinking: "mine", thinkingSignature: "sig" },
-			]},
-		]);
-		assert.equal(dropped.thinking, 1);
-		assert.deepEqual([...dropped.providers], ["openrouter"]);
-		assert.equal(dropped.abortedTurns, 1);
-	});
-
-	it("reports nothing when everything converts", () => {
-		const { dropped } = convertPiMessages([
-			{ role: "user", content: [{ type: "text", text: "hi" }] },
-			{ role: "assistant", content: [{ type: "text", text: "hello" }] },
-		]);
-		assert.equal(dropped.thinking, 0);
-		assert.equal(dropped.abortedTurns, 0);
-		assert.equal(dropped.other.size, 0);
-	});
-});

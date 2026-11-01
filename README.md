@@ -17,9 +17,12 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
 
 ## Install
 
-```
-pi install npm:pi-claude-bridge
-```
+1. Install the extension:
+   ```
+   pi install npm:pi-claude-bridge
+   ```
+2. Log in to Claude Code with your Claude subscription: run `claude` and type `/login`. The bridge uses Claude Code's login, not pi's `/login`.
+3. In pi, pick a `claude-bridge/...` model with `/model`. (Do not use the `anthropic/...` models)
 
 Requires pi 1.2.0 or newer to use all models (but should mostly work >=0.86.1).
 
@@ -39,7 +42,7 @@ The model list comes from pi-ai's Anthropic catalog automatically — when pi-ai
 
 ## Configuration
 
-Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global).
+Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global). `provider` settings are read only from the global file, so a cloned repo can't point the bridge at its own executable or turn on metered billing.
 
 ```json
 {
@@ -81,6 +84,25 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not work correctly with pi-claude-bridge; they only apply to pi-side settings like compaction threshold. Overriding `contextWindow` or other fields requires editing `src/models.ts` directly — to pin a model to 200K, use `provider.forceTwoHundredK` instead.
 
+**Claude Code's environment:** Claude Code inherits pi's environment. For variables only bridge requests should get (a proxy, a gateway, Bedrock settings), add an `env` object to a `claude-bridge` credential in `~/.pi/agent/auth.json`; its values override pi's, and an empty value removes the variable. Extensions calling a bridge model can pass `env` per request the same way. `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE` can't be set there (the turn fails), since the bridge reads Claude Code's session files through pi's own values.
+
+This example sends bridge requests through a proxy and keeps an exported gateway (issue #107) away from Claude Code, so it uses your Claude login:
+
+```json
+{
+  "claude-bridge": {
+    "type": "api_key",
+    "key": "not-used",
+    "env": {
+      "HTTPS_PROXY": "http://127.0.0.1:8080",
+      "ANTHROPIC_BASE_URL": "",
+      "ANTHROPIC_API_KEY": "",
+      "ANTHROPIC_AUTH_TOKEN": ""
+    }
+  }
+}
+```
+
 ## Tests
 
 `npm run test:unit` for offline tests. `npm test` adds integration tests that hit APIs; set `CLAUDE_BRIDGE_TESTING_ALT_MODEL` in `.env.test` for the alt-provider smoke test.
@@ -117,7 +139,7 @@ To add instructions, use `message`, `context`, or a system-message edit that kee
 
 ### Hooks written for Claude Code
 
-`~/.claude/settings.json` hooks fire inside bridge turns, so a hook injecting Claude-specific guidance duplicates what pi's extensions already provide. pi sets `PI_CODING_AGENT=true` for child processes, including the Claude Code child; a hook can skip itself on that:
+`~/.claude/settings.json` hooks fire inside bridge turns, so a hook injecting Claude-specific guidance duplicates what pi's extensions already provide. A project's `.claude/settings.json` and `.claude/settings.local.json` are not loaded, so a repo's hooks, `apiKeyHelper` and `env` never run. pi sets `PI_CODING_AGENT=true` for child processes, including the Claude Code child; a hook can skip itself on that:
 
 ```sh
 [ -n "$PI_CODING_AGENT" ] && exit 0
@@ -145,12 +167,18 @@ Requires the following in `~/.pi/agent/subagents.json`:
 {"promptInheritance": {"claude-bridge": "portable"}}
 ```
 
+## Session history
+
+The bridge compares conversation content before each fresh query. Unchanged history resumes the Claude Code session. Tree navigation and history edits retain Claude Code's records up to the last safe matching point, then continue in a new session. Model changes import pi's history into a fresh Claude Code session.
+
+Session pointers, content digests and record IDs are saved under `claude-bridge/sessions/` in pi's agent directory (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`). They let the bridge recover its matching prefix after a restart. Running the same pi session simultaneously in multiple bridge processes is unsupported.
+
 ## Known issues
 
-**A session rebuild re-sends the whole conversation.** The bridge rewrites Claude Code's session from pi's history whenever the two diverge — after an abort, `/compact`, tree navigation, an API error, or on returning to a session — and the next request usually misses the prompt cache for everything past the system prompt. Abort-heavy sessions cost noticeably more.
+**Edits far back in history can still cost cache.** The unchanged prefix is retained, but Anthropic's cache lookup has a limited lookback. A long rewritten suffix can prevent reuse of an earlier cache entry.
 
-**Files Claude Code edits are not carried across a rebuild.** The edit itself survives in the history as a tool call and result — what's lost is the post-edit file snapshot. `@file` expansions *are* carried.
+**File snapshots in rewritten history can be lost.** Native records before the matching point keep their attachments. A rewritten suffix carries `@file` expansions, but not snapshots Claude Code recorded after editing files; the tool calls and results remain in pi's history.
 
-**System prompt changes mid-session may not reach the model.** The bridge keeps Claude Code's default prompt recording: project context (AGENTS.md/CLAUDE.md), skills, and extension-written instructions are captured on the first request and reused on resume. This keeps the cached prefix stable, but later changes may not take effect until a rebuild or compaction. Start a new session if updated instructions must take effect immediately.
+**System prompt changes mid-session may not reach the model.** Project context (AGENTS.md/CLAUDE.md), skills, and extension-written instructions are captured on the first request and reused while that prompt recording is retained. Start a new session if updated instructions must take effect immediately.
 
-**Exported Anthropic environment variables override the Claude Code child (issue #107).** An exported `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` redirects Claude Code to that gateway and every turn fails with its auth error. Unset them for the pi process.
+**Exported Anthropic environment variables override the Claude Code child (issue #107).** An exported `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` redirects Claude Code to that gateway and every turn fails with its auth error. Unset them for the pi process, or blank them in a `claude-bridge` credential's `env` (see [Configuration](#configuration)).

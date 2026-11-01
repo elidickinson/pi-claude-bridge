@@ -201,10 +201,7 @@ way (see the false-positive section below, which is how this was found). A break
 `MIN_CACHE_MISS_TOKENS` in Claude Code's own
 `src/services/api/promptCacheBreakDetection.ts`.
 
-**The control group is the point.** Within one `query()` call the bridge cannot
-mutate the prefix — it only appends tool results — so the in-query rate is pure
-server-side eviction. Comparing the `--resume` boundary rate against it separates
-"Anthropic evicted us" from "we sent different bytes".
+**The control requires query-level pairing.** Within one `query()` call the bridge only appends tool results, but the scanner pairs consecutive requests per module id, not per query. In-process subagents can share the parent's module and model; since 2026-09-26, most apparent in-query breaks are consistent with interleaved conversations, not eviction. The in-query rate is not a clean control for that era. Example: `z6fojf`, 2026-10-25T15:03-15:08, alternates a ~670k-token parent with 10k-70k-token subagents. Pair by query/session before comparing boundary rates.
 
 Two parsing traps, both of which produced wrong answers on the first pass:
 - A turn emits several `usage:` lines as its output grows. Dedupe on
@@ -377,31 +374,7 @@ in the window had an image in the prompt.
 
 #### Cheapest next step
 
-**The `cache-break-*.diff` route is not available on the installed SDK.**
-`promptCacheBreakDetection.ts` exists in `reference-code/claude-code-rip/`, but
-that fork is newer than what we run: the string `PROMPT CACHE BREAK` does not
-appear anywhere in `@anthropic-ai/claude-agent-sdk` 0.2.141 / Claude Code 2.1.141,
-and no `cache-break-*.diff` has ever been written on this machine. So there is no
-gate to flip today.
-
-Worth knowing for when the SDK is next bumped, because it then costs nothing: the
-detector is wired into the ordinary API path (`services/api/claude.ts:1471`
-`recordPromptState`, `:2384` `checkResponseForCacheBreak`), and the reason string
-is emitted by a plain `logForDebugging(summary, { level: 'warn' })` gated only on
-`isDebugMode()` — which the bridge already sets for every query via
-`makeCliDebugOptions` (`src/index.ts:71`). It would land straight in
-`~/.pi/agent/cc-cli-logs/*.log` as:
-
-```
-[PROMPT CACHE BREAK] <reason> [source=…, call #N, cache read: X → Y, creation: Z…]
-```
-
-with `<reason>` already naming the culprit ("system prompt changed (+N chars)",
-"tools changed (+a/-b tools)", "effort changed", "possible 5min TTL expiry
-(prompt unchanged)", "likely server-side (prompt unchanged, <5min gap)"). The
-literal diff file is strictly more expensive — it additionally requires
-`changes.buildPrevDiffableContent`, set only when a previous snapshot exists — so
-grep the reason string first and only chase the diff if it is ambiguous.
+**Debug mode alone does not expose CC's cache-break reasons.** In CC 2.1.293, `../reference-code/cc-293-deobf/chunk-q21zbtsq.js:4231` gates `[PROMPT CACHE BREAK] <reason>` on `zze()` (`:3211`): `CLAUDE_CODE_IS_COWORK`, `CLAUDE_CODE_ENTRYPOINT === "claude-desktop"`, or `CLAUDE_CODE_REMOTE`. The bridge's `makeCliDebugOptions` enables debug logging, not those modes. No `PROMPT CACHE BREAK` lines exist in `~/.pi/agent/cc-cli-logs/*.log`, including CC 2.1.308.x logs. An SDK bump alone is insufficient.
 
 **The request-body capture is built and works** — see `diag/capture-proxy.mjs` for
 invocation and for how the capture dir must be handled. Subscription OAuth forwards
@@ -630,6 +603,7 @@ tool results queued for a handler that never claimed them: 14  (7 after abort/sh
 - **`mcp handler … has no toolCallId`** (1, 2026-05-04) predates `fc2efeb6`,
   which switched pairing to `_meta["claudecode/toolUseId"]`. None since.
 - **`session verify: forced test failure`** (2) is `tests/` doing its job.
+- **`session_shutdown left state behind`** (169, 2026-08-12..2026-10-30) is mostly subagent-shutdown false positives: the pre-fix check counts the parent's live context. On 2026-10-28, 56 of 61 lines come from `o89smi`; its 01:16:17.382Z warning is followed by parent tool-loop activity at 01:16:18.449Z. `reportLeaks` filters contexts by the shutting-down pi session id; pre-fix counts alone do not establish a leak.
 - **`BUG: both maps non-empty!`** (1, 2026-07-29T15:33:17.805Z, module `ere6hm`)
   is the phantom-tool bug caught live: the queued id
   `toolu_01JzMLYBmz7yEx9R9Zc4AvdB` appears in
@@ -664,36 +638,32 @@ One incident class lives in the cc-cli logs and has no scanner yet.
 **Orphaned Claude Code subprocess — trigger unknown.** A CC child outlived its pi
 session and kept working: every MCP call failed instantly with `Stream closed`
 (the transport was gone), CC treated that as a normal tool error, fed it to the
-model, and issued another API request — for the better part of an hour.
+model, and issued another API request -- for up to an hour.
 
-| # | cc-cli log | onset | end | `Stream closed` | API requests | stopped by |
+| # | cc-cli log | onset | end | `Stream closed` calls | API requests | stopped by |
 |---|---|---|---|---|---|---|
 | A | `2026-07-10T22-48-21-609Z-provider-1.log:474` | 23:08:21 | 00:07:30 | 1,396 | 1,416 | LSP shutdown, 59 min |
 | B | `2026-06-03T20-19-06-231Z-provider-1.log:422` | 20:24:12 | 20:42:08 | 356 | 375 | **429 rate_limit_error**, 23 min |
+| C | `2026-08-03T15-53-14-639Z-provider-1.log:320` | 15:55:34 | 15:56:01 | 8 | 21 | LSP shutdown, 65 s |
+| D | `2026-08-23T19-45-39-979Z-provider-1.log:506` | 19:50:03 | 19:50:18 | 4 | 30 | LSP shutdown, 43 s |
 
-All failures are `after 0s`. Incident B consumed enough quota to trip the account
-rate limit, which would have hit the user's other sessions. Bridge-side, both
-processes' last log line precedes the storm (`claude-bridge.log:48337` for A,
-`:29487` for B).
+Each failed call produces two `Stream closed` lines: C has 16 lines, D has 8. All failures are `after 0s`. Incident B consumed enough quota to trip the account rate limit, which would have hit the user's other sessions. Bridge-side, A and B's processes' last log line precedes the storm (`claude-bridge.log:48337` for A, `:29487` for B).
 
 **"After the pi process dies" was this section's first guess and it is wrong.**
 `tests/int-shutdown-kills-cc.mjs` drives both reachable triggers against the
 installed CC/SDK and the child dies within a second either way: pi exiting closes
 the child's stdin, which CC treats as EOF even with a tool call parked, and a user
-abort fails the prompt stream and then interrupts and closes the query. So both
-incidents needed a third condition that leaves pi *alive* with its control channel
+abort fails the prompt stream and then interrupts and closes the query. So A and B
+needed a third condition that leaves pi *alive* with its control channel
 closed — the child is only unreapable while the pi process still holds it.
 
 What the timeline does say, for incident A: pi logged `mcp handler: bash
 [toolu_01MVF…] → waiting` at 23:08:17.766 and never logged again, and CC failed
 that same dispatch `outcome=error durationMs=1215` 1.2 s later, then re-issued the
 call under a fresh id. CC's log runs continuously for the next 59 minutes with no
-timestamp gap, so the machine was awake and pi was not merely suspended. Both
-incidents predate the July 2026 tool-loop fixes (122914dd, 7ff04fd2, 549bab95,
-da8513b5), there are exactly two in 1,159 cc-cli logs, none since 2026-07-10, and
-the distribution is binary — no log has between 1 and 5 `Stream closed` failures.
-That is consistent with an already-fixed cause, which is why nothing is being
-built for it; the two tests are the tripwire if it returns.
+timestamp gap, so the machine was awake and pi was not merely suspended. A and B
+predate the July 2026 tool-loop fixes (122914dd, 7ff04fd2, 549bab95, da8513b5).
+There are four affected logs among 5,342, none since 2026-08-23. The trigger remains unknown; the two shutdown tests cover the known teardown paths.
 
 Also unscanned: **thinking blocks dropped for want of a signature**.
 `src/index.ts:1056` stores `thinkingSignature: block.signature ?? ""` and

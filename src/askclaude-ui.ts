@@ -14,7 +14,7 @@ export interface ToolCallState {
 	rawInput?: unknown;
 }
 
-export function extractPath(rawInput: unknown): string | undefined {
+function extractPath(rawInput: unknown): string | undefined {
 	if (!rawInput || typeof rawInput !== "object") return undefined;
 	const input = rawInput as Record<string, unknown>;
 	if (typeof input.file_path === "string") return input.file_path;
@@ -23,7 +23,7 @@ export function extractPath(rawInput: unknown): string | undefined {
 	return undefined;
 }
 
-export function shortPath(p: string): string {
+function shortPath(p: string): string {
 	const cwd = process.cwd();
 	if (p.startsWith(cwd + "/")) return p.slice(cwd.length + 1);
 	if (p.startsWith("/")) {
@@ -33,7 +33,7 @@ export function shortPath(p: string): string {
 	return p;
 }
 
-export function formatToolAction(tc: ToolCallState): string | undefined {
+function formatToolAction(tc: ToolCallState): string | undefined {
 	const path = extractPath(tc.rawInput);
 	const verb = tc.name.toLowerCase().split(/\s/)[0];
 	if (verb === "read" || verb === "readfile") {

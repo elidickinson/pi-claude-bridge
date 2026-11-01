@@ -99,7 +99,7 @@ for (const path of sessionFiles(ROOT)) {
 	// collect and place both preserve record order, so these line up positionally.
 	const placed = placeCarriedAttachments(carried, messages);
 	for (const [i, want] of expected.entries()) {
-		const got = placed.attachments[i]?.afterIndex;
+		const got = placed[i]?.afterIndex;
 		if (want === undefined) continue;
 		checked++;
 		if (got === want) correct++;

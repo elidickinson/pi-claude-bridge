@@ -33,7 +33,7 @@ it("keeps input open until every queued steer is replayed and its turn completes
 	await consume(c, [success(), first, success(), replay({ ...first, parent_tool_use_id: "subagent" }), success()]);
 
 	await __test.deliverToolResults(c, [], steer, 2);
-	assert.equal(c.missedSteer, false);
+	assert.deepEqual(c.recording.recorded.digests, []);
 	assert.notEqual(sent[0].uuid, sent[1].uuid);
 	await consume(c, [replay(first), success()]);
 	await c.promptStream.push(userMessage("input still connected"));
@@ -78,7 +78,7 @@ it("does not wait for a failed steer write at completion", async (t) => {
 	c.promptStream.push = push;
 	await consume(c, [success()]);
 	await pump;
-	assert.equal(c.missedSteer, true);
+	assert.deepEqual(c.recording.recorded.digests, []);
 	assert.equal(c.pendingSteerUuids.size, 0);
 	await assert.rejects(push(userMessage("too late")), /closed/);
 });
