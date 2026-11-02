@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: Claude 5 progress updates show as text, not reasoning (issue #211)** — They arrive as signed `thinking` blocks, so pi showed them as reasoning. The bridge now reads the `narration` tag in the signature, as Claude Code does.
+
 ## 0.11.0 — 2026-11-06
 
 - **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.
