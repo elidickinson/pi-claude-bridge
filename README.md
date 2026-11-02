@@ -36,6 +36,8 @@ The model list comes from pi-ai's Anthropic catalog automatically — when pi-ai
 
 **Other model ids:** when `ANTHROPIC_BASE_URL` points Claude Code at a gateway or router that serves its own ids, the catalog has nothing you can select. Set `CLAUDE_BRIDGE_EXTRA_MODELS` to a comma-separated list of the ids that endpoint serves — each `id`, `id:contextWindow`, or `id:contextWindow:maxTokens` — and the bridge registers them after the catalog. Defaults per id are 200000 context and 32000 max tokens, text input only, zero cost; the 1M context policy below does not apply to them. Unset (the default) registers nothing extra, and an id the catalog already lists keeps the catalog's entry.
 
+Only the trailing numeric fields are read as limits, so ids with colons of their own register whole: `meta-llama/llama-3.2-3b-instruct:free` and `anthropic/claude-opus-5:nitro` keep their full id, and `anthropic/claude-opus-5:nitro:128000:8192` sets that variant's window and cap. A non-numeric field before a numeric one belongs to the id, so `my-model:200k:0` registers `my-model:200k` with the defaults. The syntax has no escape: an id whose own last field is a number is read as carrying a limit — `gateway/model:200000` registers `gateway/model` with a 200000 window, not an id ending in `:200000`.
+
 **1M Context:** Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5.5/5 get 1M context. Opus 4.6 gets 1M only on a Max plan or with Extra Usage, and Sonnet 4.6 only with Extra Usage — set `provider.plan` and/or `provider.longContextExtraUsage` as described in [Configuration](#configuration).
 
 ## AskClaude Tool

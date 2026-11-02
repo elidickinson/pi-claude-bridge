@@ -223,6 +223,9 @@ function registeredModelsInChild(extraModels) {
 
 describe("CLAUDE_BRIDGE_EXTRA_MODELS", () => {
 	const catalogIds = () => buildModels(getModels("anthropic")).map((m) => m.id);
+	// id, window and cap of each registered extra — the exact id is what the
+	// colon-splitting bug got wrong, so every case pins it.
+	const extra = (spec) => buildExtraModels(spec).map((m) => [m.id, m.contextWindow, m.maxTokens]);
 
 	it("registers the catalog alone when the variable is unset", () => {
 		const registered = registeredModelsInChild(undefined);
@@ -258,9 +261,45 @@ describe("CLAUDE_BRIDGE_EXTRA_MODELS", () => {
 		assert.deepEqual(buildExtraModels("my-model", ["my-model"]), []);
 	});
 
-	it("keeps the documented defaults for an unparseable window or cap", () => {
-		const [model] = buildExtraModels("my-model:200k:0");
+	// Zero and empty limit fields fall back to the defaults rather than asking for
+	// a zero-token model; a non-numeric field is not a window at all (below).
+	it("keeps the documented defaults for a zero window or cap", () => {
+		const [model] = buildExtraModels("my-model:0:0");
+		assert.equal(model.id, "my-model");
 		assert.equal(model.contextWindow, 200000);
 		assert.equal(model.maxTokens, 32000);
+	});
+
+	// Served ids carry colons: splitting on every one of them registered the last
+	// segment as the id (`free`) and left the variant unselectable.
+	it("registers colon-bearing variants under their complete ids", () => {
+		assert.deepEqual(
+			extra("meta-llama/llama-3.2-3b-instruct:free,anthropic/claude-opus-5:nitro"),
+			[
+				["meta-llama/llama-3.2-3b-instruct:free", 200000, 32000],
+				["anthropic/claude-opus-5:nitro", 200000, 32000],
+			],
+		);
+	});
+
+	it("takes one or two trailing numeric limits off a colon-bearing id", () => {
+		assert.deepEqual(extra("anthropic/claude-opus-5:nitro:128000:8192"), [["anthropic/claude-opus-5:nitro", 128000, 8192]]);
+		// One numeric field is the window; the cap keeps its default.
+		assert.deepEqual(extra("meta-llama/llama-3.2-3b-instruct:free:64000"), [["meta-llama/llama-3.2-3b-instruct:free", 64000, 32000]]);
+		// A non-numeric field before the limit is a variant suffix, so it stays in the id.
+		assert.deepEqual(extra("my-model:beta:200000"), [["my-model:beta", 200000, 32000]]);
+	});
+
+	it("treats an empty or zero limit field as unset", () => {
+		assert.deepEqual(extra("my-model::8192"), [["my-model", 200000, 8192]]);
+		assert.deepEqual(extra("my-model:0:0"), [["my-model", 200000, 32000]]);
+		assert.deepEqual(extra("my-model:"), [["my-model", 200000, 32000]]);
+	});
+
+	// The flat syntax has no escape: a numeric last field is read as a limit even
+	// when it is part of the served id, and a non-numeric one joins the id.
+	it("reads a numeric id suffix as a limit", () => {
+		assert.deepEqual(extra("gateway/model:200000"), [["gateway/model", 200000, 32000]]);
+		assert.deepEqual(extra("my-model:200k:0"), [["my-model:200k", 200000, 32000]]);
 	});
 });
