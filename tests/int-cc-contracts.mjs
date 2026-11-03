@@ -637,7 +637,8 @@ test("a truncating fork preserves parallel results outside the leaf's parent pat
 	const options = providerOptions({
 		cwd, maxTurns: 3,
 		mcpServers: toolServer([noArgTool("alpha"), noArgTool("beta")], calls),
-		env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0" },
+		// As in production: otherwise CC's session-title request takes the stub's tool calls.
+		env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
 	});
 	try {
 		const seed = await collect(query({ prompt: "Call alpha and beta in parallel.", options }));
@@ -825,7 +826,9 @@ test("routing through the capture proxy does not change what CC sends", { timeou
 			options: providerOptions({
 				maxTurns: 1, persistSession: false, includePartialMessages: true,
 				mcpServers: toolServer([noArgTool("alpha")], []),
-				env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", ...extraEnv },
+				// As in production: otherwise CC's server-flag defaults add a token-countdown
+				// reminder on a direct connection only.
+				env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", ...extraEnv },
 			}),
 		});
 		for await (const message of q) {
