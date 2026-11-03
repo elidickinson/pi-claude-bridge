@@ -15,9 +15,15 @@
 // server-side eviction and serve as the control group. A bridge-side prefix bug
 // would push the boundary rate above that floor. See diag/CACHE.md for baselines.
 //
-// Exits 1 when the boundary rate exceeds the documented ceiling, or when a break
+// Requests pair per pi session (the bridge tags its lines `piSession=`), since
+// one process serves the parent and its in-process subagents at once. Untagged
+// lines from older builds pair per process, where those conversations interleave.
+//
+// Exits 1 when the boundary rate exceeds the documented ceiling, when a break
 // lands on a fork, which should read back everything its ancestor cached (the
-// shape most likely to be our own bug).
+// shape most likely to be our own bug), or on a repeated cut: a turn after a
+// prefix-write or rebuild that cut at the same message of the same session
+// again, because the first one recorded nothing.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -30,6 +36,9 @@ const LINE = /^\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\] \[([a-z0-9]+)\] (.*)$/;
 const USAGE = /^usage: in=(\d+) out=(\d+) cacheRead=(\d+) cacheWrite=(\d+) total=(\d+)(?: reasoning=\d+)? cachePct=(\d+)% model=(\S+)/;
 const FRESH = /^provider: fresh query model=(\S+) msgs=(\d+) tools=(\d+) resume=(\S+) effort=(\S+)/;
 const SYNC = /^syncResult: path=(\S+)/;
+const SYNC_FROM = / from=(\S+)/;
+const SYNC_CUT = / commonPrefix=(\d+)/;
+const TAG = / piSession=(\S+)/;
 const RESET = /^(session_start|session_compact|session_before_compact|compact summary|Case 1 synthetic)/;
 
 // Claude Code's own detector (reference-code/claude-code-rip/src/services/api/
@@ -68,13 +77,18 @@ const logPath = args.filter((a, i) => !a.startsWith("--") && !args[i - 1]?.start
 // grows. Collapsing runs that share (cacheRead, cacheWrite, model) leaves one row
 // per API request, which is what the cache math needs.
 function parse(text) {
-	const perModule = new Map();
+	const streams = new Map();
+	const syncs = [];
 	for (const line of text.split("\n")) {
 		const m = LINE.exec(line);
 		if (!m) continue;
 		const [, ts, moduleId, msg] = m;
-		let entry = perModule.get(moduleId);
-		if (!entry) perModule.set(moduleId, (entry = { requests: [], marks: [] }));
+		const tag = TAG.exec(msg)?.[1];
+		const key = tag && tag !== "none" ? tag : moduleId;
+		let entry = streams.get(key);
+		if (!entry) streams.set(key, (entry = { requests: [], marks: [] }));
+		const s = SYNC.exec(msg);
+		if (s) syncs.push({ ts, at: Date.parse(ts), key, path: s[1], from: SYNC_FROM.exec(msg)?.[1], cut: SYNC_CUT.exec(msg)?.[1] });
 		const u = USAGE.exec(msg);
 		if (!u) { entry.marks.push(msg); continue; }
 		const cacheRead = +u[3], cacheWrite = +u[4], model = u[7];
@@ -87,13 +101,27 @@ function parse(text) {
 			continue;
 		}
 		entry.requests.push({
-			ts, at: Date.parse(ts), moduleId,
+			ts, at: Date.parse(ts), key,
 			in: +u[1], cacheRead, cacheWrite, pct: +u[6], model,
 			marks: entry.marks,
 		});
 		entry.marks = [];
 	}
-	return perModule;
+	return { streams, syncs };
+}
+
+/** A prefix-write or rebuild whose turn recorded nothing leaves the pointer in
+ *  place, so the next turn cuts the same session at the same message again. */
+function repeatedCuts(syncs) {
+	const last = new Map();
+	const repeats = [];
+	for (const sync of syncs) {
+		if (sync.cut === undefined || !["prefix-write", "rebuild"].includes(sync.path)) continue;
+		const prev = last.get(sync.key);
+		if (prev && prev.cut === sync.cut && prev.from === sync.from) repeats.push(sync);
+		last.set(sync.key, sync);
+	}
+	return repeats;
 }
 
 function run() {
@@ -116,7 +144,8 @@ function run() {
 	const pairs = [];
 	let requests = 0;
 
-	for (const { requests: rs } of parse(text).values()) {
+	const { streams, syncs } = parse(text);
+	for (const { requests: rs } of streams.values()) {
 		requests += rs.length;
 		for (let i = 1; i < rs.length; i++) {
 			const prev = rs[i - 1], cur = rs[i];
@@ -186,16 +215,25 @@ function run() {
 	const onFork = breaks.filter((b) => b.path === "fork");
 	console.log(`\nbreaks on a fork (it should read back everything its ancestor cached): ${onFork.length}`);
 	for (const b of onFork.sort((x, y) => y.shortfall - x.shortfall).slice(0, 10)) {
-		console.log(`  ${b.ts} module=${b.moduleId} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
+		console.log(`  ${b.ts} stream=${b.key} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
 	}
 
 	console.log("\nlargest residual breaks:");
 	for (const b of [...breaks].sort((x, y) => y.shortfall - x.shortfall).slice(0, 10)) {
-		console.log(`  ${b.ts} module=${b.moduleId} ${b.kind}/${b.path} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
+		console.log(`  ${b.ts} stream=${b.key} ${b.kind}/${b.path} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
 	}
 
 	// Exit reflects only the window: the log spans months of already-fixed bugs.
 	const recent = (x) => since === null || x.at >= since;
+	const pathCounts = new Map();
+	for (const sync of syncs.filter(recent)) pathCounts.set(sync.path, (pathCounts.get(sync.path) ?? 0) + 1);
+	console.log(`\nsync paths${since === null ? "" : " in window"}:`);
+	for (const [path, n] of [...pathCounts].sort((a, b) => b[1] - a[1])) console.log(`  ${String(n).padStart(5)}  ${path}`);
+	const repeats = repeatedCuts(syncs);
+	console.log(`\nrepeated cuts (the turn before cut the same session at the same message and recorded nothing): ${repeats.length}`);
+	for (const r of repeats.slice(-10)) console.log(`  ${r.ts} stream=${r.key} ${r.path} at ${r.cut}${r.from ? ` from ${r.from.slice(0, 8)}` : ""}`);
+	const windowRepeats = repeats.filter(recent);
+
 	const windowed = onFork.filter(recent);
 	const windowBreaks = breaks.filter((b) => b.kind === "boundary" && recent(b)).length;
 	const windowPairs = pairs.filter((p) => p.kind === "boundary" && recent(p)).length;
@@ -205,9 +243,10 @@ function run() {
 	console.log();
 	if (excess) console.log(`FAIL: boundary break rate${inWindow} ${(windowRate * 100).toFixed(1)}% (${windowBreaks}/${windowPairs}) exceeds ceiling ${(ceiling * 100).toFixed(0)}% — suspect a prefix-mutation regression`);
 	else if (windowed.length) console.log(`FAIL: ${windowed.length} break(s) on a fork${inWindow} — inspect the forked session`);
+	else if (windowRepeats.length) console.log(`FAIL: ${windowRepeats.length} repeated cut(s)${inWindow} — a turn's messages went unrecorded`);
 	else console.log(`OK: boundary rate${inWindow} ${(windowRate * 100).toFixed(1)}% (${windowBreaks}/${windowPairs}); whole log ${(rate(group.boundary) * 100).toFixed(1)}% vs in-query control ${(rate(group["in-query"]) * 100).toFixed(1)}% — residual is at the server-side eviction floor`);
 
-	process.exit(excess || windowed.length ? 1 : 0);
+	process.exit(excess || windowed.length || windowRepeats.length ? 1 : 0);
 }
 
 run();

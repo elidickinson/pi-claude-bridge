@@ -332,10 +332,10 @@ function markRebuildForSession(piSession: string | null, event: string): void {
 	const key = sessionKey(piSession);
 	const state = sharedSessions.get(key);
 	if (!state) {
-		debug(`${event}: history rewritten, no session to mark yet`);
+		debug(`${event}: history rewritten, no session to mark yet ${sessionTag(piSession)}`);
 	} else {
 		state.dirtyTail = true;
-		debug(`${event}: marking dirtyTail on session ${state.ccSessionId.slice(0, 8)}`);
+		debug(`${event}: marking dirtyTail on session ${state.ccSessionId.slice(0, 8)} ${sessionTag(piSession)}`);
 	}
 	// Arming parked contexts cannot wait for delivery: the entry checks
 	// `resultCtx.historyStale`, and a rewrite usually lands *while* the query is
@@ -781,7 +781,7 @@ function syncSharedSession(
 			ccSessionBefore: before?.ccSessionId ?? null, ccSessionAfter: after, priors: priors.length,
 			dirtyTail: Boolean(state?.dirtyTail), missingFile, cwdChanged, cwd, mirrorCwd: before?.cwd ?? null,
 		});
-		debug(`syncResult: path=${path} sessionId=${after} priors=${priors.length} commonPrefix=${compared.commonPrefix} cutCount=${compared.cutCount} row=${row}`);
+		debug(`syncResult: path=${path} sessionId=${after} from=${before?.ccSessionId ?? "none"} priors=${priors.length} commonPrefix=${compared.commonPrefix} cutCount=${compared.cutCount} row=${row} ${sessionTag(piSessionId)}`);
 	};
 	if (row === 4) {
 		decision("reuse", state!.ccSessionId);
@@ -1089,12 +1089,18 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 
 // --- Usage helpers ---
 
+// One process serves several pi sessions at once (in-process subagents), so log
+// lines diag/audit-cache.mjs pairs on carry the pi session they belong to.
+function sessionTag(piSessionId: string | null | undefined): string {
+	return `piSession=${piSessionId ?? "none"}`;
+}
+
 // The counter mapping lives in usage.ts; the debug line is this side's job, so every
 // call site logs the same way rather than three times over.
-function recordUsage(output: AssistantMessage, usage: SdkUsage, model: Model<any>): void {
+function recordUsage(output: AssistantMessage, usage: SdkUsage, model: Model<any>, piSessionId: string | null): void {
 	const { cachePct, reasoning } = updateUsage(output, usage, model);
 	const reasoningText = reasoning == null ? "" : ` reasoning=${reasoning}`;
-	debug(`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens}${reasoningText} cachePct=${cachePct}% model=${model.id}`);
+	debug(`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens}${reasoningText} cachePct=${cachePct}% model=${model.id} ${sessionTag(piSessionId)}`);
 }
 
 // Log the *served* context window reported by an SDK result message
@@ -1293,7 +1299,7 @@ function processStreamEvent(
 		if (c.turnStreamMessageId && !c.turnAssistantIds.includes(c.turnStreamMessageId)) c.turnAssistantIds.push(c.turnStreamMessageId);
 		c.turnStreamOpen = true;
 		c.turnStreamBlockStart = c.turnBlocks.length;
-		if (event.message?.usage) recordUsage(c.turnOutput, event.message.usage, model);
+		if (event.message?.usage) recordUsage(c.turnOutput, event.message.usage, model, c.piSessionId);
 		return;
 	}
 
@@ -1369,7 +1375,7 @@ function processStreamEvent(
 
 	if (event?.type === "message_delta") {
 		c.turnOutput.stopReason = mapStopReason(event.delta?.stop_reason);
-		if (event.usage) recordUsage(c.turnOutput, event.usage, model);
+		if (event.usage) recordUsage(c.turnOutput, event.usage, model, c.piSessionId);
 		return;
 	}
 
@@ -1478,7 +1484,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 			if (block.type === "text" && block.text) c.turnBlocks.push({ type: "text", text: block.text });
 			else debug("processAssistantMessage: unhandled <synthetic> block type", block.type);
 		}
-		if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model);
+		if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model, c.piSessionId);
 		return;
 	}
 	const id = assistantMsg.id;
@@ -1534,7 +1540,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 			debug("processAssistantMessage: unhandled block type", block.type);
 		}
 	}
-	if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model);
+	if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model, c.piSessionId);
 
 	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
 	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
@@ -2208,7 +2214,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		debug("provider: fresh query",
 			`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
 			`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${effort ?? "default"}`,
-			`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled}`,
+			`ctxFiles=${promptCapture?.contextFiles.length ?? 0} strictMcp=${strictMcpConfigEnabled} ${sessionTag(queryCtx.piSessionId)}`,
 			`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 
 		// 3. Start SDK query and claim it for this context
