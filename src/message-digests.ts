@@ -154,6 +154,23 @@ function writeToolResult(hash: ReturnType<typeof createHash>, message: Extract<P
 	else writeToolResultText(hash, message.content);
 }
 
+/** A model can stream an object or array argument as a JSON string ("display": "{...}").
+ * pi keeps the streamed string; Claude Code's completed message carries the decoded value.
+ * Both spellings hash alike, or the emitted step never matches its SDK echo, the recording
+ * stops advancing, and every later prompt rebuilds the session. Top-level arguments only. */
+function decodeStringifiedArguments(args: unknown): unknown {
+	if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+	const out: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+		out[key] = value;
+		if (typeof value !== "string") continue;
+		const text = value.trim();
+		if (!(text.startsWith("{") && text.endsWith("}")) && !(text.startsWith("[") && text.endsWith("]"))) continue;
+		try { out[key] = JSON.parse(text); } catch { /* not JSON: keep the string */ }
+	}
+	return out;
+}
+
 function writeAssistant(hash: ReturnType<typeof createHash>, message: Extract<PiMessage, { role: "assistant" }>): void {
 	const content = Array.isArray(message.content) ? message.content : [];
 	if (!content.length) { hash.update("assistant:omitted"); return; }
@@ -174,7 +191,7 @@ function writeAssistant(hash: ReturnType<typeof createHash>, message: Extract<Pi
 			hash.update("toolCall:");
 			writeString(hash, block.id);
 			writeString(hash, block.name);
-			writeJson(hash, block.arguments ?? {});
+			writeJson(hash, decodeStringifiedArguments(block.arguments ?? {}));
 		}
 	}
 	hash.update("]assistant");

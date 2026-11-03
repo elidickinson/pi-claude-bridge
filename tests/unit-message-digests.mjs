@@ -35,6 +35,18 @@ describe("pi message digests", () => {
 		assert.notEqual(digestMessage(result("same")), digestMessage(result("same", { isError: true })));
 	});
 
+	it("hashes a stringified object or array argument like its decoded value", () => {
+		// The model streamed `display` as a string; Claude Code's completed message has the object.
+		const streamed = { code: "return 1;", display: "{\"name\": \"step 1\", \"description\": \"run it\"}" };
+		const completed = { code: "return 1;", display: { name: "step 1", description: "run it" } };
+		const digest = (args) => digestMessage(assistant([toolCall("id", "fabric_exec", args)]));
+		assert.equal(digest(streamed), digest(completed));
+		assert.equal(digest({ edits: "[{\"a\":1}]" }), digest({ edits: [{ a: 1 }] }));
+		assert.notEqual(digest({ display: "{\"name\": \"x\"}" }), digest({ display: { name: "y" } }));
+		assert.notEqual(digest({ code: "{ not json }" }), digest({ code: "{ also not json }" }));
+		assert.equal(digest({ code: "{ not json }" }), digest({ code: "{ not json }" }));
+	});
+
 	it("hashes user and tool-result image data and MIME types", () => {
 		const image = (data, mimeType = "image/png") => [{ type: "image", data, mimeType }];
 		assert.notEqual(digestMessage(user(image("AAA"))), digestMessage(user(image("BBB"))));
