@@ -13,7 +13,7 @@
 // rate measured from the same log. Within a single query() call the bridge cannot
 // mutate the prefix — it only appends tool results — so in-query breaks are pure
 // server-side eviction and serve as the control group. A bridge-side prefix bug
-// would push the boundary rate above that floor. See diag/AUDIT.md for baselines.
+// would push the boundary rate above that floor. See diag/CACHE.md for baselines.
 //
 // Exits 1 when the boundary rate exceeds the documented ceiling, or when a break
 // lands on a rebuild boundary (the shape most likely to be our own bug).
@@ -39,7 +39,7 @@ const MIN_SHORTFALL = 2_000;
 // query source, so a 5-90 min gap may or may not have expired. Excluding anything
 // over 5 minutes means the residual is a lower bound on real breaks.
 const TTL_MIN_MS = 5 * 60 * 1000;
-// Boundary break rate measured over the full April-July 2026 log (see AUDIT.md).
+// Boundary break rate measured over the full April-July 2026 log (see CACHE.md).
 // Well above it means a prefix-mutation regression, not server-side noise.
 const BOUNDARY_RATE_CEILING = 0.10;
 
@@ -49,7 +49,7 @@ const flag = (name, fallback) => {
 	return i === -1 ? fallback : args[i + 1];
 };
 const since = args.includes("--since") ? Date.parse(flag("--since")) : null;
-// The boundary rate documented in diag/AUDIT.md is an open
+// The boundary rate documented in diag/CACHE.md is an open
 // finding, not a regression, so the ceiling is a knob: set it just above the
 // current rate to catch it getting *worse* while the root cause is unresolved.
 const ceiling = Number(flag("--ceiling", BOUNDARY_RATE_CEILING));

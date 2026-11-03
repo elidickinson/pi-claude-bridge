@@ -14,7 +14,7 @@
 - **Fix: environment leaks to and from Claude Code (#198)** — The non-essential-traffic flag is set only for Claude Code, not on pi's own process, so commands pi runs no longer inherit it. When pi is started from inside a Claude Code session, that session's markers (entrypoint, session id, env file, IDE port) no longer reach the bridge's Claude Code. Thanks @superninjv.
 - **Fix: bash default timeout broke the prompt cache on rebuild (#203)** — The 120s default now applies when the command runs instead of being saved in pi's history, so rebuilt sessions match Claude Code's. Thanks @cad0p and @superninjv.
 - **Bump: Claude Agent SDK 0.3.308 (Claude Code 2.1.308)** — Claude Code's new per-request log in session files is turned off; it made them about a third larger.
-- **Debug: opt-in cache trace** — `CLAUDE_BRIDGE_TRACE_DIR` logs session decisions to help diagnose prompt-cache loss. See `diag/CACHE-TRACE.md`.
+- **Debug: opt-in cache trace** — `CLAUDE_BRIDGE_TRACE_DIR` logs session decisions to help diagnose prompt-cache loss. See `diag/CACHE.md`.
 
 ## 0.9.3 — 2026-10-13
 

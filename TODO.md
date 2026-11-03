@@ -28,7 +28,7 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
 7. **Warn when inherited Anthropic env vars will redirect Claude Code** (#107). An exported `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` reaches the CC child through `env: { ...process.env, ... }` and overrides the subscription login, so every turn fails with the gateway's auth error. Warn at every session start (not once ever, like the startup notice) naming the variables that are set, with a setting such as `provider.warnAnthropicEnv: false` for people who route through a gateway on purpose.
 
-8. **Turn off Claude Code's tool search.** On first-party connections CC adds a `DeferredToolPlaceholder` tool with `defer_loading` to every request, but none of the bridge's 10 MCP tools were deferred (`diag/CACHE-REBUILD-FINDINGS.md:197`), so it adds a tool and does nothing. With enough pi tools CC could start hiding some behind its search tool. Add `ENABLE_TOOL_SEARCH: "false"` to `CC_CHILD_ENV` (`src/index.ts:59`), as pi-claude-code does, and confirm with the capture proxy that the placeholder is gone. The tool list changes, so expect one cache miss per session on upgrade.
+8. **Turn off Claude Code's tool search.** On first-party connections CC adds a `DeferredToolPlaceholder` tool with `defer_loading` to every request, but none of the bridge's 10 MCP tools were deferred (`diag/CACHE.md`, Pitfalls), so it adds a tool and does nothing. With enough pi tools CC could start hiding some behind its search tool. Add `ENABLE_TOOL_SEARCH: "false"` to `CC_CHILD_ENV` (`src/index.ts:59`), as pi-claude-code does, and confirm with the capture proxy that the placeholder is gone. The tool list changes, so expect one cache miss per session on upgrade.
 
 9. **Synthetic all-zero usage overwrites real counters.** A `<synthetic>` failure message carries all-zero usage, and `recordUsage`/`updateUsage` (`src/usage.ts`) only guard against missing usage, not zeros. A failure after real output in the same turn erases its input/output/cache totals.
 
@@ -42,6 +42,8 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
 14. **Check the Claude Code login at startup.** Low priority. When CC isn't logged in, the first turn fails with CC's error. pi-claude-code runs `claude auth status` in its provider check and hides its models when logged out; a warning at session start would be enough here. Run it in the background so startup doesn't wait on it.
 
+15. **Keep the cache and thinking across pi `/fork` and clone.** The new pi session id has no pointer, so its first turn fully imports history CC already holds, losing the cache and every earlier thinking block (`diag/CACHE.md`). On `session_start` with reason `fork`, copy the parent pi session's pointer (from `previousSessionFile`) to the new id, marked dirty, so the next turn forks or prefix-writes instead.
+
 ## Open questions
 
 - **Never-answered tool calls** (`[no tool result recorded]` as the only stub of a single-`tool_use` turn). 389 historical hits are the fixed parallel-results bug, but one real one appeared after the audit baseline (js13k project, 2026-08-31), so the cause isn't gone. Re-run `diag/audit-transcripts.mjs --since <last good date>` to check for more.
@@ -53,6 +55,8 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 ## Testing gaps
 
 - **Int tests pollute the audit scan.** `rpc-harness.mjs` defaults `cwd` to the project root, so int-test sessions land in the real project's sessions dir and the transcript scanner counts them as defects (123 fake hits as of 2026-09-23). Fix: default to a temp dir, or have the scanner skip test sessions.
+
+- **The proxy contract test can't see most first-party differences.** `tests/int-cc-contracts.mjs` ("routing through the capture proxy...") compares only init tool names and first-request size. Also compare the beta set, `system[0]` with its per-request fields masked, and a second-turn body. CC 2.1.308's `api-request` session records could show the production request shape without the proxy.
 
 - **`int-cache.sh` depends on the model calling a tool.** It fails with `Only 1 tool call(s) (expected >= 2)` when Haiku answers from context instead of reading the file (1 in 15 runs). The count proves the recording/cache path ran, so it can't just be dropped; make the prompt harder to answer from context.
 
