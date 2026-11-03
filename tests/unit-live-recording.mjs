@@ -154,32 +154,21 @@ for (const laterTurn of [false, true]) it(`${laterTurn ? "later-turn" : "absorbe
 	assert.equal(c.recording.hasProgress, true);
 });
 
-it("an opening prompt CC never replays is recorded at the query's first output", async () => {
-	const c = new QueryContext();
-	const prompt = user("<task-notification>\n<task-id>x</task-id>\n</task-notification>");
-	c.recording.users([prompt], 0, "prompt", false, false);
-	c.turnOpener = "prompt";
-	c.resetTurnState(model);
-	const stream = c.currentPiStream = createAssistantMessageEventStream();
-	await consume(c, [{ type: "assistant", parent_tool_use_id: null, uuid: "answer", message: { id: "answer", model: model.id, content: [{ type: "text", text: "ok" }] } }]);
-	__test.finalizeCurrentStream(c);
-	const output = await stream.result();
-	assert.deepEqual(c.recording.recorded, { digests: digestMessages([prompt, output]), uuids: ["prompt", "answer"], cuttable: [true, true] });
-	assert.equal(c.recording.hasProgress, true);
-});
-
-it("a later turn opened by a steer CC never replays records it at that turn's first output", async () => {
+it("a turn's opener CC never replays is recorded at that turn's first output", async () => {
 	const c = new QueryContext();
 	const output = (id) => ({ type: "assistant", parent_tool_use_id: null, uuid: id, message: { id, model: model.id, content: [] } });
 	const result = { type: "result", subtype: "success", is_error: false, result: "" };
-	const context = [user("prompt"), { role: "assistant", content: [], timestamp: 1 }, user("<task-notification>late</task-notification>"), user("queued")];
-	c.recording.users(context.slice(0, 1), 0, "prompt", true);
+	const context = [user("<task-notification>prompt</task-notification>"), { role: "assistant", content: [], timestamp: 1 }, user("<task-notification>late</task-notification>"), user("queued")];
+	c.recording.users(context.slice(0, 1), 0, "prompt", false, false);
+	c.turnOpener = "prompt";
+	await consume(c, [output("answer")]);
 	c.recording.assistant(digestMessage(context[1]), [], "answer");
 	for (const [i, uuid] of [[2, "late"], [3, "queued"]]) {
 		c.recording.users(context.slice(0, i + 1), i, uuid, false);
 		c.pendingSteerUuids.add(uuid);
 	}
-	c.turnOpenerDue = false;
+	await consume(c, [output("more")]);
+	assert.deepEqual(c.recording.recorded.uuids, ["prompt", "answer"], "mid-turn output opens nothing");
 	await consume(c, [result, output("late-answer")]);
 	assert.deepEqual(c.recording.recorded.uuids, ["prompt", "answer", "late"]);
 	assert.deepEqual([...c.pendingSteerUuids], ["queued"], "only the oldest queued steer opens the turn");

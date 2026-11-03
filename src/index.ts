@@ -1228,6 +1228,14 @@ function completeAssistantRecording(c: QueryContext, step: AssistantStep): void 
 	} else debug(`recording gap: emitted assistant is not fully covered by completed SDK messages (${step.emitted.ids.join(",")})`);
 }
 
+/** CC took this input into a turn: record it, and drop it from the steers that
+ * keep stdin open. Stdin still stays open until that turn's result, since its
+ * MCP calls need it. Returns whether it was still pending. */
+function incorporate(c: QueryContext, uuid: string): boolean {
+	const recorded = c.recording.acknowledge(uuid);
+	return c.pendingSteerUuids.delete(uuid) || recorded;
+}
+
 /** Recording precedes the UI guard: echoes after a tool boundary still belong
  * to the emitted step, not to whatever stream is currently attached. */
 function tapRecording(message: SDKMessage, names: Map<string, string>, c: QueryContext): void {
@@ -1236,20 +1244,13 @@ function tapRecording(message: SDKMessage, names: Map<string, string>, c: QueryC
 		c.recording.assistantObserved();
 		// CC persists a turn's opening input before calling the API but never
 		// replays one holding its own tags (e.g. <task-notification>), so the turn's
-		// first output acknowledges it. Incorporated like a replayed steer, it no
-		// longer holds stdin open past the next result.
-		if (c.turnOpenerDue && c.turnOpener) {
-			const recorded = c.recording.acknowledge(c.turnOpener);
-			if (c.pendingSteerUuids.delete(c.turnOpener) || recorded) debug(`recording: turn opener ${c.turnOpener} was never replayed; its first output acknowledges it`);
-		}
-		c.turnOpenerDue = false;
+		// first output incorporates it.
+		if (c.turnOpener && incorporate(c, c.turnOpener)) debug(`recording: turn opener ${c.turnOpener} was never replayed; its first output acknowledges it`);
+		c.turnOpener = undefined;
 	}
-	if (message.type === "result") {
-		c.turnOpenerDue = true;
-		c.turnOpener = c.pendingSteerUuids.values().next().value;
-	}
+	if (message.type === "result") c.turnOpener = c.pendingSteerUuids.values().next().value;
 	if (message.type === "user" && message.parent_tool_use_id === null && message.uuid) {
-		if ("isReplay" in message && message.isReplay === true) c.recording.acknowledge(message.uuid);
+		if ("isReplay" in message && message.isReplay === true) incorporate(c, message.uuid);
 		if (Array.isArray(message.message.content)) for (const block of message.message.content) {
 			if (block.type === "tool_result") c.recording.result(block.tool_use_id, message.uuid);
 		}
@@ -1599,8 +1600,6 @@ async function consumeQuery(
 		// nowhere to put once a turn has ended on a tool call. Handle lifecycle
 		// messages before that gate:
 		//
-		// - replay acknowledgements: clear a queued steer even after its pi turn
-		//   stream has ended.
 		// - stdin: nothing else closes the CLI's stdin now that the prompt is a
 		//   streamed generator (isSingleUserTurn=false), so missing this hangs the query.
 		// - the failure a `result` carries: it is the only record that the turn
@@ -1609,11 +1608,6 @@ async function consumeQuery(
 		//   open; once ended, turnOutput is the message pi already recorded.
 		// - rate-limit events: notifications to the user, which are most likely to
 		//   fire during exactly the long tool-using turns the guard was skipping.
-		if (message.type === "user" && message.parent_tool_use_id === null && "isReplay" in message && message.isReplay === true) {
-			// For fresh steer UUIDs, replay marks incorporation into the turn, not
-			// completion. Its MCP calls still need stdin until the following result.
-			queryCtx.pendingSteerUuids.delete(message.uuid);
-		}
 		if (message.type === "stream_event" && (message as any).event?.type === "message_start") {
 			const started = (message as any).event.message;
 			traceEvent("api-message", { queryId: traceQueryId, apiMessageId: started?.id ?? null, model: started?.model ?? null, usage: started?.usage ?? null });
