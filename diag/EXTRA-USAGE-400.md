@@ -43,6 +43,24 @@ A live Agent SDK A/B (Pro login, Haiku 4.5) succeeded with both the `claude_code
 
 The [August 5 report on PR #21](https://github.com/elidickinson/pi-claude-bridge/pull/21#issuecomment-5195976655) that replace mode used Extra Usage includes no captured prompt or billing evidence. It does not establish preset omission as the cause.
 
+### SDK versus print mode: October 31, 2026
+
+One request per arm, same login, Extra Usage disabled (`org_level_disabled`), Haiku 4.5 unless noted. Every arm but the control sent pi 1.4.0's default system prompt unchanged (16.4K characters, including `PI_PREAMBLE` and both `docs/custom-provider.md` and `docs/packages.md`):
+
+| route | CC | result |
+| --- | --- | --- |
+| Agent SDK 0.3.308, `claude_code` preset with pi's prompt as `append` | 2.1.308 (bundled) | 400 |
+| Agent SDK, pi's prompt as the whole system prompt | 2.1.308 (bundled) | 400 |
+| Agent SDK, pi's prompt as the whole system prompt, `pathToClaudeCodeExecutable` | 2.1.316 | 400 |
+| Agent SDK, `claude_code` preset only (control) | 2.1.308 (bundled) | `allowed`, `isUsingOverage=false` |
+| `claude -p --system-prompt-file` | 2.1.308 (bundled) | `allowed`, `isUsingOverage=false` |
+| `claude -p --system-prompt-file` | 2.1.316 | `allowed`, `isUsingOverage=false` |
+| [pi-claude-code](https://github.com/earendil-works/pi-claude-code) @70abb65, Sonnet 5.5 | 2.1.316 | `allowed`, `isUsingOverage=false` |
+
+The content trigger still applies, and it follows the route rather than the CC version. The SDK sets `CLAUDE_CODE_ENTRYPOINT=sdk-ts` when unset; pi-claude-code runs `claude -p` with stream-json input, and its captured request carried `cc_entrypoint=sdk-cli` and `user-agent: claude-cli/2.1.316 (external, sdk-cli)`, with pi's prompt verbatim in `system[2]` after CC's billing header and "You are a Claude agent, built on Anthropic's Claude Agent SDK." Its loopback relay rewrites messages and cache markers, not system prompt text. Attribution was not varied to isolate the cause further, per the rule above. Print mode passing today is an observation about current gating, not a reason to route around the SDK.
+
+The SDK sets `process.env.CLAUDE_AGENT_SDK_VERSION` in the host process, so probes launched from a pi session running the bridge inherit it; these arms unset it.
+
 ## Reproduction
 
 Capture through the real SDK path, then compare requests using the same account and model, changing only the system prompt:
