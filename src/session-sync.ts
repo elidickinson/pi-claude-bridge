@@ -130,18 +130,9 @@ export class LiveRecording {
 	get hasGaps(): boolean { return this.duplicated || this.nextIndex > this.recorded.digests.length; }
 	gap(): void { this.nextIndex++; }
 	/** A later-turn steer follows output pi merges into its next assistant.
-	 * Cutting at that steer would keep the unrepresented earlier output twice.
-	 * CC persists the opening prompt before its first API call but never replays
-	 * one containing its own tags (e.g. <task-notification>), so output also
-	 * acknowledges it. Returns the prompt's uuid when that happens here. */
-	assistantObserved(): string | undefined {
-		let prompt: string | undefined;
-		for (const [uuid, steer] of this.steers) {
-			if (steer.steering) steer.unsafe = true;
-			else prompt = uuid;
-		}
-		if (prompt) this.acknowledge(prompt);
-		return prompt;
+	 * Cutting at that steer would keep the unrepresented earlier output twice. */
+	assistantObserved(): void {
+		for (const steer of this.steers.values()) if (steer.steering) steer.unsafe = true;
 	}
 	private resultUuids = new Map<string, string>();
 	private outstanding = new Set<string>();
@@ -189,10 +180,10 @@ export class LiveRecording {
 		if (acknowledged) this.acknowledge(uuid);
 		else this.flush();
 	}
-	/** Repeated or unknown receipts are no-ops. */
-	acknowledge(uuid: string): void {
+	/** Repeated or unknown receipts are no-ops; returns whether this one was pending. */
+	acknowledge(uuid: string): boolean {
 		const steer = this.steers.get(uuid);
-		if (!steer) return;
+		if (!steer) return false;
 		this.steers.delete(uuid);
 		if (steer.overlaps) this.duplicate(steer.first);
 		for (const { index, slot } of steer.bound) {
@@ -204,6 +195,7 @@ export class LiveRecording {
 			slot.nonCuttable = steer.unsafe;
 		}
 		this.flush();
+		return true;
 	}
 	assistant(digest: string, toolCalls: string[], uuid?: string, resetTools = true): number {
 		const index = this.nextIndex++;

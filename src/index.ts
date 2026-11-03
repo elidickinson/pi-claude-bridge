@@ -1233,8 +1233,20 @@ function completeAssistantRecording(c: QueryContext, step: AssistantStep): void 
 function tapRecording(message: SDKMessage, names: Map<string, string>, c: QueryContext): void {
 	if ((message.type === "assistant" && message.parent_tool_use_id === null && message.message.model !== "<synthetic>")
 		|| (message.type === "stream_event" && message.parent_tool_use_id === null && ["content_block_start", "content_block_delta"].includes(message.event.type))) {
-		const unreplayed = c.recording.assistantObserved();
-		if (unreplayed) debug(`recording: opening prompt ${unreplayed} was never replayed; its first output acknowledges it`);
+		c.recording.assistantObserved();
+		// CC persists a turn's opening input before calling the API but never
+		// replays one holding its own tags (e.g. <task-notification>), so the turn's
+		// first output acknowledges it. Incorporated like a replayed steer, it no
+		// longer holds stdin open past the next result.
+		if (c.turnOpenerDue && c.turnOpener) {
+			const recorded = c.recording.acknowledge(c.turnOpener);
+			if (c.pendingSteerUuids.delete(c.turnOpener) || recorded) debug(`recording: turn opener ${c.turnOpener} was never replayed; its first output acknowledges it`);
+		}
+		c.turnOpenerDue = false;
+	}
+	if (message.type === "result") {
+		c.turnOpenerDue = true;
+		c.turnOpener = c.pendingSteerUuids.values().next().value;
 	}
 	if (message.type === "user" && message.parent_tool_use_id === null && message.uuid) {
 		if ("isReplay" in message && message.isReplay === true) c.recording.acknowledge(message.uuid);
@@ -2132,6 +2144,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// or, when CC never replays it, on the query's first output (tapRecording):
 		// a stdin write does not prove CC persisted its record.
 		recording.users(context.messages, turnStart(context.messages), promptUuid, false, false);
+		queryCtx.turnOpener = promptUuid;
 		void promptStream.push({ ...userMessage(promptBlocks ?? [{ type: "text", text: promptText }]), uuid: promptUuid })
 			.catch((error) => debug(`provider: initial prompt push rejected:`, error));
 		queryCtx.promptStream = promptStream;

@@ -755,6 +755,50 @@ test("an opening prompt containing <task-notification> is recorded under its UUI
 	}
 });
 
+test("a late steer containing <task-notification> opens the next turn under its UUID but is never replayed", { timeout: 120_000 }, async () => {
+	// The bridge acknowledges it at that turn's first output instead (tapRecording),
+	// or the pending steer would hold stdin open forever.
+	const requests = [];
+	const api = await stubApi(requests);
+	const cwd = mkdtempSync(join(tmpdir(), "cc-tag-steer-"));
+	const sessionId = randomUUID();
+	const steerUuid = randomUUID();
+	let release;
+	const completed = new Promise((resolve) => { release = resolve; });
+	async function* prompts() {
+		yield { type: "user", message: { role: "user", content: "Reply OK to FIRST-TURN." }, parent_tool_use_id: null, uuid: randomUUID() };
+		await completed;
+		yield { type: "user", message: { role: "user", content: "<task-notification>\n<task-id>abc</task-id>\n<status>Done</status>\n</task-notification>\nReply OK to LATE-STEER." }, parent_tool_use_id: null, uuid: steerUuid, priority: "next" };
+	}
+	try {
+		const messages = [];
+		let results = 0;
+		for await (const message of query({
+			prompt: prompts(),
+			options: providerOptions({
+				cwd, sessionId,
+				extraArgs: { "strict-mcp-config": null, "replay-user-messages": null },
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+			}),
+		})) {
+			messages.push(message);
+			if (message.type === "result" && ++results === 1) release();
+		}
+		assert.equal(results, 2, "both turns must complete");
+		assert.ok(!messages.some((m) => m.type === "user" && m.isReplay && m.uuid === steerUuid), "CC replayed a late steer holding <task-notification>; the first-output acknowledgement is no longer needed");
+		const session = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		const secondAssistant = messages.filter((m) => m.type === "assistant").at(-1);
+		const steerAt = session.records.findIndex((r) => r.uuid === steerUuid);
+		assert.ok(steerAt >= 0 && steerAt < session.records.findIndex((r) => r.uuid === secondAssistant.uuid), "the steer must be recorded under its supplied UUID before the second turn's output");
+		assert.ok(requests.some((r) => JSON.stringify(r.messages).includes("LATE-STEER")));
+	} finally {
+		release();
+		api.close();
+		rmSync(getProjectDir(cwd, process.env.CLAUDE_CONFIG_DIR), { recursive: true, force: true });
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("an initial replay's prompt UUID survives abort once the real child exits", { timeout: 120_000 }, async () => {
 	const requests = [];
 	const api = await stubApi(requests, { stall: true });
