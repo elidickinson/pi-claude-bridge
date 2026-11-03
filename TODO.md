@@ -44,6 +44,8 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
 15. **Keep the cache and thinking across pi `/fork` and clone.** The new pi session id has no pointer, so its first turn fully imports history CC already holds, losing the cache and every earlier thinking block (`diag/CACHE.md`). On `session_start` with reason `fork`, copy the parent pi session's pointer (from `previousSessionFile`) to the new id, marked dirty, so the next turn forks or prefix-writes instead.
 
+16. **A changed tool set may not reach Claude Code after reuse, a fork or a prefix-write.** The kept records include CC's `prompt_snapshot` (system prompt parts and tools), which CC replays on resume, so only a full import picks up a change (`diag/CACHE.md`, Known gaps). README:182 covers the prompt half; the tools half is inferred from code and not measured. It matters for #176/#236, where `tool_search` adds pi tools mid-session: #236's live refresh covers the running query, but the next fork may bring back the old list. Probe first: add a tool between two turns and check the second request's `tools`, on reuse and on a fork. If it holds, drop CC's snapshot when the tool set changed (or set `systemPrompt.snapshot: false` for that turn), trading one cache miss for the right tools.
+
 ## Open questions
 
 - **Never-answered tool calls** (`[no tool result recorded]` as the only stub of a single-`tool_use` turn). 389 historical hits are the fixed parallel-results bug, but one real one appeared after the audit baseline (js13k project, 2026-08-31), so the cause isn't gone. Re-run `diag/audit-transcripts.mjs --since <last good date>` to check for more.

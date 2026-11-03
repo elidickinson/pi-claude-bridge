@@ -16,7 +16,8 @@
 // would push the boundary rate above that floor. See diag/CACHE.md for baselines.
 //
 // Exits 1 when the boundary rate exceeds the documented ceiling, or when a break
-// lands on a rebuild boundary (the shape most likely to be our own bug).
+// lands on a fork, which should read back everything its ancestor cached (the
+// shape most likely to be our own bug).
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -112,6 +113,7 @@ function run() {
 	};
 	const group = { "in-query": { n: 0, breaks: 0, tokens: 0 }, boundary: { n: 0, breaks: 0, tokens: 0 } };
 	const breaks = [];
+	const pairs = [];
 	let requests = 0;
 
 	for (const { requests: rs } of parse(text).values()) {
@@ -142,6 +144,7 @@ function run() {
 			if (prev.model !== cur.model) { bump(`model change (${prev.model} → ${cur.model})`, shortfall); continue; }
 			if (cur.marks.some((m) => RESET.test(m))) { bump("compaction / new session / isolated subprocess", shortfall); continue; }
 			if (sync && sync[1] === "clean-start") { bump("clean start (no prior history)", shortfall); continue; }
+			if (sync && sync[1] === "rebuild") { bump("full import (CC's records not kept)", shortfall); continue; }
 			if (fresh && fresh[4] === "none") { bump("fresh query, no resume", shortfall); continue; }
 			if (fresh && prevFresh && fresh[3] !== prevFresh[3]) { bump("tool set changed", shortfall); continue; }
 			if (fresh && prevFresh && fresh[5] !== prevFresh[5]) { bump("effort changed", shortfall); continue; }
@@ -158,7 +161,10 @@ function run() {
 			if (cur.marks.some((m) => RESET.test(m))) continue;
 			const fresh = cur.marks.map((m) => FRESH.exec(m)).filter(Boolean).at(-1);
 			if (fresh && fresh[4] === "none") continue;
-			group[fresh ? "boundary" : "in-query"].n++;
+			if (cur.marks.some((m) => SYNC.exec(m)?.[1] === "rebuild")) continue;
+			const kind = fresh ? "boundary" : "in-query";
+			group[kind].n++;
+			pairs.push({ kind, at: cur.at });
 		}
 	}
 
@@ -177,9 +183,9 @@ function run() {
 	console.log(`  in-query  ${String(group["in-query"].breaks).padStart(4)} / ${String(group["in-query"].n).padStart(5)} pairs  ${(rate(group["in-query"]) * 100).toFixed(1)}%  ${(group["in-query"].tokens / 1e6).toFixed(1)}M tok   <- control: bridge cannot mutate the prefix here`);
 	console.log(`  boundary  ${String(group.boundary.breaks).padStart(4)} / ${String(group.boundary.n).padStart(5)} pairs  ${(rate(group.boundary) * 100).toFixed(1)}%  ${(group.boundary.tokens / 1e6).toFixed(1)}M tok   <- --resume boundaries`);
 
-	const onRebuild = breaks.filter((b) => b.path === "rebuild");
-	console.log(`\nbreaks on a rebuild boundary (bridge rewrote the session): ${onRebuild.length}`);
-	for (const b of onRebuild.sort((x, y) => y.shortfall - x.shortfall).slice(0, 10)) {
+	const onFork = breaks.filter((b) => b.path === "fork");
+	console.log(`\nbreaks on a fork (it should read back everything its ancestor cached): ${onFork.length}`);
+	for (const b of onFork.sort((x, y) => y.shortfall - x.shortfall).slice(0, 10)) {
 		console.log(`  ${b.ts} module=${b.moduleId} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
 	}
 
@@ -189,13 +195,17 @@ function run() {
 	}
 
 	// Exit reflects only the window: the log spans months of already-fixed bugs.
-	const recent = (b) => since === null || Date.parse(b.at) >= since;
-	const windowed = onRebuild.filter(recent);
-	const excess = rate(group.boundary) > ceiling && group.boundary.breaks >= 10;
+	const recent = (x) => since === null || x.at >= since;
+	const windowed = onFork.filter(recent);
+	const windowBreaks = breaks.filter((b) => b.kind === "boundary" && recent(b)).length;
+	const windowPairs = pairs.filter((p) => p.kind === "boundary" && recent(p)).length;
+	const windowRate = windowPairs ? windowBreaks / windowPairs : 0;
+	const excess = windowRate > ceiling && windowBreaks >= 10;
+	const inWindow = since === null ? "" : " in window";
 	console.log();
-	if (excess) console.log(`FAIL: boundary break rate ${(rate(group.boundary) * 100).toFixed(1)}% exceeds ceiling ${(ceiling * 100).toFixed(0)}% — suspect a prefix-mutation regression`);
-	else if (windowed.length) console.log(`FAIL: ${windowed.length} break(s) on a rebuild boundary${since === null ? "" : " in window"} — inspect the rewritten session`);
-	else console.log(`OK: boundary rate ${(rate(group.boundary) * 100).toFixed(1)}% vs in-query control ${(rate(group["in-query"]) * 100).toFixed(1)}% — residual is at the server-side eviction floor`);
+	if (excess) console.log(`FAIL: boundary break rate${inWindow} ${(windowRate * 100).toFixed(1)}% (${windowBreaks}/${windowPairs}) exceeds ceiling ${(ceiling * 100).toFixed(0)}% — suspect a prefix-mutation regression`);
+	else if (windowed.length) console.log(`FAIL: ${windowed.length} break(s) on a fork${inWindow} — inspect the forked session`);
+	else console.log(`OK: boundary rate${inWindow} ${(windowRate * 100).toFixed(1)}% (${windowBreaks}/${windowPairs}); whole log ${(rate(group.boundary) * 100).toFixed(1)}% vs in-query control ${(rate(group["in-query"]) * 100).toFixed(1)}% — residual is at the server-side eviction floor`);
 
 	process.exit(excess || windowed.length ? 1 : 0);
 }

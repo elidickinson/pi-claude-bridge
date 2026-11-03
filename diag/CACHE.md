@@ -88,13 +88,13 @@ Cache numbers come from the API's usage report on each response (`cache_read_inp
 node --import tsx diag/audit-cache.mjs [claude-bridge.log] [--since YYYY-MM-DD] [--ceiling 0.30]
 ```
 
-A request that reads back less cache than the previous one left means the prompt prefix changed. The scanner expects `cacheRead[N] == cacheRead[N-1] + cacheWrite[N-1]` and counts a shortfall of at least 2,000 tokens, CC's own `MIN_CACHE_MISS_TOKENS`, as a break. It anchors on the bridge's line prefix like the other log scanners (see [AUDIT.md](AUDIT.md)). `--since` and `--ceiling` make it a gate: the exit code counts only breaks inside the window, and `--ceiling` should sit just above the latest measured boundary rate.
+A request that reads back less cache than the previous one left means the prompt prefix changed. The scanner expects `cacheRead[N] == cacheRead[N-1] + cacheWrite[N-1]` and counts a shortfall of at least 2,000 tokens, CC's own `MIN_CACHE_MISS_TOKENS`, as a break. It anchors on the bridge's line prefix like the other log scanners (see [AUDIT.md](AUDIT.md)). `--since` and `--ceiling` make it a gate: it fails when the boundary rate inside the window exceeds `--ceiling`, which should sit just above the latest measured rate, or when any break inside the window lands on a fork. A fork should read back everything its ancestor cached.
 
 Pairs are per module id, not per query. In-process subagents can share the parent's module and model, so most in-query breaks since 2026-09-26 are interleaved conversations (e.g. `z6fojf`, 2026-10-25T15:03-15:08). Pair by query or session before using in-query breaks as a control.
 
 What the boundary breaks are:
 - **System-prompt changes, mostly git status**, fixed in `deb1f316` (2026-08-24). CC's preset ended its cached system block with `gitStatus:`, so any git transition cut the read back to the tools prefix. From 2026-04-09 to 2026-08-24, 173 of 1,025 strict boundaries (16.9%, 25.6M tokens) were system-prompt breaks; the rest of them came from date rollover and CLAUDE.md edits. The signature is a `cacheRead` equal to the process's first-request read. `diag/probe-git-cache.mjs` reproduces it.
-- **Full imports**, whose cost is [above](#what-each-history-change-costs).
+- **Full imports** (`path=rebuild`), whose cost is [above](#what-each-history-change-costs). The scanner counts them as expected prefix changes, not residual breaks.
 - **The rest is unexplained.** Controlled runs never went cold (33 bridge-free `claude -p --resume` boundaries, 90 bridge boundaries under the capture proxy). The audited cold resumes were Opus 1M at `xhigh` with 100-400k prompts; to catch one, run a real session of that shape through `diag/capture-proxy.mjs` and diff the first cold boundary with `diag/diff-captures.mjs`.
 - **Parallel tool results** with the same millisecond timestamp are reordered by CC's resume, deterministically per session file, so it costs one cache write. 2 of 417 CC-authored parallel groups tie.
 
@@ -142,7 +142,7 @@ Evidence: `probe-session-fork.mjs` cases `fork-after-abort-text`, `fork-after-ab
 | to 2026-07-29 | 7,543 | 40/6,466 (0.6%) | 136/549 (24.8%) |
 | to 2026-09-25 | 17,917 | 130/15,033 (0.9%) | 310/1,360 (22.8%): rebuild 89/139 (64.0%), reuse 216/1,121 (19.3%) |
 
-Pairs exclude idle gaps over 5 minutes, effort, model and tool-set changes, and compaction. Nearly all of the September window is CC 2.1.141 or earlier. The July window predates the git-status fix, the September one spans it, and both predate the current session sync. Bin by CC version and date before comparing later runs, and compare against the nearest dated baseline, not against zero.
+Both rows count full imports as residual breaks; the scanner leaves them out, so compare its boundary rate with the reuse figure. Since the content-based sync, `--since 2026-10-25` (to 2026-11-03) gives a boundary rate of 18/926 (1.9%). Pairs exclude idle gaps over 5 minutes, effort, model and tool-set changes, and compaction. Nearly all of the September window is CC 2.1.141 or earlier. The July window predates the git-status fix, the September one spans it, and both predate the current session sync. Bin by CC version and date before comparing later runs, and compare against the nearest dated baseline, not against zero.
 
 ### Pitfalls
 
