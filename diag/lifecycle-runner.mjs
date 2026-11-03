@@ -340,9 +340,11 @@ const SCENARIOS = {
 		async steps(ctx) {
 			const h = await ctx.pi();
 			await prompt(h, "Please record a checkpoint with the lc_stop tool, note 'start'.");
-			const streaming = h.waitForMatch((m) => m.type === "message_update" && m.assistantMessageEvent?.type === "text_delta", "streamed text", TIMEOUT);
+			// Abort at the first delta of either kind: a short reply can finish before an
+			// abort sent at its first text delta reaches the request.
+			const streaming = h.waitForMatch((m) => m.type === "message_update" && ["text_delta", "thinking_delta"].includes(m.assistantMessageEvent?.type), "streamed delta", TIMEOUT);
 			const settled = h.waitForEvent("agent_settled", TIMEOUT);
-			await h.send({ type: "prompt", message: "Now write a 400-word story about a lighthouse keeper." });
+			await h.send({ type: "prompt", message: "Without tools, write a 600-word story about a lighthouse keeper." });
 			await streaming;
 			await h.send({ type: "abort" });
 			await settled;
@@ -362,6 +364,32 @@ const SCENARIOS = {
 				["the continuing run's abort reached that query", runAbort && !runAbort.runStreamEnded, runAbort],
 				["the query ended aborted", end?.outcome === "aborted", end?.outcome],
 				["next turn retains the covered prefix and repairs the aborted suffix", [6, 7].includes(decisions.at(-1)?.row) && decisions.at(-1)?.cutCount > 0, decisions.at(-1)],
+			];
+		},
+	},
+
+	"abort-fresh": {
+		contract: "A fresh turn aborted mid-reply, then the next turn: retained prefix, cache and thinking",
+		async steps(ctx) {
+			const h = await ctx.pi();
+			await prompt(h, "Look up the key alpha with lc_lookup. Then: a farmer has 17 sheep, all but 9 run away, and he buys twice as many as remain. How many does he have? Give the value and the number.");
+			const streaming = h.waitForMatch((m) => m.type === "message_update" && ["text_delta", "thinking_delta"].includes(m.assistantMessageEvent?.type), "streamed delta", TIMEOUT);
+			const settled = h.waitForEvent("agent_settled", TIMEOUT);
+			await h.send({ type: "prompt", message: "Without tools, write a 600-word story about a lighthouse keeper." });
+			await streaming;
+			await h.send({ type: "abort" });
+			await settled;
+			await prompt(h, "Never mind the story. Without tools: what is 4837 * 29 - 1966? Just the number.");
+			await shutdown(h);
+		},
+		check({ decisions, analysis, capture, captureBodies }) {
+			const next = decisionTransition(analysis, decisions.at(-1));
+			return [
+				["the story request was cut off upstream", capture.some((r) => r.terminal === "client-disconnect"), capture.map((r) => `#${r.n} ${r.terminal}`)],
+				["next turn keeps a prefix", [6, 7].includes(decisions.at(-1)?.row) && decisions.at(-1)?.cutCount > 0, decisions.at(-1)],
+				["the next turn carries earlier thinking blocks", next && thinkingIn(captureBodies[next.to.request]) > 0, next && { ancestor: thinkingIn(captureBodies[next.from.request]), next: thinkingIn(captureBodies[next.to.request]) }],
+				["retained thinking is not dropped", noThinkingDrops(next), next?.apiTransformations],
+				["the next turn reads the ancestor's cached prefix", next?.preservation.status === "preserved" && next?.cache.status === "covered", next && { from: next.from.request, preservation: next.preservation, cache: next.cache }],
 			];
 		},
 	},
@@ -535,6 +563,30 @@ const SCENARIOS = {
 				["the fork reads the ancestor's cached prefix", fork?.cache.status === "covered", fork?.cache],
 			];
 		},	},
+
+	"clone-rebuild": {
+		contract: "pi clone (new pi session id, no pointer): the next turn imports pi's whole history",
+		async steps(ctx) {
+			const h = await ctx.pi();
+			await prompt(h, "Look up the key alpha with lc_lookup. Then: a farmer has 17 sheep, all but 9 run away, and he buys twice as many as remain. How many does he have? Give the value and the number.");
+			await prompt(h, "Look up the key beta with lc_lookup. Then: what is 4837 * 29 - 1966? Give the value and the number.");
+			const cloned = await h.send({ type: "clone" }, TIMEOUT);
+			if (cloned?.cancelled) throw new Error(`clone cancelled: ${JSON.stringify(cloned)}`);
+			await prompt(h, "Without tools: if a train leaves at 3:40 and the trip takes 2 hours 35 minutes, when does it arrive? Just the time.");
+			await shutdown(h);
+		},
+		// The analyzer cannot link requests across pi session ids, so the turn after
+		// the clone has no transition: compare its request with the one before by hand.
+		check({ decisions, capture, captureBodies }) {
+			const messages = capture.filter((r) => r.path?.startsWith("/v1/messages") && !r.path.includes("count_tokens"));
+			const [before, after] = messages.slice(-2);
+			return [
+				["two pi session ids", new Set(decisions.map((d) => d.piSessionId)).size === 2, decisions.map((d) => d.piSessionId)],
+				["turn after clone is a full import", decisions.at(-1)?.row === 2 && decisions.at(-1)?.path === "rebuild", decisions.at(-1)],
+				["the import carries earlier thinking blocks", thinkingIn(captureBodies[after?.n]) > 0, { before: before?.n, after: after?.n, thinking: thinkingIn(captureBodies[after?.n]) }],
+			];
+		},
+	},
 
 	"compact": {
 		contract: "Compaction, then continuing: a necessary change must not conceal unrelated loss",
