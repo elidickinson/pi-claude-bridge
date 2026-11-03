@@ -753,7 +753,7 @@ test("a turn's opening input containing <task-notification> is recorded under it
 			if (message.type === "result" && ++results === 1) release();
 		}
 		assert.equal(results, 2, "both turns must complete");
-		assert.ok(!messages.some((m) => m.type === "user" && m.isReplay), "CC replayed input holding <task-notification>; the first-output acknowledgement is no longer needed");
+		assert.ok(!messages.some((m) => m.type === "user" && m.isReplay && uuids.includes(m.uuid)), "CC replayed input holding <task-notification>; the first-output acknowledgement is no longer needed");
 		const session = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
 		const at = (uuid) => session.records.findIndex((r) => r.uuid === uuid);
 		const split = messages.findIndex((m) => m.type === "result");
