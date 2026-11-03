@@ -721,6 +721,40 @@ test("a steer replayed after a completed turn has its own user record after that
 	}
 });
 
+test("an opening prompt containing <task-notification> is recorded under its UUID but never replayed", { timeout: 120_000 }, async () => {
+	// CC's replay filter drops user text holding its own tags, so the bridge
+	// acknowledges such a prompt at the first output instead (tapRecording).
+	const requests = [];
+	const api = await stubApi(requests);
+	const cwd = mkdtempSync(join(tmpdir(), "cc-tag-prompt-"));
+	const sessionId = randomUUID();
+	const promptUuid = randomUUID();
+	async function* prompt() {
+		yield { type: "user", message: { role: "user", content: "<task-notification>\n<task-id>abc</task-id>\n<status>Done</status>\n</task-notification>\nReply OK." }, parent_tool_use_id: null, uuid: promptUuid };
+	}
+	try {
+		const messages = [];
+		for await (const message of query({
+			prompt: prompt(),
+			options: providerOptions({
+				cwd, sessionId,
+				extraArgs: { "strict-mcp-config": null, "replay-user-messages": null },
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+			}),
+		})) messages.push(message);
+		assert.ok(!messages.some((m) => m.type === "user" && m.isReplay), "CC replayed a prompt holding <task-notification>; the first-output acknowledgement is no longer needed");
+		const firstAssistant = messages.find((m) => m.type === "assistant");
+		assert.ok(firstAssistant, "the turn must produce output");
+		const session = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		const promptAt = session.records.findIndex((r) => r.uuid === promptUuid);
+		assert.ok(promptAt >= 0 && promptAt < session.records.findIndex((r) => r.uuid === firstAssistant.uuid), "the prompt must be recorded under its supplied UUID before the output");
+	} finally {
+		api.close();
+		rmSync(getProjectDir(cwd, process.env.CLAUDE_CONFIG_DIR), { recursive: true, force: true });
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("an initial replay's prompt UUID survives abort once the real child exits", { timeout: 120_000 }, async () => {
 	const requests = [];
 	const api = await stubApi(requests, { stall: true });

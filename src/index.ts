@@ -1226,7 +1226,10 @@ function completeAssistantRecording(c: QueryContext, step: AssistantStep): void 
  * to the emitted step, not to whatever stream is currently attached. */
 function tapRecording(message: SDKMessage, names: Map<string, string>, c: QueryContext): void {
 	if ((message.type === "assistant" && message.parent_tool_use_id === null && message.message.model !== "<synthetic>")
-		|| (message.type === "stream_event" && message.parent_tool_use_id === null && ["content_block_start", "content_block_delta"].includes(message.event.type))) c.recording.assistantObserved();
+		|| (message.type === "stream_event" && message.parent_tool_use_id === null && ["content_block_start", "content_block_delta"].includes(message.event.type))) {
+		const unreplayed = c.recording.assistantObserved();
+		if (unreplayed) debug(`recording: opening prompt ${unreplayed} was never replayed; its first output acknowledges it`);
+	}
 	if (message.type === "user" && message.parent_tool_use_id === null && message.uuid) {
 		if ("isReplay" in message && message.isReplay === true) c.recording.acknowledge(message.uuid);
 		if (Array.isArray(message.message.content)) for (const block of message.message.content) {
@@ -2120,7 +2123,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// instruction belongs to the following assistant's boundary, not the
 		// imported prior result: cuts before that assistant stop before the prompt.
 		// Like a steer, the prompt is recorded only on CC's replay acknowledgement
-		// (tapRecording): a stdin write does not prove CC persisted its record.
+		// or, when CC never replays it, on the query's first output (tapRecording):
+		// a stdin write does not prove CC persisted its record.
 		recording.users(context.messages, turnStart(context.messages), promptUuid, false, false);
 		void promptStream.push({ ...userMessage(promptBlocks ?? [{ type: "text", text: promptText }]), uuid: promptUuid })
 			.catch((error) => debug(`provider: initial prompt push rejected:`, error));

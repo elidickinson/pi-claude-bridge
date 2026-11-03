@@ -130,9 +130,18 @@ export class LiveRecording {
 	get hasGaps(): boolean { return this.duplicated || this.nextIndex > this.recorded.digests.length; }
 	gap(): void { this.nextIndex++; }
 	/** A later-turn steer follows output pi merges into its next assistant.
-	 * Cutting at that steer would keep the unrepresented earlier output twice. */
-	assistantObserved(): void {
-		for (const steer of this.steers.values()) if (steer.steering) steer.unsafe = true;
+	 * Cutting at that steer would keep the unrepresented earlier output twice.
+	 * CC persists the opening prompt before its first API call but never replays
+	 * one containing its own tags (e.g. <task-notification>), so output also
+	 * acknowledges it. Returns the prompt's uuid when that happens here. */
+	assistantObserved(): string | undefined {
+		let prompt: string | undefined;
+		for (const [uuid, steer] of this.steers) {
+			if (steer.steering) steer.unsafe = true;
+			else prompt = uuid;
+		}
+		if (prompt) this.acknowledge(prompt);
+		return prompt;
 	}
 	private resultUuids = new Map<string, string>();
 	private outstanding = new Set<string>();

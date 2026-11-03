@@ -154,6 +154,19 @@ for (const laterTurn of [false, true]) it(`${laterTurn ? "later-turn" : "absorbe
 	assert.equal(c.recording.hasProgress, true);
 });
 
+it("an opening prompt CC never replays is recorded at the query's first output", async () => {
+	const c = new QueryContext();
+	const prompt = user("<task-notification>\n<task-id>x</task-id>\n</task-notification>");
+	c.recording.users([prompt], 0, "prompt", false, false);
+	c.resetTurnState(model);
+	const stream = c.currentPiStream = createAssistantMessageEventStream();
+	await consume(c, [{ type: "assistant", parent_tool_use_id: null, uuid: "answer", message: { id: "answer", model: model.id, content: [{ type: "text", text: "ok" }] } }]);
+	__test.finalizeCurrentStream(c);
+	const output = await stream.result();
+	assert.deepEqual(c.recording.recorded, { digests: digestMessages([prompt, output]), uuids: ["prompt", "answer"], cuttable: [true, true] });
+	assert.equal(c.recording.hasProgress, true);
+});
+
 it("result-only fallback output leaves an explicit live gap and cannot plain-resume hidden output", () => {
 	const c = new QueryContext();
 	c.recording.users([user("prompt")], 0, "prompt", true);
