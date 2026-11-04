@@ -292,7 +292,7 @@ it("a reloaded module shares state and stopping writers, and the old finalizer n
 	assert.equal(calls.length, 1, "the fresh instance waits on the old instance's stopping child");
 	waiting.abort();
 	assert.equal((await next.result()).stopReason, "aborted");
-	const replacement = { digests: [], uuids: [], cuttable: [], ccSessionId: "cc-replacement", cwd: root, model: "replacement-model", dirtyTail: false };
+	const replacement = { digests: [], uuids: [], cuttable: [], ccSessionId: "cc-replacement", cwd: root, model: "replacement-model", promptDigest: "replacement-prompt", dirtyTail: false };
 	fresh.__test.setSharedSession("pi", replacement);
 	saveSessionState("pi", replacement);
 	calls[0].child.kill("SIGKILL");
@@ -453,7 +453,7 @@ it("a stale completion's CAS never overwrites the persisted replacement", async 
 	const controller = new AbortController();
 	scripts.push({ tool: true });
 	await call([user("tool")], controller.signal).result();
-	const replacement = { digests: [], uuids: [], cuttable: [], ccSessionId: "cc-replacement", cwd: root, model: "replacement-model", dirtyTail: false };
+	const replacement = { digests: [], uuids: [], cuttable: [], ccSessionId: "cc-replacement", cwd: root, model: "replacement-model", promptDigest: "replacement-prompt", dirtyTail: false };
 	__test.setSharedSession("pi", replacement);
 	saveSessionState("pi", replacement);
 	controller.abort();
@@ -479,6 +479,23 @@ it("switching pi sessions retains every other session's state", async () => {
 	}
 	assert.strictEqual(__test.getSharedSession("pi"), saved);
 	assert.deepEqual(persisted(), stored(saved));
+});
+
+it("a pi fork or clone forks its parent's Claude Code session instead of importing", async () => {
+	const ask = user("warm");
+	scripts.push({});
+	const answer = await call([ask]).result();
+	const parent = __test.getSharedSession("pi");
+	const parentFile = join(root, "parent.jsonl");
+	writeFileSync(parentFile, JSON.stringify({ type: "session", version: 3, id: "pi", timestamp: "", cwd: root }) + "\n");
+	for (const fn of handlers.session_start) fn({ reason: "fork", previousSessionFile: parentFile }, { cwd: process.cwd(), sessionManager: { getSessionId: () => "pi-clone" } });
+	assert.equal(readdirSync(sessionsDir()).length, 1, "the inherited copy is not saved before its own turn");
+	scripts.push({});
+	await call([ask, answer, user("next")], undefined, "pi-clone").result();
+	assert.equal(calls[1].options.forkSession, true);
+	assert.equal(calls[1].options.resume, parent.ccSessionId);
+	assert.equal(calls[1].options.resumeSessionAt, parent.uuids.at(-1));
+	assert.strictEqual(__test.getSharedSession("pi"), parent, "the parent keeps its own session");
 });
 
 it("a prompt CC pulled but never replayed stays a gap, so a boot abort persists no absent anchor", async () => {

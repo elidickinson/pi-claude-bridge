@@ -564,8 +564,8 @@ const SCENARIOS = {
 			];
 		},	},
 
-	"clone-rebuild": {
-		contract: "pi clone (new pi session id, no pointer): the next turn imports pi's whole history",
+	"clone-fork": {
+		contract: "pi clone (new pi session id, parent's pointer): the next turn forks the parent's Claude Code session",
 		async steps(ctx) {
 			const h = await ctx.pi();
 			await prompt(h, "Look up the key alpha with lc_lookup. Then: a farmer has 17 sheep, all but 9 run away, and he buys twice as many as remain. How many does he have? Give the value and the number.");
@@ -580,10 +580,39 @@ const SCENARIOS = {
 		check({ decisions, capture, captureBodies }) {
 			const messages = capture.filter((r) => r.path?.startsWith("/v1/messages") && !r.path.includes("count_tokens"));
 			const [before, after] = messages.slice(-2);
+			const cached = before ? before.usage.cacheRead + before.usage.cacheWrite : 0;
 			return [
 				["two pi session ids", new Set(decisions.map((d) => d.piSessionId)).size === 2, decisions.map((d) => d.piSessionId)],
-				["turn after clone is a full import", decisions.at(-1)?.row === 2 && decisions.at(-1)?.path === "rebuild", decisions.at(-1)],
-				["the import carries earlier thinking blocks", thinkingIn(captureBodies[after?.n]) > 0, { before: before?.n, after: after?.n, thinking: thinkingIn(captureBodies[after?.n]) }],
+				["turn after clone forks the parent's session", decisions.at(-1)?.row === 6, decisions.at(-1)],
+				["it reads everything the parent cached", cached > 0 && after?.usage.cacheRead >= cached, { before: before?.usage, after: after?.usage }],
+				["the fork carries earlier thinking blocks", thinkingIn(captureBodies[after?.n]) > 0, { before: before?.n, after: after?.n, thinking: thinkingIn(captureBodies[after?.n]) }],
+			];
+		},
+	},
+
+	"reload-instructions": {
+		contract: "A plain /reload resumes the session; a /reload after editing AGENTS.md imports pi's history so the new instructions reach the model",
+		async steps(ctx) {
+			const agentsMd = join(ctx.dir, "cwd", "AGENTS.md");
+			writeFileSync(agentsMd, "Project marker: LC-OLD-MARKER\n");
+			const h = await ctx.pi();
+			await prompt(h, "Please look up the key alpha with the lc_lookup tool and tell me its value.");
+			await prompt(h, "/lc-reload");
+			await prompt(h, "Thanks. Now look up the key beta.");
+			writeFileSync(agentsMd, "Project marker: LC-NEW-MARKER\n");
+			await prompt(h, "/lc-reload");
+			await prompt(h, "What is the project marker in your instructions? Just the marker.");
+			await shutdown(h);
+		},
+		check({ decisions, analysis, capture, captureBodies }) {
+			const plain = decisionTransition(analysis, decisions[1]);
+			const messages = capture.filter((r) => r.path?.startsWith("/v1/messages") && !r.path.includes("count_tokens"));
+			const system = JSON.stringify(captureBodies[messages.at(-1)?.n]?.system ?? "");
+			return [
+				["plain reload resumes the session", decisions[1]?.row === 4, decisions[1]],
+				["and reads its cached prefix", plain?.cache.status === "covered", plain?.cache],
+				["reload after the edit imports pi's history", decisions[2]?.row === 3 && decisions[2]?.reason === "prompt-changed", decisions[2]],
+				["the new instructions reach the request, the old ones do not", system.includes("LC-NEW-MARKER") && !system.includes("LC-OLD-MARKER"), messages.at(-1)?.n],
 			];
 		},
 	},

@@ -75,6 +75,16 @@ describe("digest session decisions", () => {
 		assert.notEqual(synced.sessionId, session.sessionId);
 		assert.equal(__test.getSharedSession("pi").model, "sonnet", "the prior state stays until live progress");
 	});
+	it("a changed system prompt append imports pi's history; an unchanged one resumes", () => {
+		const priors = [user("hi"), say("hello")];
+		const { session } = seed(priors, { promptDigest: "p1" });
+		const next = [...priors, user("next")];
+		const withPrompt = (digest) => __test.syncSharedSession(next, cwd, undefined, "sonnet", "pi", undefined, undefined, false, digest);
+		assert.equal(withPrompt("p1").sessionId, session.sessionId);
+		const changed = withPrompt("p2");
+		assert.notEqual(changed.sessionId, session.sessionId);
+		assert.equal(changed.forkAt, undefined, "a fork would keep CC's recorded prompt");
+	});
 	it("unattributed calls import independently and never write provider state", () => {
 		const priors = [user("hi"), say("hello")];
 		const { session, state } = seed(priors);

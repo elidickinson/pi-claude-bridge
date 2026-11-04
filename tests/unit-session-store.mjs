@@ -9,7 +9,7 @@ import { join, resolve, sep } from "node:path";
 import { deleteSessionState, loadSessionState, saveSessionState } from "../src/session-store.js";
 
 const state = {
-	ccSessionId: "cc-1", cwd: "/work", model: "claude-test", digests: ["d1", "d2"],
+	ccSessionId: "cc-1", cwd: "/work", model: "claude-test", promptDigest: "p1", digests: ["d1", "d2"],
 	uuids: ["u1", null], cuttable: [true, false], dirtyTail: false,
 };
 let agentDir;
@@ -35,7 +35,7 @@ function sessionFile(id) {
 
 function validFile() {
 	return {
-		version: 1, ccSessionId: state.ccSessionId, cwd: state.cwd, model: state.model,
+		version: 1, ccSessionId: state.ccSessionId, cwd: state.cwd, model: state.model, promptDigest: state.promptDigest,
 		digests: state.digests, uuids: state.uuids, cuttable: state.cuttable,
 	};
 }
@@ -47,7 +47,7 @@ describe("session state persistence", () => {
 		const file = join(dir, readdirSync(dir)[0]);
 		assert.deepEqual(loadSessionState("session-1", assert.fail), { ...state, dirtyTail: true });
 		assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort(), [
-			"ccSessionId", "cuttable", "cwd", "digests", "model", "uuids", "version",
+			"ccSessionId", "cuttable", "cwd", "digests", "model", "promptDigest", "uuids", "version",
 		]);
 		assert.equal(statSync(dir).mode & 0o777, 0o700);
 		assert.equal(statSync(file).mode & 0o777, 0o600);
@@ -70,6 +70,7 @@ describe("session state persistence", () => {
 			["ccSessionId must not be empty", JSON.stringify({ ...validFile(), ccSessionId: "" })],
 			["cwd must not be empty", JSON.stringify({ ...validFile(), cwd: "" })],
 			["model must not be empty", JSON.stringify({ ...validFile(), model: "" })],
+			["missing promptDigest", JSON.stringify(Object.fromEntries(Object.entries(validFile()).filter(([key]) => key !== "promptDigest")))],
 			["aligned", JSON.stringify({ ...validFile(), uuids: ["u1"] })],
 			["Invalid session recording slot 0", JSON.stringify({ ...validFile(), uuids: [null, null] })],
 			["Invalid session recording slot 0", JSON.stringify({ ...validFile(), uuids: ["", null] })],
@@ -101,7 +102,7 @@ describe("session state persistence", () => {
 	});
 
 	it("rejects empty session pointers on save", () => {
-		for (const key of ["ccSessionId", "cwd", "model"]) {
+		for (const key of ["ccSessionId", "cwd", "model", "promptDigest"]) {
 			assert.throws(() => saveSessionState(`empty-${key}`, { ...state, [key]: "" }), `${key} must be non-empty`);
 		}
 	});

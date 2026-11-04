@@ -16,6 +16,9 @@ export interface SessionState extends Recording {
 	ccSessionId: string;
 	cwd: string;
 	model: string;
+	/** Digest of the system prompt append CC recorded for this session, which it
+	 *  replays on every resume until a full import. */
+	promptDigest: string;
 	dirtyTail: boolean;
 }
 

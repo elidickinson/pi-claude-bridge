@@ -5,8 +5,8 @@ import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@a
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, getSessionPath } from "cc-session-io";
-import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { QueryProcess } from "./query-process.js";
@@ -282,6 +282,25 @@ function sessionStateFor(piSessionId: string | null | undefined): SessionState |
 		if (stored) sharedSessions.set(key, stored);
 	}
 	return sharedSessions.get(key) ?? null;
+}
+
+/** A pi fork or clone starts from its parent's state, dirty, so its first turn
+ *  forks the parent's CC session instead of importing pi's history. Memory only:
+ *  the parent's own pointer is saved only once its child exits. */
+function inheritSessionState(parentFile: string, piSessionId: string): void {
+	let text: string;
+	try { text = readFileSync(parentFile, "utf8"); }
+	catch (error) {
+		// pi writes a session file at its first message, so a parent without one has no state.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	const header = JSON.parse(text.split("\n", 1)[0]);
+	if (header?.type !== "session" || typeof header.id !== "string") throw new Error(`no session header in ${parentFile}`);
+	const parent = sessionStateFor(header.id);
+	if (!parent) return;
+	setSessionStateFor(piSessionId, { ...parent, ...copyRecording(parent), dirtyTail: true });
+	debug(`session_start:fork: inherited ${parent.ccSessionId} from piSession=${header.id} ${sessionTag(piSessionId)}`);
 }
 
 /** Replace (or plant) the mirror for `piSessionId`. */
@@ -735,6 +754,9 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 }
 
 // Compare pi's values, then retain CC's own records up to the last valid cut.
+// `promptDigest` is the provider's system prompt append; a change takes a full
+// import, the only path on which CC records a new one. AskClaude omits it: it
+// forks with its own append and never commits state.
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
@@ -744,6 +766,7 @@ function syncSharedSession(
 	traceCallId?: string,
 	writable = piSessionId != null,
 	forkCurrent = false,
+	promptDigest?: string,
 ): SyncResult {
 	let state = piSessionId != null ? sessionStateFor(piSessionId) : null;
 	const before = state;
@@ -765,14 +788,16 @@ function syncSharedSession(
 		}
 	}
 	const cwdChanged = Boolean(state && safeRealpath(state.cwd) !== safeRealpath(cwd));
+	const promptChanged = Boolean(state && promptDigest !== undefined && state.promptDigest !== promptDigest);
+	if (promptChanged) debug(`sync: system prompt append changed; importing pi history ${sessionTag(piSessionId)}`);
 	if (forkCurrent && state && state.model === modelId && !cwdChanged) {
 		Object.assign(compared, compareHistory(state.digests, state));
 	}
-	const row = piSessionId == null ? 0 : !state ? (priors.length ? 2 : 1) : state.model !== modelId ? 3
+	const row = piSessionId == null ? 0 : !state ? (priors.length ? 2 : 1) : state.model !== modelId || promptChanged ? 3
 		: cwdChanged ? 5 : forkCurrent ? (compared.cutCount ? 6 : 5)
 		: compared.equal && !state.dirtyTail ? 4 : !compared.cutCount ? 5 : compared.cutCount === priors.length ? 6 : 7;
 	const reason = piSessionId == null ? "unattributed-history" : missingFile ? "missing-transcript" : !state ? "no-state"
-		: state.model !== modelId ? "model-changed" : cwdChanged ? "cwd-changed" : forkCurrent ? "askclaude-fork"
+		: state.model !== modelId ? "model-changed" : promptChanged ? "prompt-changed" : cwdChanged ? "cwd-changed" : forkCurrent ? "askclaude-fork"
 		: row === 4 ? "equal-digests" : state.dirtyTail && compared.equal ? "dirty-tail" : "history-difference";
 	const decision = (path: string, after: string) => {
 		traceStrict("decision", {
@@ -2084,7 +2109,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// Read before the consume below: with no query parked (an overflow retried
 		// after compaction), the session's mark is the only sign of the rewrite.
 		const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
-		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId);
+		const promptDigest = createHash("sha256").update(systemPromptAppend ?? "").digest("hex");
+		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, undefined, false, promptDigest);
 		if (syncResult.created) createdBeforeLaunch = { id: syncResult.targetSessionId, cwd };
 		// This query starts from the history pi has now: consume this session's
 		// armed rewrite — a sibling pi session's stays armed for its own queries.
@@ -2249,7 +2275,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// Costs the next turn a prefix-write; diag/audit-cache.mjs fails on it.
 			if (!dirty && (recording.hasGaps || (syncResult.created && !recording.hasProgress))) debug(`recording: clean end left messages unrecorded ${sessionTag(piSessionId)}`);
 			if (!syncResult.writable || sessionStateFor(piSessionId) !== expectedState || (syncResult.created && !recording.hasProgress)) return;
-			const state: SessionState = { ...copyRecording(recording.recorded), ccSessionId: syncResult.targetSessionId, cwd, model: cliModel,
+			const state: SessionState = { ...copyRecording(recording.recorded), ccSessionId: syncResult.targetSessionId, cwd, model: cliModel, promptDigest,
 				dirtyTail: dirty || queryCtx.historyStale || recording.hasGaps };
 			setSessionStateFor(piSessionId, state);
 			expectedState = unsaved = state;
@@ -2666,6 +2692,7 @@ export default function (pi: ExtensionAPI) {
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
+		if (event.reason === "fork" && event.previousSessionFile) inheritSessionState(event.previousSessionFile, ctx.sessionManager.getSessionId());
 	});
 	pi.on("session_before_compact", (event, ctx) => {
 		rememberSummarySession(event.signal, ctx.sessionManager.getSessionId());
