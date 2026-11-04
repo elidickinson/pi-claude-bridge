@@ -107,7 +107,7 @@ export function convertPiMessages(
 	// The user message collecting this assistant turn's tool results, if one has
 	// been emitted yet, and the index of the assistant message it belongs to. Both
 	// are cleared at every assistant message — see the toolResult branch.
-	let turnResults: { role: "user"; content: object[] } | null = null;
+	let turnResults: { role: "user"; content: Array<ToolResultBlock | Record<string, unknown>> } | null = null;
 	let turnAssistantIdx: number | null = null;
 
 	for (const [piIndex, msg] of messages.entries()) {

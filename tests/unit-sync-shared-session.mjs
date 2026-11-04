@@ -110,21 +110,28 @@ describe("digest session decisions", () => {
 	});
 	for (const [name, model, reply] of [["a prefix-write", "sonnet", say("edited")], ["a full import", "opus", say("b")]]) {
 		it(`${name} sends the block Claude Code recorded for unchanged tool results, and pi's form for changed ones`, () => {
-			const priors = [user("a"), say("b"), user("c"), calls("t1", "t2"), result("t1"), result("t2"), say("done")];
+			const failed = { ...result("t3"), isError: true };
+			const priors = [user("a"), say("b"), user("c"), calls("t1", "t2", "t3"), result("t1"), result("t2"), failed, say("done")];
 			const { session } = seed(priors);
-			// CC's form for output it saved to a file, in CC's key order.
+			// CC's forms, in CC's key order: output it saved to a file, and an error.
 			const notice = [{ type: "text", text: "Output has been saved to tool-results/t.txt" }];
+			const cc = {
+				t1: { tool_use_id: "t1", type: "tool_result", content: notice },
+				t2: { tool_use_id: "t2", type: "tool_result", content: notice },
+				t3: { type: "tool_result", content: [{ type: "text", text: "result-t3" }], is_error: true, tool_use_id: "t3" },
+			};
 			const records = readFileSync(session.jsonlPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 			for (const record of records) if (Array.isArray(record.message?.content)) {
-				record.message.content = record.message.content.map((b) => b.type === "tool_result" ? { tool_use_id: b.tool_use_id, type: b.type, content: notice } : b);
+				record.message.content = record.message.content.map((b) => b.type === "tool_result" ? cc[b.tool_use_id] : b);
 			}
 			writeFileSync(session.jsonlPath, records.map((record) => JSON.stringify(record) + "\n").join(""));
 			const redacted = { ...result("t2"), content: [{ type: "text", text: "redacted" }] };
-			const synced = sync([priors[0], reply, ...priors.slice(2, 5), redacted, priors[6], user("next")], model);
+			const synced = sync([priors[0], reply, ...priors.slice(2, 5), redacted, ...priors.slice(6), user("next")], model);
 			const written = readFileSync(getSessionPath(synced.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 			const results = Object.fromEntries(written.flatMap((r) => Array.isArray(r.message?.content) ? r.message.content : []).filter((b) => b.type === "tool_result").map((b) => [b.tool_use_id, b]));
-			assert.equal(JSON.stringify(results.t1), JSON.stringify({ tool_use_id: "t1", type: "tool_result", content: notice }));
-			assert.equal(results.t2.content, "redacted");
+			assert.equal(JSON.stringify(results.t1), JSON.stringify(cc.t1));
+			assert.equal(JSON.stringify(results.t3), JSON.stringify(cc.t3));
+			assert.equal(JSON.stringify(results.t2), JSON.stringify({ type: "tool_result", tool_use_id: "t2", content: "redacted" }));
 		});
 	}
 	it("carries attachments to the new transcript without reporting a count mismatch", () => {
