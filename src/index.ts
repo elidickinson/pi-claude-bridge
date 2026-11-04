@@ -2246,6 +2246,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// authoritative at once; the file is saved after exit (persistRecording).
 		const commitRecording = (dirty: boolean) => {
 			stopWriting();
+			// Costs the next turn a prefix-write; diag/audit-cache.mjs fails on it.
+			if (!dirty && (recording.hasGaps || (syncResult.created && !recording.hasProgress))) debug(`recording: clean end left messages unrecorded ${sessionTag(piSessionId)}`);
 			if (!syncResult.writable || sessionStateFor(piSessionId) !== expectedState || (syncResult.created && !recording.hasProgress)) return;
 			const state: SessionState = { ...copyRecording(recording.recorded), ccSessionId: syncResult.targetSessionId, cwd, model: cliModel,
 				dirtyTail: dirty || queryCtx.historyStale || recording.hasGaps };

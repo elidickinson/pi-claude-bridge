@@ -21,9 +21,8 @@
 //
 // Exits 1 when the boundary rate exceeds the documented ceiling, when a break
 // lands on a fork, which should read back everything its ancestor cached (the
-// shape most likely to be our own bug), or on a repeated cut: a turn after a
-// prefix-write or rebuild that cut at the same message of the same session
-// again, because the first one recorded nothing.
+// shape most likely to be our own bug), or when a query ended cleanly with
+// messages CC never acknowledged, which costs the next turn a prefix-write.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -36,8 +35,7 @@ const LINE = /^\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\] \[([a-z0-9]+)\] (.*)$/;
 const USAGE = /^usage: in=(\d+) out=(\d+) cacheRead=(\d+) cacheWrite=(\d+) total=(\d+)(?: reasoning=\d+)? cachePct=(\d+)% model=(\S+)/;
 const FRESH = /^provider: fresh query model=(\S+) msgs=(\d+) tools=(\d+) resume=(\S+) effort=(\S+)/;
 const SYNC = /^syncResult: path=(\S+)/;
-const SYNC_FROM = / from=(\S+)/;
-const SYNC_CUT = / commonPrefix=(\d+)/;
+const UNRECORDED = /^recording: clean end left messages unrecorded/;
 const TAG = / piSession=(\S+)/;
 const RESET = /^(session_start|session_compact|session_before_compact|compact summary|Case 1 synthetic)/;
 
@@ -79,17 +77,23 @@ const logPath = args.filter((a, i) => !a.startsWith("--") && !args[i - 1]?.start
 function parse(text) {
 	const streams = new Map();
 	const syncs = [];
+	const unrecorded = [];
 	for (const line of text.split("\n")) {
 		const m = LINE.exec(line);
 		if (!m) continue;
 		const [, ts, moduleId, msg] = m;
+		// Every kind read below is anchored at the message start, so tool output
+		// echoed into a line (which can quote tagged lines) never contributes.
+		const u = USAGE.exec(msg);
+		const s = SYNC.exec(msg);
+		const lost = UNRECORDED.test(msg);
+		if (!u && !s && !lost && !FRESH.test(msg) && !RESET.test(msg)) continue;
 		const tag = TAG.exec(msg)?.[1];
 		const key = tag && tag !== "none" ? tag : moduleId;
+		if (s) syncs.push({ at: Date.parse(ts), path: s[1] });
+		if (lost) unrecorded.push({ ts, at: Date.parse(ts), key });
 		let entry = streams.get(key);
 		if (!entry) streams.set(key, (entry = { requests: [], marks: [] }));
-		const s = SYNC.exec(msg);
-		if (s) syncs.push({ ts, at: Date.parse(ts), key, path: s[1], from: SYNC_FROM.exec(msg)?.[1], cut: SYNC_CUT.exec(msg)?.[1] });
-		const u = USAGE.exec(msg);
 		if (!u) { entry.marks.push(msg); continue; }
 		const cacheRead = +u[3], cacheWrite = +u[4], model = u[7];
 		const prev = entry.requests.at(-1);
@@ -107,21 +111,7 @@ function parse(text) {
 		});
 		entry.marks = [];
 	}
-	return { streams, syncs };
-}
-
-/** A prefix-write or rebuild whose turn recorded nothing leaves the pointer in
- *  place, so the next turn cuts the same session at the same message again. */
-function repeatedCuts(syncs) {
-	const last = new Map();
-	const repeats = [];
-	for (const sync of syncs) {
-		if (sync.cut === undefined || !["prefix-write", "rebuild"].includes(sync.path)) continue;
-		const prev = last.get(sync.key);
-		if (prev && prev.cut === sync.cut && prev.from === sync.from) repeats.push(sync);
-		last.set(sync.key, sync);
-	}
-	return repeats;
+	return { streams, syncs, unrecorded };
 }
 
 function run() {
@@ -144,7 +134,7 @@ function run() {
 	const pairs = [];
 	let requests = 0;
 
-	const { streams, syncs } = parse(text);
+	const { streams, syncs, unrecorded } = parse(text);
 	for (const { requests: rs } of streams.values()) {
 		requests += rs.length;
 		for (let i = 1; i < rs.length; i++) {
@@ -159,7 +149,9 @@ function run() {
 			const shortfall = expected - cur.cacheRead;
 
 			const fresh = cur.marks.map((m) => FRESH.exec(m)).filter(Boolean).at(-1);
-			const sync = cur.marks.map((m) => SYNC.exec(m)).filter(Boolean).at(-1);
+			// A sync line describes a boundary only when a query opens there: AskClaude
+			// logs its own under the caller's session in the middle of a query.
+			const sync = fresh && cur.marks.map((m) => SYNC.exec(m)).filter(Boolean).at(-1);
 			const prevFresh = prev.freshParams ?? null;
 			cur.freshParams = fresh ?? prevFresh;
 
@@ -190,7 +182,7 @@ function run() {
 			if (cur.marks.some((m) => RESET.test(m))) continue;
 			const fresh = cur.marks.map((m) => FRESH.exec(m)).filter(Boolean).at(-1);
 			if (fresh && fresh[4] === "none") continue;
-			if (cur.marks.some((m) => SYNC.exec(m)?.[1] === "rebuild")) continue;
+			if (fresh && cur.marks.some((m) => SYNC.exec(m)?.[1] === "rebuild")) continue;
 			const kind = fresh ? "boundary" : "in-query";
 			group[kind].n++;
 			pairs.push({ kind, at: cur.at });
@@ -229,10 +221,9 @@ function run() {
 	for (const sync of syncs.filter(recent)) pathCounts.set(sync.path, (pathCounts.get(sync.path) ?? 0) + 1);
 	console.log(`\nsync paths${since === null ? "" : " in window"}:`);
 	for (const [path, n] of [...pathCounts].sort((a, b) => b[1] - a[1])) console.log(`  ${String(n).padStart(5)}  ${path}`);
-	const repeats = repeatedCuts(syncs);
-	console.log(`\nrepeated cuts (the turn before cut the same session at the same message and recorded nothing): ${repeats.length}`);
-	for (const r of repeats.slice(-10)) console.log(`  ${r.ts} stream=${r.key} ${r.path} at ${r.cut}${r.from ? ` from ${r.from.slice(0, 8)}` : ""}`);
-	const windowRepeats = repeats.filter(recent);
+	console.log(`\nclean ends that left messages unrecorded (the next turn pays a prefix-write): ${unrecorded.length}`);
+	for (const u of unrecorded.slice(-10)) console.log(`  ${u.ts} stream=${u.key}`);
+	const windowUnrecorded = unrecorded.filter(recent);
 
 	const windowed = onFork.filter(recent);
 	const windowBreaks = breaks.filter((b) => b.kind === "boundary" && recent(b)).length;
@@ -243,10 +234,10 @@ function run() {
 	console.log();
 	if (excess) console.log(`FAIL: boundary break rate${inWindow} ${(windowRate * 100).toFixed(1)}% (${windowBreaks}/${windowPairs}) exceeds ceiling ${(ceiling * 100).toFixed(0)}% — suspect a prefix-mutation regression`);
 	else if (windowed.length) console.log(`FAIL: ${windowed.length} break(s) on a fork${inWindow} — inspect the forked session`);
-	else if (windowRepeats.length) console.log(`FAIL: ${windowRepeats.length} repeated cut(s)${inWindow} — a turn's messages went unrecorded`);
+	else if (windowUnrecorded.length) console.log(`FAIL: ${windowUnrecorded.length} clean end(s)${inWindow} left messages unrecorded — inspect that session's log`);
 	else console.log(`OK: boundary rate${inWindow} ${(windowRate * 100).toFixed(1)}% (${windowBreaks}/${windowPairs}); whole log ${(rate(group.boundary) * 100).toFixed(1)}% vs in-query control ${(rate(group["in-query"]) * 100).toFixed(1)}% — residual is at the server-side eviction floor`);
 
-	process.exit(excess || windowed.length || windowRepeats.length ? 1 : 0);
+	process.exit(excess || windowed.length || windowUnrecorded.length ? 1 : 0);
 }
 
 run();
