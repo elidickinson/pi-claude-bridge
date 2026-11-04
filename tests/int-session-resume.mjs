@@ -133,7 +133,7 @@ try {
 
   console.log("Turn 3: AskClaude shared mode (should see non-provider context)...");
   const text3 = await promptAndWait(
-    'Use the AskClaude tool with prompt="What is the access code? Reply with just the code."'
+    'Use the AskClaude tool with prompt="What is the access code? Reply with just the code." and isolated=false'
   );
   console.log(`  AskClaude args: ${JSON.stringify(lastToolArgs)}`);
   console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);
