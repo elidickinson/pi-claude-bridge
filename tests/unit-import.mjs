@@ -181,7 +181,7 @@ describe("message structure", () => {
 		assert.equal(result[0].content[0].type, "tool_result");
 		assert.equal(result[0].content[0].tool_use_id, "id1");
 		assert.equal(result[0].content[0].content, "result text");
-		assert.equal(result[0].content[0].is_error, false);
+		assert.ok(!("is_error" in result[0].content[0]), "a success carries no is_error, as CC writes it");
 	});
 
 	it("toolResult with isError=true", () => {

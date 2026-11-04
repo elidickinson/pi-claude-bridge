@@ -1,8 +1,8 @@
 // Content coverage shared by imports and live queries. A null boundary is only
 // an intentional import omission, never an unacknowledged live message.
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
-import { repairWithOrigin, type Session, type ContentBlock, type UserContentBlock } from "cc-session-io";
-import { convertPiMessages, type ToolResultContent } from "./convert.js";
+import { repairWithOrigin, type Session, type ContentBlock, type ToolResultBlock, type UserContentBlock } from "cc-session-io";
+import { convertPiMessages } from "./convert.js";
 import { digestMessage, digestMessages } from "./message-digests.js";
 import { placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 
@@ -62,7 +62,7 @@ function updatePendingTools(pending: Set<string>, message: PiMessage): void {
 
 /** Emit the repaired messages ourselves: importMessages hides the write mapping
  * and can emit two records for a mixed user message. Track the actual writes. */
-export function importHistory(session: Session, messages: PiMessage[], names?: Map<string, string>, carried: readonly CarriedAttachment[] = [], results?: ReadonlyMap<string, ToolResultContent>): Recording {
+export function importHistory(session: Session, messages: PiMessage[], names?: Map<string, string>, carried: readonly CarriedAttachment[] = [], results?: ReadonlyMap<string, ToolResultBlock>): Recording {
 	const converted = convertPiMessages(messages, names, results);
 	const repaired = repairWithOrigin(converted.anthropicMessages);
 	const placed = placeCarriedAttachments(carried, repaired.messages);
@@ -85,11 +85,12 @@ export function importHistory(session: Session, messages: PiMessage[], names?: M
 		} else if (typeof message.content === "string") {
 			emit(session.addUserMessage(message.content), sources);
 		} else {
-			const results = message.content.filter((b) => b.type === "tool_result");
+			const results = message.content.filter((b): b is ToolResultBlock => b.type === "tool_result");
 			const rest = message.content.filter((b) => b.type !== "tool_result") as UserContentBlock[];
 			if (results.length) {
 				for (const block of results) pending.delete(block.tool_use_id);
-				emit(session.addToolResults(results.map((b) => ({ toolUseId: b.tool_use_id, content: b.content, isError: b.is_error }))), sources);
+				// Verbatim, so a block copied from CC keeps CC's key order.
+				emit(session.addToolResultBlocks(results), sources);
 			}
 			if (rest.length) emit(session.addUserMessage(rest), sources);
 		}

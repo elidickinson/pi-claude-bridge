@@ -1,11 +1,11 @@
 // CC's loader recovers parallel siblings by API message id and tool-use id,
 // not just parentUuid (2.1.308: bDt -> Zuo). Keep the physical prefix, including
 // siblings, snapshots and attachments; bridge changes always mint a fresh file.
-import { getSessionPath, parseJsonl, type JsonlRecord, type Session } from "cc-session-io";
+import { getSessionPath, parseJsonl, type JsonlRecord, type Session, type ToolResultBlock } from "cc-session-io";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
-import { sanitizeToolId, type ToolResultContent } from "./convert.js";
+import { sanitizeToolId } from "./convert.js";
 import { digestMessage } from "./message-digests.js";
 import { validateRecording, type Recording, type SessionState } from "./session-sync.js";
 
@@ -79,21 +79,21 @@ export function resolveRecordingCut(records: readonly RecordEntry[], recorded: R
 	return cut;
 }
 
-/** What CC recorded for each tool result pi still holds unchanged (its digest
- * is in the old recording), by pi tool call id. CC sends oversized output as a
- * notice naming a saved file and an image with a block naming its saved path,
- * while pi holds the full output: a rewrite from pi's form would send the
- * model content it never saw. */
-export function recordedToolResults(records: readonly RecordEntry[], recordedDigests: readonly string[], messages: readonly PiMessage[]): Map<string, ToolResultContent> {
-	const byId = new Map<string, ToolResultContent>();
+/** The block CC recorded for each tool result pi still holds unchanged (its
+ * digest is in the old recording), by pi tool call id. CC sends oversized
+ * output as a notice naming a saved file and an image with a block naming its
+ * saved path, while pi holds the full output: a rewrite from pi's form would
+ * send the model content it never saw. CC's key order also differs from ours. */
+export function recordedToolResults(records: readonly RecordEntry[], recordedDigests: readonly string[], messages: readonly PiMessage[]): Map<string, ToolResultBlock> {
+	const byId = new Map<string, ToolResultBlock>();
 	for (const record of records) {
 		const content = record.type === "user" ? (record.message as { content?: unknown } | undefined)?.content : undefined;
 		if (!Array.isArray(content)) continue;
-		for (const block of content) if (block?.type === "tool_result") byId.set(block.tool_use_id, block.content);
+		for (const block of content) if (block?.type === "tool_result") byId.set(block.tool_use_id, block);
 	}
 	const unchanged = new Set(recordedDigests);
 	const ids = new Map<string, string>();
-	const results = new Map<string, ToolResultContent>();
+	const results = new Map<string, ToolResultBlock>();
 	for (const message of messages) {
 		if (message.role !== "toolResult" || !unchanged.has(digestMessage(message))) continue;
 		const id = sanitizeToolId(message.toolCallId, ids);

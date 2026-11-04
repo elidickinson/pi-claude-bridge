@@ -350,8 +350,8 @@ const SCENARIOS = {
 		},
 		check({ decisions, analysis, captureBodies }) {
 			const written = decisionTransition(analysis, decisions.find((d) => d.row === 7));
-			// Content only: the rewrite's key order is cc-session-io's, not CC's.
-			const content = (v) => v && JSON.stringify([v.shape, v.isError, v.textChars, v.textStart, v.persisted, v.images]);
+			// Everything but the position: the rewrite drops CC's context records before it.
+			const content = (v) => v && JSON.stringify({ ...v, message: null });
 			// The third turn's request is the last native one holding both results.
 			const native = decisionTransition(analysis, decisions[2]);
 			const views = (tool) => ({ native: wireResult(captureBodies[native?.to.request], tool), written: wireResult(captureBodies[written?.to.request], tool) });

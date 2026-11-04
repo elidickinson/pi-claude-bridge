@@ -109,19 +109,22 @@ describe("digest session decisions", () => {
 		assert.ok(existsSync(session.jsonlPath));
 	});
 	for (const [name, model, reply] of [["a prefix-write", "sonnet", say("edited")], ["a full import", "opus", say("b")]]) {
-		it(`${name} sends what Claude Code recorded for unchanged tool results, and pi's form for changed ones`, () => {
+		it(`${name} sends the block Claude Code recorded for unchanged tool results, and pi's form for changed ones`, () => {
 			const priors = [user("a"), say("b"), user("c"), calls("t1", "t2"), result("t1"), result("t2"), say("done")];
 			const { session } = seed(priors);
-			// CC's form for output it saved to a file.
+			// CC's form for output it saved to a file, in CC's key order.
 			const notice = [{ type: "text", text: "Output has been saved to tool-results/t.txt" }];
 			const records = readFileSync(session.jsonlPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-			for (const record of records) for (const block of Array.isArray(record.message?.content) ? record.message.content : []) if (block.type === "tool_result") block.content = notice;
+			for (const record of records) if (Array.isArray(record.message?.content)) {
+				record.message.content = record.message.content.map((b) => b.type === "tool_result" ? { tool_use_id: b.tool_use_id, type: b.type, content: notice } : b);
+			}
 			writeFileSync(session.jsonlPath, records.map((record) => JSON.stringify(record) + "\n").join(""));
 			const redacted = { ...result("t2"), content: [{ type: "text", text: "redacted" }] };
 			const synced = sync([priors[0], reply, ...priors.slice(2, 5), redacted, priors[6], user("next")], model);
 			const written = readFileSync(getSessionPath(synced.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-			const results = Object.fromEntries(written.flatMap((r) => Array.isArray(r.message?.content) ? r.message.content : []).filter((b) => b.type === "tool_result").map((b) => [b.tool_use_id, b.content]));
-			assert.deepEqual(results, { t1: notice, t2: "redacted" });
+			const results = Object.fromEntries(written.flatMap((r) => Array.isArray(r.message?.content) ? r.message.content : []).filter((b) => b.type === "tool_result").map((b) => [b.tool_use_id, b]));
+			assert.equal(JSON.stringify(results.t1), JSON.stringify({ tool_use_id: "t1", type: "tool_result", content: notice }));
+			assert.equal(results.t2.content, "redacted");
 		});
 	}
 	it("carries attachments to the new transcript without reporting a count mismatch", () => {
