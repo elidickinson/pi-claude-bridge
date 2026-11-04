@@ -60,4 +60,6 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
 ## Deferred
 
+- **Keep the cache when instructions change.** A changed system prompt append takes a full import (`diag/CACHE.md` C3). Sending the changed parts as a `<system-reminder>` in the next user message would keep the cache instead. It needs the parts used at session start saved with the session state, and the model would see the old instructions in the system prompt next to the new ones in the reminder.
+
 - **Superseded session files pile up.** When sync moves a pi session to a new CC session (fork, copied prefix, model or cwd change), the old JSONL in `~/.claude/projects/` is never deleted, nor is an AskClaude fork that made progress. Files from queries with no progress already are. Deleting on `session_shutdown` won't work, since saved state resumes the current CC session after a restart; only superseded files are safe to remove. A fork's saved tool results can expire with them (`diag/CACHE.md` C2).
