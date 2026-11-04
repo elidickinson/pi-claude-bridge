@@ -55,7 +55,7 @@ Measured. Claude Code stores context as attachment records in its session file a
 
 Haiku 4.5 folds the same records into user content and into the tool result as a second block. Dropping `session_context` alone stops the read at tools + system. Dropping `environment` alone stops it after the first user message. In an imported request CC adds `session_context` and the environment message after the new prompt and leaves index 1 as an empty system message carrying only `output_config: {effort}`.
 
-CC sends `rendered`, not the record's fields: editing `attachment.date` or a countdown value changed nothing on the wire. With a stored date older than today, CC appended "The date has changed..." at the end of the request, so a session resumed on a later day keeps its prefix. `prompt_snapshot` holds the system prompt parts, tools and wire-shape flags, not context; CC replays it on resume (see [Known gaps](#known-gaps-and-open-questions)). `silent_turn_reminder`, `queued_command` (how CC stores steers) and `instructions` records can only be reproduced by copying them. From the code, not measured: none of these records can be switched off except the countdowns (`CLAUDE_CODE_TOTAL_TOKENS_REMINDER=off`), and `--bare`, which removes environment and model, also disables OAuth. `client_composed: true` defers CC's turn-start context pass rather than skipping it, despite the SDK docs.
+CC sends `rendered`, not the record's fields: editing `attachment.date` or a countdown value changed nothing on the wire. With a stored date older than today, CC appended "The date has changed..." at the end of the request, so a session resumed on a later day keeps its prefix. `prompt_snapshot` holds the system prompt parts, tools and wire-shape flags, not context; CC replays it on resume (see [C2](#known-gaps-and-open-questions)). `silent_turn_reminder`, `queued_command` (how CC stores steers) and `instructions` records can only be reproduced by copying them. From the code, not measured: none of these records can be switched off except the countdowns (`CLAUDE_CODE_TOTAL_TOKENS_REMINDER=off`), and `--bare`, which removes environment and model, also disables OAuth. `client_composed: true` defers CC's turn-start context pass rather than skipping it, despite the SDK docs.
 
 Evidence: `probe-cache-mutations.mjs` cases `drop-attachment-session_context`, `drop-attachment-environment`, `edit-attachment-date`, `drop-attachment-prompt_snapshot` (2026-10-21, both orders for the first two); `noop-rebuild` session snapshots (2026-10-21); `clone-rebuild` (2026-11-03); `probe-writer.mjs` arm PREFIX for the gain past a cut; real sessions under `~/.claude/projects` for the copy-only records; CC's `from_snapshot` path, `chunk-q4w8aqm9.js`.
 
@@ -170,20 +170,24 @@ Evidence: `tests/int-cc-contracts.mjs` tests "routing through the capture proxy 
 
 ## Known gaps and open questions
 
-Current behavior with a known cost:
+Numbered so `TODO.md` can refer to them.
 
-- **pi `/fork` and clone take a full import.** They start a new pi session id with no pointer, so history CC already holds is written again, losing the cache and every earlier thinking block.
-- **Forks and prefix-writes keep CC's `prompt_snapshot`.** A changed system prompt or tool set does not reach CC until a full import. Reuse does the same, since the bridge does not set `systemPrompt.snapshot: false`.
-- **Replaced session files pile up, and their saved tool results expire.** A fork's kept records point into the replaced session's `tool-results/`, which is no longer written, so CC's 30-day cleanup deletes it while the fork still refers to it. This part is inferred from the code.
-- **pi-context-prune's default mode costs cache on every tool-using turn.** Its moving `<pruner-note>` changes the previous tool result on each delivery, so each sync cuts there. Users can turn it off with `remindUnprunedCount: false`.
+Bridge behavior with a known cost:
 
-Not established:
+- **C1. pi `/fork` and clone take a full import.** The new pi session id has no pointer, so history CC already holds is written again, losing the cache and every earlier thinking block. Fix: TODO #15.
+- **C2. A changed system prompt or tool set does not reach CC until a full import.** Reuse, forks and prefix-writes all keep CC's `prompt_snapshot`, which CC replays on resume; the bridge does not set `systemPrompt.snapshot: false`. This keeps the cache at the cost of stale instructions or tools. The tools half is inferred from the code. Fix: TODO #10 (prompt), #16 (tools).
+- **C3. Replaced session files pile up, and a fork's saved tool results can expire.** A fork's kept records point into the replaced session's `tool-results/`, which is no longer written, so CC's 30-day cleanup can delete it while the fork still refers to it. The expiry is inferred from the code. TODO: Deferred, "Superseded session files pile up".
 
-- **The 25-token shortfall.** The reuse after `recent-redaction`'s prefix-write read 4944 of its ancestor's 4969. One run; cause unchecked.
-- **How far back a prefix-write still reads to its cut.** The API looks back only about 20 content blocks from a cache marker (Anthropic's docs), so an edit far back may read only tools + system. `recent-redaction`'s edit was 6 messages back.
-- **Model and cwd changes** are full imports by code and not measured. `hard-content-rebuild` was not rerun on the current bridge.
-- **A short native continuation** after a turn without thinking read 2654 instead of 2987 once, in an ad hoc SDK probe; not reproduced.
-- **Billing-header fields:** rewritten sessions lack the `cc_prompt_index` and `cc_turn_index` fields a native session's header has. No cache effect measured.
-- **Never sampled:** redacted thinking, CC's `<persisted-output>` form of large results, a mid-session effort change, and the analyzer's rule that a single text block equals a string.
+Caused elsewhere:
 
-Evidence: `clone-rebuild`, `recent-redaction` (2026-11-03); `probe-prompt-recording.mjs`; `probe-session-fork.mjs` for forks keeping `prompt_snapshot` and pointing into the old `tool-results/`; `chunk-hrmg67aa.js:573-597`; pi-context-prune 2.1.0 trace; `probe-writer.mjs` first-party rerun.
+- **C4. pi-context-prune's default mode costs cache on every tool-using turn.** Its moving `<pruner-note>` changes the previous tool result on each delivery, so each sync cuts there. Users can turn it off with `remindUnprunedCount: false`.
+
+Open questions:
+
+- **C5. Are any remaining breaks the bridge's?** The 2026-10-25 to 11-03 figures in [Baselines](#baselines) pair per process, where a parent's requests interleave with its subagents', so some of those breaks may be pairing artifacts. Tagged logs start 2026-11-04: after a few days of use, run `node diag/audit-cache.mjs --since 2026-11-04` and compare the boundary rate with the in-query control.
+- **C6. How far back a prefix-write still reads to its cut.** The API looks back only about 20 content blocks from a cache marker (Anthropic's docs), so an edit far back may read only tools + system. `recent-redaction`'s edit was 6 messages back and read to the cut. README "Known issues" warns about this.
+- **C7. Model and cwd changes** are full imports by code and not measured.
+- **C8. Single-run oddities, not reproduced.** The reuse after `recent-redaction`'s prefix-write read 4944 of its ancestor's 4969 tokens. A short native continuation after a turn without thinking read 2654 instead of 2987 in an ad hoc SDK probe.
+- **C9. Never sampled:** redacted thinking, CC's `<persisted-output>` form of large results, a mid-session effort change, the analyzer's rule that a single text block equals a string, and the `cc_prompt_index` and `cc_turn_index` billing-header fields that rewritten sessions lack.
+
+Evidence: C1 `clone-rebuild` (2026-11-03); C2 `probe-prompt-recording.mjs`, `probe-session-fork.mjs`; C3 `probe-session-fork.mjs`, `chunk-hrmg67aa.js:573-597` (CC 2.1.293); C4 pi-context-prune 2.1.0 trace; C6 and C8 `recent-redaction` (2026-11-03); C9 `probe-writer.mjs` first-party rerun.
