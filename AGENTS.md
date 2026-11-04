@@ -22,7 +22,7 @@ Do not add changelog entries for docs-only changes, or for small changes (especi
 
 Keep entries short: one sentence of detail is usually enough. Only a big change warrants a few sentences. Leave implementation details and file lists to the commit log and docs.
 
-Tags: `Add`, `Fix`, `Refactor`, `Tests`, `Bump`, `Deprecate`, `Remove`, `Debug`.
+Tags: `Add`, `Fix`, `Refactor`, `Tests`, `Bump`, `Deprecate`, `Remove`, `Debug`, `Breaking`.
 
 ## Release
 
