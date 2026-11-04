@@ -335,6 +335,36 @@ const SCENARIOS = {
 			];
 		},	},
 
+	"hard-content-edit": {
+		contract: "An image and output over CC's persistence threshold, then an earlier edit: the prefix-write sends both as CC first did",
+		async steps(ctx) {
+			const h = await ctx.pi();
+			await prompt(h, "Look up the key alpha with lc_lookup and tell me its value.");
+			await prompt(h, `For ticket ${secret()}: call lc_image and lc_dump, both in parallel in a single message. Then tell me the image's color and the first line of the dump.`);
+			await prompt(h, "Without tools: what is 4837 * 29 - 1966? Just the number.");
+			ctx.control({ redact: true });
+			await prompt(h, "Thanks. Just say ok.");
+			await prompt(h, "Thanks again. Say goodbye.");
+			ctx.control({});
+			await shutdown(h);
+		},
+		check({ decisions, analysis, captureBodies }) {
+			const written = decisionTransition(analysis, decisions.find((d) => d.row === 7));
+			// Content only: the rewrite's key order is cc-session-io's, not CC's.
+			const content = (v) => v && JSON.stringify([v.shape, v.isError, v.textChars, v.textStart, v.persisted, v.images]);
+			// The third turn's request is the last native one holding both results.
+			const native = decisionTransition(analysis, decisions[2]);
+			const views = (tool) => ({ native: wireResult(captureBodies[native?.to.request], tool), written: wireResult(captureBodies[written?.to.request], tool) });
+			const [image, dump] = ["lc_image", "lc_dump"].map(views);
+			return [
+				["new session, exact resumes, prefix write, exact resume", JSON.stringify(decisions.map((d) => d.row)) === "[1,4,4,7,4]", decisions.map((d) => d.row)],
+				["CC saved the oversized output and sent a notice", dump.native?.persisted === true, dump.native],
+				["the rewrite sends the image and the notice as CC did", content(image.native) === content(image.written) && content(dump.native) === content(dump.written), { image, dump }],
+				["the rewrite writes no oversized output to the cache", written?.cache.cacheWrite < 10_000, written?.cache],
+			];
+		},
+	},
+
 	"abort-continuation": {
 		contract: "#199/#200: a run ends with the query parked at a terminating tool; the next run continues it and is aborted",
 		async steps(ctx) {

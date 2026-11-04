@@ -4,6 +4,9 @@
 import { getSessionPath, parseJsonl, type JsonlRecord, type Session } from "cc-session-io";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import type { Message as PiMessage } from "@earendil-works/pi-ai";
+import { sanitizeToolId, type ToolResultContent } from "./convert.js";
+import { digestMessage } from "./message-digests.js";
 import { validateRecording, type Recording, type SessionState } from "./session-sync.js";
 
 const AUDIT = new Set(["api-request", "api-request-shape", "api-request-blob"]);
@@ -74,6 +77,29 @@ export function resolveRecordingCut(records: readonly RecordEntry[], recorded: R
 		if (index >= 0 && index <= cut.index) throw new Error(`Session cut includes later pi content at ${uuid}`);
 	}
 	return cut;
+}
+
+/** What CC recorded for each tool result pi still holds unchanged (its digest
+ * is in the old recording), by pi tool call id. CC sends oversized output as a
+ * notice naming a saved file and an image with a block naming its saved path,
+ * while pi holds the full output: a rewrite from pi's form would send the
+ * model content it never saw. */
+export function recordedToolResults(records: readonly RecordEntry[], recordedDigests: readonly string[], messages: readonly PiMessage[]): Map<string, ToolResultContent> {
+	const byId = new Map<string, ToolResultContent>();
+	for (const record of records) {
+		const content = record.type === "user" ? (record.message as { content?: unknown } | undefined)?.content : undefined;
+		if (!Array.isArray(content)) continue;
+		for (const block of content) if (block?.type === "tool_result") byId.set(block.tool_use_id, block.content);
+	}
+	const unchanged = new Set(recordedDigests);
+	const ids = new Map<string, string>();
+	const results = new Map<string, ToolResultContent>();
+	for (const message of messages) {
+		if (message.role !== "toolResult" || !unchanged.has(digestMessage(message))) continue;
+		const id = sanitizeToolId(message.toolCallId, ids);
+		if (byId.has(id)) results.set(message.toolCallId, byId.get(id)!);
+	}
+	return results;
 }
 
 /** The suffix was emitted independently, so link its first root to the kept

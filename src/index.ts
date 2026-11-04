@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from 
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { QueryProcess } from "./query-process.js";
-import { readTranscript, resolveRecordingCut, savePrefixSession } from "./session-transcript.js";
+import { readTranscript, recordedToolResults, resolveRecordingCut, savePrefixSession } from "./session-transcript.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
 import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock } from "./skills.js";
@@ -825,13 +825,16 @@ function syncSharedSession(
 			decision("fork", targetSessionId);
 			return { sessionId: state!.ccSessionId, targetSessionId, created: true, forkAt: cut.uuid, recorded, state, writable };
 		}
-		const suffix = importHistory(session, priors.slice(compared.cutCount), customToolNameToSdk, collectCarriedAttachments(transcript.slice(cut.index + 1)));
+		const rest = priors.slice(compared.cutCount);
+		const replaced = transcript.slice(cut.index + 1);
+		const suffix = importHistory(session, rest, customToolNameToSdk, collectCarriedAttachments(replaced), recordedToolResults(replaced, state!.digests, rest));
 		recorded = { digests: [...recorded.digests, ...suffix.digests], uuids: [...recorded.uuids, ...suffix.uuids], cuttable: [...recorded.cuttable, ...suffix.cuttable] };
 		records = savePrefixSession(session, transcript.slice(0, cut.index + 1), cut.uuid);
 	} else {
-		// Nothing is kept, but the old transcript's @file expansions still belong to
-		// prompts pi kept unchanged (placeCarriedAttachments checks each one).
-		recorded = importHistory(session, priors, customToolNameToSdk, state ? collectCarriedAttachments(readTranscript(state)) : []);
+		// Nothing is kept, but the old transcript's @file expansions and tool results
+		// still belong to messages pi kept unchanged.
+		const transcript = state ? readTranscript(state) : [];
+		recorded = importHistory(session, priors, customToolNameToSdk, collectCarriedAttachments(transcript), recordedToolResults(transcript, state?.digests ?? [], priors));
 		session.save();
 		records = session.records.length;
 	}

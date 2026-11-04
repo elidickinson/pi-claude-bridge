@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, existsSync, unlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSession, openSession } from "cc-session-io";
+import { createSession, getSessionPath, openSession } from "cc-session-io";
 import { stateFor } from "./lib/session-state.mjs";
 import { compareHistory, copyRecording, importHistory, LiveRecording, validateRecording } from "../src/session-sync.js";
 import { digestMessages } from "../src/message-digests.js";
@@ -108,6 +108,22 @@ describe("digest session decisions", () => {
 		assert.notEqual(__test.getSharedSession("pi").cwd, join(cwd, "other"), "the import is query-local until progress");
 		assert.ok(existsSync(session.jsonlPath));
 	});
+	for (const [name, model, reply] of [["a prefix-write", "sonnet", say("edited")], ["a full import", "opus", say("b")]]) {
+		it(`${name} sends what Claude Code recorded for unchanged tool results, and pi's form for changed ones`, () => {
+			const priors = [user("a"), say("b"), user("c"), calls("t1", "t2"), result("t1"), result("t2"), say("done")];
+			const { session } = seed(priors);
+			// CC's form for output it saved to a file.
+			const notice = [{ type: "text", text: "Output has been saved to tool-results/t.txt" }];
+			const records = readFileSync(session.jsonlPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			for (const record of records) for (const block of Array.isArray(record.message?.content) ? record.message.content : []) if (block.type === "tool_result") block.content = notice;
+			writeFileSync(session.jsonlPath, records.map((record) => JSON.stringify(record) + "\n").join(""));
+			const redacted = { ...result("t2"), content: [{ type: "text", text: "redacted" }] };
+			const synced = sync([priors[0], reply, ...priors.slice(2, 5), redacted, priors[6], user("next")], model);
+			const written = readFileSync(getSessionPath(synced.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			const results = Object.fromEntries(written.flatMap((r) => Array.isArray(r.message?.content) ? r.message.content : []).filter((b) => b.type === "tool_result").map((b) => [b.tool_use_id, b.content]));
+			assert.deepEqual(results, { t1: notice, t2: "redacted" });
+		});
+	}
 	it("carries attachments to the new transcript without reporting a count mismatch", () => {
 		const priors = [user("Review @fixture.txt"), say("noted")];
 		const original = createSession({ projectPath: cwd });

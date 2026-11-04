@@ -2,7 +2,7 @@
 // an intentional import omission, never an unacknowledged live message.
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
 import { repairWithOrigin, type Session, type ContentBlock, type UserContentBlock } from "cc-session-io";
-import { convertPiMessages } from "./convert.js";
+import { convertPiMessages, type ToolResultContent } from "./convert.js";
 import { digestMessage, digestMessages } from "./message-digests.js";
 import { placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 
@@ -62,8 +62,8 @@ function updatePendingTools(pending: Set<string>, message: PiMessage): void {
 
 /** Emit the repaired messages ourselves: importMessages hides the write mapping
  * and can emit two records for a mixed user message. Track the actual writes. */
-export function importHistory(session: Session, messages: PiMessage[], names?: Map<string, string>, carried: readonly CarriedAttachment[] = []): Recording {
-	const converted = convertPiMessages(messages, names);
+export function importHistory(session: Session, messages: PiMessage[], names?: Map<string, string>, carried: readonly CarriedAttachment[] = [], results?: ReadonlyMap<string, ToolResultContent>): Recording {
+	const converted = convertPiMessages(messages, names, results);
 	const repaired = repairWithOrigin(converted.anthropicMessages);
 	const placed = placeCarriedAttachments(carried, repaired.messages);
 	const writes: { uuid: string; sources: number[]; pending: number }[] = [];
