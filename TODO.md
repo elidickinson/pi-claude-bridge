@@ -2,6 +2,21 @@
 
 Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
+## Simplifications
+
+Beyond the session-sync ones in Ideas #1. Ordered by value; each is independent unless noted. Lines as of `b71eebce`.
+
+- **Split out or delete AskClaude.** About 500-600 lines leave the core: `promptAndWait`, the tool registration, `askclaude-schema.ts`, `askclaude-ui.ts`, the mode lists, the deprecation notice, `forkCurrent`/`writable`/`"askclaude-fork"` in `syncSharedSession`, the skills `"native"` mode and `SDK_TO_PI_TOOL_NAME`. The same-model fork is also wrong: it forks the provider mirror at its own last cut (`src/index.ts:793`) and ignores pi's branch, and since AskClaude refuses to run on claude-bridge (`2913`), it only fires after a provider switch, when it misses everything said since. A separate entry that imports the pi branch fresh on every call fixes that and shares no state with the provider. Makes the AskClaude bullets in Ideas #1 moot.
+- **`writeToolResultText` rebuilds `messageContentToText` by hand.** `src/message-digests.ts:89-124` becomes `writeString(hash, messageContentToText(content))` with identical digests (fuzzed). Digests are persisted, so pin a known digest in `unit-message-digests.mjs` first.
+- **Stream-ending code is copied about 11 times.** Push, `markStreamComplete`, `end()`, null `currentPiStream`: `src/index.ts:1317`, `1437`, `1592`, `1902`, `1938`, `2037`, `2361`, `2428` and `runIsolatedSummary` (`641-662`). Helpers `endPiStream(c, event)` and `endToolUseTurn(c)` (the identical tails at `1428` and `1587`), plus `pushTextBlock(c, text)` for the text triple at `1549` and `1729`.
+- **Debug work runs with debug off.** `debug()` arguments are evaluated anyway: the `extractAllToolResults` wrapper (`src/index.ts:388`) stringifies every tool result on every delivery, `debugSessionPaths` (`740`) does a realpath and stat per write, `logServedContextWindow` (`1140`) walks `modelUsage`. Gate them on `DEBUG`. `stopIdx` exists only for that debug line; drop it and its assertion in `unit-queue.mjs`.
+- **One builder for empty assistant messages.** `newAssistantOutput` (`src/index.ts:473`) and `QueryContext.resetTurnState` (`src/query-state.ts:122`) build the same zeroed message; the orphan-abort path (`src/index.ts:2033`) makes a throwaway `QueryContext` just to get one.
+- **Content-block mapping is written four times.** `extractUserPromptBlocks` (`src/index.ts:427`), the user branch of `convertPiMessages` and `toolResultContent` (`src/convert.ts:114`, `73`), and `writeUser`/`writeToolResultBlocks` (`src/message-digests.ts:56`, `126`) each decide which text and image blocks survive. One helper; do it after the digest pin above.
+- **Redundant lines.** A second `activeQueryContexts.add(queryCtx)` at `src/index.ts:2300` (already added at `2097`, no await between). The `deleteSession` in the `queryImpl` catch (`2265`) repeats the outer catch's (`2421`, via `createdBeforeLaunch`).
+- **Raw CLI flags that have typed SDK options.** `strict-mcp-config` and `model` go through `extraArgs` (`src/index.ts:2185-2186`, `2494-2496`); `runIsolatedSummary` already uses the typed `strictMcpConfig` and `model`.
+- **Parameters only tests use.** `deliverToolResults`' `contextLength` and optional `messages` (`src/index.ts:1780`); `finalizeCurrentStream`'s `stopReason` (`1305`), which `turnOutput` already holds.
+- **Small ones.** `runIsolatedSummary` re-reads config for a global-only value already in `providerSettings` (`src/index.ts:583`). The `historyStale` re-check at tool-result delivery (`1996`) can't fire, since `markRebuildForSession` arms every parked context directly. `loadSessionState` repeats `saveSessionState`'s field checks and splits a catch on an error class nothing else throws (`src/session-store.ts:47-61`). `mapToolArgs` parses an edit object twice (`src/index.ts:946`). Several exports are used only in their own file.
+
 ## Ideas
 
 1. **Session-sync simplifications.** Each is independent, except do the writer-tracking item first.
