@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Breaking: AskClaude moved to its own package** — Install `pi install pi-claude-bridge-askclaude` to keep using it; the `askClaude` settings, the project `.pi/claude-bridge.json` and the deprecation notice are gone. Model names go to Claude Code as given (no partial ids or automatic `[1m]`). Shared mode now keeps compaction and branch summaries, and no longer resumes the bridge's Claude Code session, which missed anything said after switching away from claude-bridge. On claude-bridge turns Claude Code now sees the AskClaude tool, which refuses to run there.
+
 ## 0.10.0 — 2026-11-04
 
 - **Breaking: Claude settings files in the repo and project-level `provider` config are ignored (#198)** — Claude Code's project and local settings (`.claude/settings.json`, `.claude/settings.local.json`) are no longer loaded, so a repo's hooks, `apiKeyHelper` and `env` don't run; `~/.claude/settings.json` still applies. A project `.pi/claude-bridge.json` can no longer set `provider` options, which include the Claude Code executable path; set them at user-level in `~/.pi/agent/claude-bridge.json`. Thanks @superninjv.

@@ -237,7 +237,7 @@ describe("message structure", () => {
 		assert.equal(result[0].content, "read file.txt");
 		assert.equal(result[1].role, "assistant");
 		assert.equal(result[1].content[0].type, "tool_use");
-		assert.equal(result[1].content[0].name, "Read");
+		assert.equal(result[1].content[0].name, "mcp__custom-tools__read");
 		assert.equal(result[2].role, "user");
 		assert.equal(result[2].content[0].type, "tool_result");
 		assert.equal(result[3].role, "assistant");
@@ -264,7 +264,7 @@ describe("message structure", () => {
 	// With a tool map the query runs `tools: []`, so no name in the transcript may
 	// look like a Claude Code builtin — that is what makes the model call one it
 	// cannot call. A tool missing from the map is one pi ran and we no longer
-	// serve (AskClaude is excluded on purpose), not a builtin.
+	// serve (an extension since disabled), not a builtin.
 	it("tool name mapping: unserved pi tools keep the MCP namespace", () => {
 		const served = new Map([["read", "mcp__custom-tools__read"]]);
 		const msgs = [
@@ -284,18 +284,6 @@ describe("message structure", () => {
 		];
 		assert.throws(() => convert(msgs), /already an SDK tool name/);
 		assert.throws(() => convert(msgs, new Map()), /already an SDK tool name/);
-	});
-
-	it("tool name mapping: pi names → SDK names", () => {
-		const msgs = [
-			{ role: "assistant", content: [
-				{ type: "toolCall", id: "a", name: "read", arguments: {} },
-				{ type: "toolCall", id: "b", name: "bash", arguments: {} },
-			]},
-		];
-		const result = convert(msgs);
-		assert.equal(result[0].content[0].name, "Read");
-		assert.equal(result[0].content[1].name, "Bash");
 	});
 
 	it("toolResult with array content extracts text", () => {

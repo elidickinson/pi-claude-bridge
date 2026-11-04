@@ -34,7 +34,7 @@ Baseline (2026-07-29): scanned 1810 (cc-authored 854, bridge-written 564, mixed 
 
 Zero real occurrences of `[empty]`, `[image]`, `[document]`, `[thinking]`, `[orphaned tool result removed]`, duplicate `tool_use` ids, orphan `tool_result`, empty assistant records, or transcripts starting mid-turn.
 
-**Replays without a tool map invent builtin calls.** `convertPiMessages` called without `customToolNameToSdk`, as `replay-write-path.mjs` and benchmark replays do, maps pi's `bash` to CC's builtin `Bash`, the condition behind the phantom-call deadlock fixed in 122914dd. This is where the 5,525 non-MCP tool names in test and temp dirs come from. Pass the recorded tool list when replaying.
+**Old replays invented builtin calls.** `convertPiMessages` without a tool map used to map pi's `bash` to CC's builtin `Bash`, the condition behind the phantom-call deadlock fixed in 122914dd. That is where the 5,525 non-MCP tool names in test and temp dirs come from. Without a map it now gives every tool its `mcp__custom-tools__` name.
 
 ## `audit-warnings.mjs`
 

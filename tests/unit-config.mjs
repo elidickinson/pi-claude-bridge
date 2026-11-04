@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown } from "../src/config.js";
+import { claudeCodeSettings, loadConfig, markStartupNoticeShown } from "../src/config.js";
 
 function withTempHome(fn) {
 	const oldHome = process.env.HOME;
@@ -35,93 +35,42 @@ describe("claudeCodeSettings", () => {
 });
 
 describe("loadConfig", () => {
-	it("loads project askClaude config but never project provider settings", () => withTempHome(() => {
+	it("ignores a project config: a repo can't set provider settings", () => withTempHome(() => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		const oldCwd = process.cwd();
 		try {
 			const configDir = join(cwd, CONFIG_DIR_NAME);
 			mkdirSync(configDir, { recursive: true });
 			writeFileSync(join(configDir, "claude-bridge.json"), JSON.stringify({
 				provider: { plan: "max", pathToClaudeCodeExecutable: join(cwd, "evil") },
-				askClaude: { enabled: false },
 			}));
+			process.chdir(cwd);
 
-			assert.deepEqual(loadConfig(cwd), {
-				startupNoticeShown: undefined,
-				askClaudeDeprecationShown: undefined,
-				provider: {},
-				askClaude: { enabled: false },
-			});
+			assert.deepEqual(loadConfig(), { startupNoticeShown: undefined, provider: {} });
 		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	}));
-
-	it("merges project askClaude config over global; provider comes from global only", () => withTempHome((home) => {
-		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
-		try {
-			const globalDir = getAgentDir();
-			const projectDir = join(cwd, CONFIG_DIR_NAME);
-			mkdirSync(globalDir, { recursive: true });
-			mkdirSync(projectDir, { recursive: true });
-			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
-				provider: { plan: "pro", strictMcpConfig: true },
-				askClaude: { enabled: true, defaultMode: "read" },
-			}));
-			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
-				provider: { plan: "max", autoMemoryEnabled: true },
-				askClaude: { enabled: false },
-			}));
-
-			assert.deepEqual(loadConfig(cwd), {
-				startupNoticeShown: undefined,
-				askClaudeDeprecationShown: undefined,
-				provider: { plan: "pro", strictMcpConfig: true },
-				askClaude: { enabled: false, defaultMode: "read" },
-			});
-		} finally {
+			process.chdir(oldCwd);
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	}));
 
 	it("markStartupNoticeShown records today's date without dropping existing settings", () => withTempHome(() => {
-		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
-		try {
-			const globalDir = getAgentDir();
-			mkdirSync(globalDir, { recursive: true });
-			const path = join(globalDir, "claude-bridge.json");
-			writeFileSync(path, JSON.stringify({
-				askClaude: { enabled: false },
-				provider: { strictMcpConfig: false },
-			}));
-
-			assert.equal(markStartupNoticeShown(), path);
-			const written = JSON.parse(readFileSync(path, "utf-8"));
-			assert.match(written.startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
-			assert.deepEqual(written.askClaude, { enabled: false });
-			assert.deepEqual(written.provider, { strictMcpConfig: false });
-			assert.equal(loadConfig(cwd).startupNoticeShown, written.startupNoticeShown);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	}));
-
-	it("markAskClaudeDeprecationNoticeShown records today's date without dropping settings", () => withTempHome(() => {
 		const globalDir = getAgentDir();
 		mkdirSync(globalDir, { recursive: true });
 		const path = join(globalDir, "claude-bridge.json");
-		writeFileSync(path, JSON.stringify({ askClaude: { enabled: true } }));
+		writeFileSync(path, JSON.stringify({ provider: { strictMcpConfig: false } }));
 
-		markAskClaudeDeprecationNoticeShown();
+		assert.equal(markStartupNoticeShown(), path);
 		const written = JSON.parse(readFileSync(path, "utf-8"));
-		assert.match(written.askClaudeDeprecationShown, /^\d{4}-\d{2}-\d{2}$/);
-		assert.deepEqual(written.askClaude, { enabled: true });
+		assert.match(written.startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
+		assert.deepEqual(written.provider, { strictMcpConfig: false });
+		assert.equal(loadConfig().startupNoticeShown, written.startupNoticeShown);
 	}));
 
 	it("markStartupNoticeShown leaves an unparseable config untouched", () => withTempHome(() => {
 		const globalDir = getAgentDir();
 		mkdirSync(globalDir, { recursive: true });
 		const path = join(globalDir, "claude-bridge.json");
-		const malformed = '{ "askClaude": { "enabled": true }, }';
+		const malformed = '{ "provider": { "plan": "max" }, }';
 		writeFileSync(path, malformed);
 
 		markStartupNoticeShown();
@@ -129,19 +78,13 @@ describe("loadConfig", () => {
 	}));
 
 	it("markStartupNoticeShown creates the config when there is none", () => withTempHome(() => {
-		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
-		try {
-			assert.equal(loadConfig(cwd).startupNoticeShown, undefined);
-			markStartupNoticeShown();
-			assert.match(loadConfig(cwd).startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
+		assert.equal(loadConfig().startupNoticeShown, undefined);
+		markStartupNoticeShown();
+		assert.match(loadConfig().startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
 	}));
 
 	it("resolves global config via PI_CODING_AGENT_DIR override, not hardcoded ~/.pi/agent", () => withTempHome(() => {
 		const agentDir = mkdtempSync(join(tmpdir(), "claude-bridge-agent-"));
-		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
 		const oldEnv = process.env.PI_CODING_AGENT_DIR;
 		try {
 			process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -149,17 +92,11 @@ describe("loadConfig", () => {
 				provider: { plan: "max" },
 			}));
 
-			assert.deepEqual(loadConfig(cwd), {
-				startupNoticeShown: undefined,
-				askClaudeDeprecationShown: undefined,
-				provider: { plan: "max" },
-				askClaude: {},
-			});
+			assert.deepEqual(loadConfig(), { startupNoticeShown: undefined, provider: { plan: "max" } });
 		} finally {
 			if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = oldEnv;
 			rmSync(agentDir, { recursive: true, force: true });
-			rmSync(cwd, { recursive: true, force: true });
 		}
 	}));
 });

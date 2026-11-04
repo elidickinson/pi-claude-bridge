@@ -150,7 +150,8 @@ function run() {
 
 			const fresh = cur.marks.map((m) => FRESH.exec(m)).filter(Boolean).at(-1);
 			// A sync line describes a boundary only when a query opens there: AskClaude
-			// logs its own under the caller's session in the middle of a query.
+			// once logged its own under the caller's session in the middle of a query,
+			// and older logs still hold them.
 			const sync = fresh && cur.marks.map((m) => SYNC.exec(m)).filter(Boolean).at(-1);
 			const prevFresh = prev.freshParams ?? null;
 			cur.freshParams = fresh ?? prevFresh;

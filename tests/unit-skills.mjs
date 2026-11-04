@@ -21,12 +21,6 @@ describe("skills block rendering", () => {
 		assert.match(result, /<location>\/skills\/browser\/SKILL\.md<\/location>/);
 	});
 
-	it("keeps the native read-tool instruction for AskClaude", () => {
-		const result = renderSkillsBlock([skill("browser")], "native");
-		assert.match(result, /Use the read tool to load/);
-		assert.doesNotMatch(result, /mcp__custom-tools__read/);
-	});
-
 	it("emits nothing without a usable reader or visible skills", () => {
 		assert.equal(renderSkillsBlock([skill("browser")], "none"), undefined);
 		assert.equal(renderSkillsBlock([], "mcp"), undefined);
@@ -36,6 +30,6 @@ describe("skills block rendering", () => {
 	it("uses Pi's XML escaping", () => {
 		const escaped = skill("browser");
 		escaped.description = "read <this> & that";
-		assert.match(renderSkillsBlock([escaped], "native"), /read &lt;this&gt; &amp; that/);
+		assert.match(renderSkillsBlock([escaped], "mcp"), /read &lt;this&gt; &amp; that/);
 	});
 });

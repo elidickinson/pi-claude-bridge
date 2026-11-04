@@ -17,7 +17,7 @@ const mod = await import("../src/index.js");
 const { __test } = mod;
 let provider;
 const handlers = {};
-mod.default({ on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerProvider: (_id, value) => { provider = value; }, registerTool: () => {} });
+mod.default({ on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerProvider: (_id, value) => { provider = value; } });
 const model = provider.models[0];
 const tools = [{ name: "read", description: "read", parameters: { type: "object", properties: {} } }];
 const user = (content) => ({ role: "user", content, timestamp: 1 });
@@ -283,7 +283,7 @@ it("a reloaded module shares state and stopping writers, and the old finalizer n
 	for (const fn of handlers.session_shutdown) fn({}, { sessionManager: { getSessionId: () => "pi" } });
 	const fresh = await import(`../src/index.js?reload=${Date.now()}`);
 	let freshProvider;
-	fresh.default({ on() {}, registerProvider: (_id, value) => { freshProvider = value; }, registerTool() {} });
+	fresh.default({ on() {}, registerProvider: (_id, value) => { freshProvider = value; } });
 	fresh.__test.setQuery(fakeQuery);
 	assert.strictEqual(fresh.__test.getSharedSession("pi"), committed, "the newer memory state, not the empty disk");
 	const waiting = new AbortController();
@@ -343,34 +343,6 @@ it("a synthetic durable-host continuation is grouped with its next assistant, no
 	assert.doesNotMatch(JSON.stringify(records.slice(0, resultCut.index + 1)), /Your session was interrupted and resumed/);
 	assert.match(JSON.stringify(records.slice(resultCut.index + 1)), /Your session was interrupted and resumed/);
 	assert.equal(resolveRecordingCut(records, state, 4).uuid, state.uuids[3]);
-});
-
-it("AskClaude forks the same model and imports a changed model without writing provider state", async () => {
-	const ask = user("warm");
-	scripts.push({});
-	const answer = await call([ask]).result();
-	const state = __test.getSharedSession("pi");
-	const storedBefore = persisted();
-	await calls[0].exited;
-	const before = readFileSync(calls[0].path);
-	scripts.push({});
-	await __test.promptAndWait("delegated", "none", new Map(), undefined, { model: model.id, appendSkills: false, context: [ask, answer], piSessionId: "pi" });
-	assert.equal(calls[1].options.forkSession, true);
-	assert.equal(calls[1].options.resume, state.ccSessionId);
-	assert.notEqual(calls[1].options.sessionId, state.ccSessionId);
-	assert.strictEqual(__test.getSharedSession("pi"), state);
-	scripts.push({});
-	await __test.promptAndWait("other model", "none", new Map(), undefined, { model: "other-model", appendSkills: false, context: [ask, answer], piSessionId: "pi" });
-	assert.equal(calls[2].options.forkSession, undefined);
-	assert.notEqual(calls[2].options.resume, state.ccSessionId);
-	assert.strictEqual(__test.getSharedSession("pi"), state);
-	assert.deepEqual(readFileSync(calls[0].path), before);
-	assert.deepEqual(persisted(), storedBefore, "AskClaude never writes the provider's persisted state");
-	scripts.push({});
-	await __test.promptAndWait("no state", "none", new Map(), undefined, { model: model.id, appendSkills: false, context: [ask, answer], piSessionId: "pi-ask" });
-	assert.equal(calls[3].options.sessionId, undefined, "an imported session resumes its own written id");
-	assert.ok(calls[3].options.resume);
-	assert.equal(persisted("pi-ask"), null);
 });
 
 it("a restart reloads the persisted pointer dirty and forks at its last valid cut", async () => {
@@ -522,28 +494,6 @@ it("a prompt CC pulled but never replayed stays a gap, so a boot abort persists 
 	for (const uuid of state.uuids) if (uuid) assert.match(records, new RegExp(uuid));
 });
 
-it("a healthy parked provider query does not block a readonly AskClaude fork", { timeout: 5000 }, async () => {
-	const ask = user("warm");
-	scripts.push({});
-	const answer = await call([ask]).result();
-	const saved = __test.getSharedSession("pi");
-	await calls[0].exited;
-	scripts.push({ tool: true });
-	await call([ask, answer, user("tool")]).result();
-	assert.equal(calls[1].options.resume, saved.ccSessionId, "the parked query appends to the saved file");
-	const [parked] = __test.activeQueryContexts;
-	scripts.push({});
-	const reply = await __test.promptAndWait("delegated", "none", new Map(), undefined, { model: model.id, appendSkills: false, context: [ask, answer], piSessionId: "pi" });
-	assert.equal(reply.responseText, "answer");
-	assert.equal(calls[2].options.forkSession, true);
-	assert.equal(calls[2].options.resume, saved.ccSessionId);
-	assert.equal(calls[2].options.resumeSessionAt, saved.uuids.at(-1));
-	assert.equal(parked.discarded, false);
-	assert.ok(__test.activeQueryContexts.has(parked));
-	assert.equal(calls[1].child.exitCode, null, "the parked child keeps running");
-	assert.strictEqual(__test.getSharedSession("pi"), saved);
-});
-
 it("an abort cancels a fresh query's wait on a stopping writer", { timeout: 5000 }, async () => {
 	const controller = new AbortController(), ask = user("tool");
 	scripts.push({ tool: true, hang: true });
@@ -570,7 +520,7 @@ it("a failed state save ends the turn with that error and is fatal, never retrie
 		import { join } from "node:path";
 		const mod = await import(${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)});
 		let provider;
-		mod.default({ on() {}, registerProvider: (_id, value) => { provider = value; }, registerTool() {} });
+		mod.default({ on() {}, registerProvider: (_id, value) => { provider = value; } });
 		const model = provider.models[0];
 		mod.__test.getSharedSession("pi");
 		const file = "s-" + createHash("sha256").update("pi", "utf16le").digest("hex") + ".json";
@@ -611,7 +561,7 @@ it("an unexpected session id ends the turn, commits nothing, and is fatal", asyn
 		import { join } from "node:path";
 		const mod = await import(${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)});
 		let provider;
-		mod.default({ on() {}, registerProvider: (_id, value) => { provider = value; }, registerTool() {} });
+		mod.default({ on() {}, registerProvider: (_id, value) => { provider = value; } });
 		const model = provider.models[0];
 		const file = join(process.env.PI_CODING_AGENT_DIR, "claude-bridge", "sessions", "s-" + createHash("sha256").update("pi", "utf16le").digest("hex") + ".json");
 		mod.__test.setQuery(({ prompt }) => {

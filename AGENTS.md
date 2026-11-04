@@ -35,6 +35,8 @@ No build step — the package ships `src` TypeScript as-is (see `files` in `pack
 5. **Push commit and tag together** — `git push --follow-tags`.
 6. **Publish** — `npm login` and `npm publish`.
 
+The AskClaude package in `askclaude/` is versioned and published on its own: bump `askclaude/package.json` and run `npm publish` from `askclaude/`.
+
 ## Tests
 
 Smoke tests typically need to run outside a sandbox because they access local pi/Claude settings and auth state.

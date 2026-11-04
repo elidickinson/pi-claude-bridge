@@ -1,19 +1,18 @@
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
-import { buildSessionContext, isToolCallEventType, keyHint, VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType, VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
-import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, getSessionPath } from "cc-session-io";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
-import { dirname, join } from "path";
+import { dirname } from "path";
 import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { QueryProcess } from "./query-process.js";
 import { readTranscript, recordedToolResults, resolveRecordingCut, savePrefixSession } from "./session-transcript.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
-import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, renderSkillsBlock } from "./skills.js";
+import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings } from "./models.js";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { digestMessage, digestMessages } from "./message-digests.js";
@@ -21,146 +20,21 @@ import { compareHistory, copyRecording, importHistory, LiveRecording, type Recor
 import { deleteSessionState, loadSessionState, saveSessionState } from "./session-store.js";
 import { QueryContext, type AssistantStep } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown, type Config } from "./config.js";
+import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
 import {
-	collectPromptSkills,
 	projectPromptCapture,
 	sharedPromptCaptures,
 	type PromptCapture,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
-import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
-import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
 import { BRIDGE_VERSION, packageVersion, setTraceNotifier, traceAssertReady, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
-
-// --- Debug logging ---
-// CLAUDE_BRIDGE_DEBUG=1 enables debug logging to the bridge log in pi's agent
-// dir (log-paths.ts), not a fixed ~/.pi/agent.
-
-const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
-
-// Applied to every Claude Code subprocess the bridge spawns — provider, AskClaude
-// and the compact summary. One place, so a guard is added once rather than three
-// times, and so a missing one is visible.
-//
-// - ENABLE_CLAUDEAI_MCP_SERVERS=0: keep the user's claude.ai-connected MCP servers
-//   out of a pi session, which serves its own tools.
-// - DISABLE_AUTO_COMPACT=1: pi owns compaction; CC compacting its own copy would
-//   diverge from pi's history, which is the source of truth for every rebuild.
-// - CLAUDE_CODE_ELEGANT_MEADOW=0: stop CC (2.1.308+) logging every API request
-//   into its session file (`api-request`, `api-request-shape`, `api-request-blob`
-//   records). CC never reads them back to build a request; they only make the
-//   file about a third larger.
-// - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1: no update checks, MCP registry or
-//   telemetry. Set here, not on pi's process.env, so it doesn't leak into every
-//   command pi runs.
-// - CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1: a resumed session that ends at
-//   a tool result (after a terminating tool, or a discarded parked query) reads to CC
-//   as an interrupted turn, and behind a server flag CC inserts a "Continue from where
-//   you left off." user message ahead of pi's prompt. pi supplies every prompt, so
-//   every turn counts as too old to resume.
-const CC_CHILD_ENV = {
-	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
-	DISABLE_AUTO_COMPACT: "1",
-	CLAUDE_CODE_ELEGANT_MEADOW: "0",
-	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-	CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
-} as const;
-
-// Set by Claude Code on its own child processes (eXe(), its session-env list and
-// hook env in 2.1.308), or exported by that parent. When pi runs inside a Claude Code
-// session they describe that session, not ours: the SDK stamps its own entrypoint and
-// version only when they're unset, and CC's Bash tool runs CLAUDE_ENV_FILE's script.
-// AI_AGENT is left alone: pi overwrites it with "pi" at startup.
-const PARENT_SESSION_VARS = [
-	"CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED",
-	"CLAUDE_PID", "CLAUDE_EFFORT", "TRACEPARENT", "CLAUDE_CODE_INVOKED_SKILLS", "CLAUDE_ENV_FILE",
-	"CLAUDE_CODE_ENTRYPOINT", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_EXECPATH",
-	"CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
-];
-
-// The bridge reads and writes Claude Code's session files through pi's own values of
-// these, so a child pointed elsewhere would resume a session the bridge never wrote.
-const SESSION_STORAGE_VARS = ["CLAUDE_CONFIG_DIR", "HOME", "USERPROFILE"];
-
-// Environment for every Claude Code subprocess. Config (ANTHROPIC_*, CLAUDE_CONFIG_DIR,
-// CLAUDE_CODE_USE_BEDROCK, ...) always passes through; parent-session markers are
-// dropped only when CLAUDECODE says pi was started from inside Claude Code. `overrides`
-// is pi's per-request provider env (a stored credential's `env`, or the caller's), which
-// takes precedence over process.env; an empty value removes the variable, since pi's
-// auth.json only allows strings. CC_CHILD_ENV goes last so its guards always hold.
-function ccChildEnv(overrides: Record<string, string> = {}, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-	const storage = Object.keys(overrides).filter((name) => SESSION_STORAGE_VARS.includes(name.toUpperCase()));
-	if (storage.length) throw new Error(`claude-bridge: provider env can't set ${storage.join(", ")}; the bridge reads Claude Code's session files through pi's own values`);
-	const env: NodeJS.ProcessEnv = { ...parent };
-	if (parent.CLAUDECODE) for (const name of PARENT_SESSION_VARS) delete env[name];
-	for (const [name, value] of Object.entries(overrides)) {
-		if (value === "") delete env[name];
-		else env[name] = value;
-	}
-	return { ...env, ...CC_CHILD_ENV };
-}
-
-// Pi owns context files on the provider path, so Claude Code must not load its
-// own on top: otherwise project CLAUDE.md/AGENTS.md files arrive twice, and
-// ~/.claude/CLAUDE.md — a user persona written for a harness that is not the
-// one running — arrives at all, stamped "These instructions OVERRIDE any default
-// behavior" and outranking Pi's own AGENTS.md.
-//
-// Excludes rather than settingSources: the source gate that suppresses CLAUDE.md
-// is the same one that reads settings.json, where Bedrock/Vertex users keep
-// `env` and `apiKeyHelper`. Patterns are matched with picomatch against absolute
-// paths; the filename globs cover user, ancestor, project and .claude/ copies,
-// while rules need their own. Managed/policy memory is not excludable by design.
-const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"];
-
-// Unique per module evaluation — confirms whether subagents share module state
-const moduleInstanceId = Math.random().toString(36).slice(2, 8);
-
-function debug(...args: unknown[]) {
-	if (!DEBUG) return;
-	const logPath = debugLogPath();
-	try { mkdirSync(dirname(logPath), { recursive: true }); } catch { /* ignore */ }
-	const ts = new Date().toISOString();
-	const fmt = (a: unknown): string => {
-		if (typeof a === "string") return a;
-		if (a instanceof Error) return `${a.name}: ${a.message}${a.stack ? "\n" + a.stack : ""}`;
-		return JSON.stringify(a);
-	};
-	const msg = args.map(fmt).join(" ");
-	appendFileSync(logPath, `[${ts}] [${moduleInstanceId}] ${msg}\n`);
-}
-
-// Per-query CLI debug capture. When CLAUDE_BRIDGE_DEBUG=1, ask the Claude Code
-// CLI subprocess to write its own debug log to a file we choose, and also
-// forward its stderr into our debug stream. Drops straight into the real SDK's
-// Options — see @anthropic-ai/claude-agent-sdk sdk.d.ts:1245 (debug, debugFile,
-// stderr). Without this, CC's internal view of the world is invisible to us
-// and "No conversation found" / empty-error reports are unactionable.
-let nextCliDebugSeq = 1;
-function makeCliDebugOptions(tag: string): { debug?: boolean; debugFile?: string; stderr?: (data: string) => void } {
-	if (!DEBUG) return {};
-	const seq = nextCliDebugSeq++;
-	const ts = new Date().toISOString().replace(/[:.]/g, "-");
-	const logDir = join(dirname(debugLogPath()), "cc-cli-logs");
-	try { mkdirSync(logDir, { recursive: true }); } catch { /* ignore */ }
-	const debugFile = join(logDir, `${ts}-${tag}-${seq}.log`);
-	debug(`cli-debug: ${tag} #${seq} → ${debugFile}`);
-	return {
-		debug: true,
-		debugFile,
-		stderr: (data: string) => {
-			for (const line of data.split(/\r?\n/)) {
-				if (line) debug(`[cli-stderr ${tag}#${seq}] ${line}`);
-			}
-		},
-	};
-}
+import { DEBUG, debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
+import { CC_CHILD_ENV, ccChildEnv, CLAUDE_MD_EXCLUDES, errorMessage, REASONING_TO_EFFORT, resultErrorText } from "./cc-child.js";
 
 /** Unconditional diagnostic dump — for "should never happen" paths. Creates pi's agent
  *  dir itself: callers run inside streamSimple, where a missing dir must not throw. */
@@ -180,62 +54,15 @@ function diagDump(label: string, data: Record<string, unknown>) {
 // see the "--- Provider ---" block in activate() below.
 const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
 
-// Claude Code's own builtin tools, for the AskClaude path where CC really runs
-// them. The provider path never sees these — it starts CC with `tools: []`.
-const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
-	read: "read", write: "write", edit: "edit", bash: "bash",
-};
-
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
 
-function resolveModel(input: string) {
-	return _resolveModel(MODELS, input);
-}
-
-// --- Error handling ---
-
-function errorMessage(err: unknown): string {
-	if (err instanceof Error) return err.message;
-	if (err && typeof err === "object") {
-		const obj = err as Record<string, unknown>;
-		if (typeof obj.message === "string") return obj.message;
-		if (typeof obj.error === "string") return obj.error;
-		try { return JSON.stringify(err); } catch {}
-	}
-	return String(err);
-}
-
-// AskClaude mode presets — controls which CC tools are blocked per mode.
-// Only block tools that can't work (no pi TUI for user interaction).
-// Other CC tools (Agent, SendMessage, RemoteTrigger, Tasks, etc.) are intentionally not blocked.
-const ASKCLAUDE_ALWAYS_BLOCKED = [
-	"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
-	"ToolSearch", // probes for blocked tools, wastes tokens
-	"ScheduleWakeup", // no harness to fire wakeup from inside a delegated subagent
-];
-const MODE_DISALLOWED_TOOLS: Record<AskClaudeMode, string[]> = {
-	full: ASKCLAUDE_ALWAYS_BLOCKED,
-	read: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-		"Write", "Edit", "Bash", "NotebookEdit",
-		"EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "TeamCreate", "TeamDelete",
-	],
-	none: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-		"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent",
-		"NotebookEdit", "EnterWorktree", "ExitWorktree",
-		"CronCreate", "CronDelete", "TeamCreate", "TeamDelete",
-		"WebFetch", "WebSearch",
-	],
-};
-
 // --- Session persistence ---
 
 /** The session key a pi session's provider calls address. Unattributed calls
- *  (no options.sessionId — AskClaude's direct sync, or a host that omits it)
+ *  (a host that omits options.sessionId)
  *  cannot safely share a mirror and always import independently. */
 function sessionKey(piSessionId: string | null | undefined): string {
 	return piSessionId ?? "(none)";
@@ -497,17 +324,6 @@ function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
 	return promptText;
 }
 
-/** Failure text for an SDK result, or undefined when it succeeded. CC reports API failures
- *  (429 capacity, overload, prompt-too-long) with `is_error` on an otherwise success-shaped
- *  result; the dedicated error subtypes carry `errors` instead. */
-function resultErrorText(message: SDKMessage): string | undefined {
-	const result = message as SDKMessage & { subtype?: string; is_error?: boolean; result?: string; errors?: unknown; error?: unknown };
-	if (result.subtype === "success") return result.is_error ? result.result || "Claude Code reported an error" : undefined;
-	if (Array.isArray(result.errors) && result.errors.length) return result.errors.map(String).join("\n");
-	if (typeof result.error === "string") return result.error;
-	return `Claude Code failed: ${result.subtype ?? "unknown result"}`;
-}
-
 /** Name a failure as a rate limit when a rejection preceded it.
  *
  *  pi has no typed rate-limit error — `stopReason` is only ever `"error"` and the sole carrier
@@ -580,8 +396,7 @@ async function runIsolatedSummary(
 			: extractIsolatedSummaryPrompt(context.messages);
 		if (!promptText) throw new Error("runIsolatedSummary: one-off summary without a user prompt (last message is not user?)");
 		const cwd = sessionCwdFor(summarySessionFor(options?.signal) ?? options?.sessionId);
-		const compactProviderSettings = loadConfig(cwd).provider;
-		const claudeExecutable = compactProviderSettings?.pathToClaudeCodeExecutable;
+		const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 		const cliModel = claudeCodeModelId(model, longContextSettings);
 		// Honour the caller's reasoning level, same mapping as the provider path.
 		const effort = effortForReasoning(model, options?.reasoning);
@@ -675,7 +490,6 @@ interface SyncResult {
 	recorded: Recording;
 	/** Identity token, retained until progress/completion commits this query. */
 	state: SessionState | null;
-	writable: boolean;
 }
 
 // Children that are stopping or finishing, registered before their state is
@@ -755,18 +569,15 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 
 // Compare pi's values, then retain CC's own records up to the last valid cut.
 // `promptDigest` is the provider's system prompt append; a change takes a full
-// import, the only path on which CC records a new one. AskClaude omits it: it
-// forks with its own append and never commits state.
+// import, the only path on which CC records a new one.
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
-	customToolNameToSdk?: Map<string, string>,
-	modelId = "",
-	piSessionId?: string | null,
-	traceCallId?: string,
-	writable = piSessionId != null,
-	forkCurrent = false,
-	promptDigest?: string,
+	customToolNameToSdk: Map<string, string>,
+	modelId: string,
+	piSessionId: string | null,
+	traceCallId: string | undefined,
+	promptDigest: string,
 ): SyncResult {
 	let state = piSessionId != null ? sessionStateFor(piSessionId) : null;
 	const before = state;
@@ -780,24 +591,19 @@ function syncSharedSession(
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			missingFile = true;
 			debug(`sync: missing transcript ${state.ccSessionId} in recorded cwd=${state.cwd}; importing pi history`);
-			if (writable) {
-				setSessionStateFor(piSessionId, null);
-				deleteSessionState(piSessionId!);
-			}
+			setSessionStateFor(piSessionId, null);
+			deleteSessionState(piSessionId!);
 			state = null;
 		}
 	}
 	const cwdChanged = Boolean(state && safeRealpath(state.cwd) !== safeRealpath(cwd));
-	const promptChanged = Boolean(state && promptDigest !== undefined && state.promptDigest !== promptDigest);
+	const promptChanged = Boolean(state && state.promptDigest !== promptDigest);
 	if (promptChanged) debug(`sync: system prompt append changed; importing pi history ${sessionTag(piSessionId)}`);
-	if (forkCurrent && state && state.model === modelId && !cwdChanged) {
-		Object.assign(compared, compareHistory(state.digests, state));
-	}
 	const row = piSessionId == null ? 0 : !state ? (priors.length ? 2 : 1) : state.model !== modelId || promptChanged ? 3
-		: cwdChanged ? 5 : forkCurrent ? (compared.cutCount ? 6 : 5)
+		: cwdChanged ? 5
 		: compared.equal && !state.dirtyTail ? 4 : !compared.cutCount ? 5 : compared.cutCount === priors.length ? 6 : 7;
 	const reason = piSessionId == null ? "unattributed-history" : missingFile ? "missing-transcript" : !state ? "no-state"
-		: state.model !== modelId ? "model-changed" : promptChanged ? "prompt-changed" : cwdChanged ? "cwd-changed" : forkCurrent ? "askclaude-fork"
+		: state.model !== modelId ? "model-changed" : promptChanged ? "prompt-changed" : cwdChanged ? "cwd-changed"
 		: row === 4 ? "equal-digests" : state.dirtyTail && compared.equal ? "dirty-tail" : "history-difference";
 	const decision = (path: string, after: string) => {
 		traceStrict("decision", {
@@ -810,7 +616,7 @@ function syncSharedSession(
 	};
 	if (row === 4) {
 		decision("reuse", state!.ccSessionId);
-		return { sessionId: state!.ccSessionId, targetSessionId: state!.ccSessionId, created: false, recorded: copyRecording(state!), state, writable };
+		return { sessionId: state!.ccSessionId, targetSessionId: state!.ccSessionId, created: false, recorded: copyRecording(state!), state };
 	}
 	if (state) traceSnapshot({ callId: traceCallId, ccSession: state.ccSessionId, cwd: state.cwd, reason: "rebuild-rotate", writer: "no-known-writer" }, true);
 	const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: modelId });
@@ -823,7 +629,7 @@ function syncSharedSession(
 		recorded = prefixRecording(state!, compared.cutCount);
 		if (row === 6) {
 			decision("fork", targetSessionId);
-			return { sessionId: state!.ccSessionId, targetSessionId, created: true, forkAt: cut.uuid, recorded, state, writable };
+			return { sessionId: state!.ccSessionId, targetSessionId, created: true, forkAt: cut.uuid, recorded, state };
 		}
 		const rest = priors.slice(compared.cutCount);
 		const replaced = transcript.slice(cut.index + 1);
@@ -842,7 +648,7 @@ function syncSharedSession(
 	decision(row === 7 ? "prefix-write" : records ? "rebuild" : "clean-start", targetSessionId);
 	traceEvent("rebuild-written", { callId: traceCallId, piSessionId: piSessionId ?? null, ccSessionAfter: targetSessionId, records });
 	debugSessionPaths(targetSessionId.slice(0, 8), cwd, session.jsonlPath);
-	return { sessionId: records ? targetSessionId : null, targetSessionId, created: true, recorded, state, writable };
+	return { sessionId: records ? targetSessionId : null, targetSessionId, created: true, recorded, state };
 }
 
 // The SDK's query(), or a test double (see setQuery).
@@ -894,7 +700,6 @@ export const __test = {
 	isolatedStreamFn,
 	effortForReasoning,
 	syncSharedSession,
-	promptAndWait,
 	extractUserPromptBlocks,
 	consumeQuery,
 	finalizeCurrentStream,
@@ -910,15 +715,6 @@ export const __test = {
 };
 
 // --- Provider helpers: tool name mapping ---
-
-// AskClaude path: CC runs its own tools, so builtin names are real.
-function mapToolName(name: string): string {
-	const normalized = name.toLowerCase();
-	const builtin = SDK_TO_PI_TOOL_NAME[normalized];
-	if (builtin) return builtin;
-	if (normalized.startsWith(MCP_TOOL_PREFIX)) return name.slice(MCP_TOOL_PREFIX.length);
-	return name;
-}
 
 // Provider path: the query runs with `tools: []`, so the only tools CC can
 // legitimately call are the pi tools we serve over MCP. Any other name is the
@@ -1059,7 +855,7 @@ function contextForToolResults(results: McpResult[], piSessionId: string | null)
 	return undefined;
 }
 
-function resolveMcpTools(context: Context, excludeToolName?: string): {
+function resolveMcpTools(context: Context): {
 	mcpTools: Tool[];
 	customToolNameToSdk: Map<string, string>;
 	customToolNameToPi: Map<string, string>;
@@ -1071,7 +867,6 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 	if (!context.tools) return { mcpTools, customToolNameToSdk, customToolNameToPi };
 
 	for (const tool of context.tools) {
-		if (tool.name === excludeToolName) continue;
 		const sdkName = `${MCP_TOOL_PREFIX}${tool.name}`;
 		mcpTools.push(tool);
 		customToolNameToSdk.set(tool.name, sdkName);
@@ -1146,11 +941,6 @@ function logServedContextWindow(label: string, message: SDKMessage, model: Model
 }
 
 // --- Effort level mapping ---
-// Pi reasoning levels → CC SDK effort levels
-
-const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
-	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max", max: "max",
-};
 
 const VALID_EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
 
@@ -2059,7 +1849,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Resolved first: an unaccountable system prompt fails this query before anything
 	// is claimed or reset, leaving no half-built query behind — in particular no stream
 	// claimed on the shared context that nobody will ever end.
-	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
+	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
 	// Build from what Pi loaded for this run, so `--no-context-files` and
 	// `--no-skills` reach Claude Code by leaving nothing to forward. A sub-agent's
 	// custom override embeds its parent's assembled Pi prompt; recursive projection
@@ -2113,7 +1903,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// after compaction), the session's mark is the only sign of the rewrite.
 		const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
 		const promptDigest = createHash("sha256").update(systemPromptAppend ?? "").digest("hex");
-		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, undefined, false, promptDigest);
+		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, promptDigest);
 		if (syncResult.created) createdBeforeLaunch = { id: syncResult.targetSessionId, cwd };
 		// This query starts from the history pi has now: consume this session's
 		// armed rewrite — a sibling pi session's stays armed for its own queries.
@@ -2224,7 +2014,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// hit on every transition. Cost here is nil: the setting also strips
 			// CC's git-workflow guidance from its Bash tool prompt, but the provider
 			// path runs CC with `tools: []`, so those definitions never ship.
-			// AskClaude keeps CC's native tools and its guidance — unaffected.
 			settings: {
 				...claudeCodeSettings(providerSettings),
 				claudeMdExcludes: CLAUDE_MD_EXCLUDES,
@@ -2277,7 +2066,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			stopWriting();
 			// Costs the next turn a prefix-write; diag/audit-cache.mjs fails on it.
 			if (!dirty && (recording.hasGaps || (syncResult.created && !recording.hasProgress))) debug(`recording: clean end left messages unrecorded ${sessionTag(piSessionId)}`);
-			if (!syncResult.writable || sessionStateFor(piSessionId) !== expectedState || (syncResult.created && !recording.hasProgress)) return;
+			if (piSessionId == null || sessionStateFor(piSessionId) !== expectedState || (syncResult.created && !recording.hasProgress)) return;
 			const state: SessionState = { ...copyRecording(recording.recorded), ccSessionId: syncResult.targetSessionId, cwd, model: cliModel, promptDigest,
 				dirtyTail: dirty || queryCtx.historyStale || recording.hasGaps };
 			setSessionStateFor(piSessionId, state);
@@ -2432,223 +2221,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	return stream;
 }
 
-// --- AskClaude: prompt and wait ---
-
-async function promptAndWait(
-	prompt: string,
-	mode: "full" | "read" | "none",
-	toolCalls: Map<string, ToolCallState>,
-	signal?: AbortSignal,
-	options?: {
-		systemPrompt?: string;
-		appendSkills?: boolean;
-		onStreamUpdate?: (responseText: string) => void;
-		model?: string;
-		thinking?: string;
-		isolated?: boolean;
-		context?: Context["messages"];
-		/** pi session the calling tool ran in — AskClaude's conversation continues
-	 *  the session that called it, so its sync and capture key that mirror. */
-		piSessionId?: string | null;
-	},
-): Promise<{ responseText: string; stopReason: string }> {
-	const cwd = sessionCwdFor(options?.piSessionId);
-	const requestedModel = options?.model ?? "opus";
-	const model = resolveModel(requestedModel);
-	const modelId = model?.id ?? requestedModel;
-	const cliModel = model ? claudeCodeModelId(model, longContextSettings) : modelId;
-
-	// AskClaude reads the provider mirror but never writes it or appends to
-	// its file. Same-model calls fork the last valid boundary; other models import.
-	const askClaudeSessionId = options?.piSessionId ?? null;
-	const traceQueryId = traceId("askclaude");
-	await waitForSessionWriter(sessionStateFor(askClaudeSessionId)?.ccSessionId, signal);
-	const contextWithPrompt = [...(options?.context ?? []), { role: "user" as const, content: prompt, timestamp: Date.now() }];
-	const sync = syncSharedSession(contextWithPrompt, cwd, undefined, cliModel, options?.isolated ? null : askClaudeSessionId, traceQueryId, false, !options?.isolated);
-	const resumeSessionId = sync.sessionId;
-
-	// Mode → disallowed tools
-	const disallowedTools = MODE_DISALLOWED_TOOLS[mode];
-
-	// AskClaude uses Claude Code's native Read tool rather than Pi's MCP bridge.
-	// Same resolver as the provider path: a prompt neither recorded nor derivable
-	// throws here too, rather than silently sending Claude Code no skills.
-	//
-	// Resolved only when the answer would be used. The throw is justified by what a
-	// miss would cost, so where it costs nothing — skills switched off, or no reader
-	// to open a skill file with — an unrelated miss must not fail the call.
-	const skillReadTool = disallowedTools.includes("Read") ? "none" : "native";
-	const skillCapture = options?.appendSkills !== false && skillReadTool !== "none"
-		? promptCaptures.resolveOrDerive(options?.systemPrompt)
-		: undefined;
-	const skillsBlock = skillCapture
-		? renderSkillsBlock(collectPromptSkills(skillCapture), skillReadTool)
-		: undefined;
-
-	// Effort
-	const effort = options?.thinking && options.thinking !== "off"
-		? REASONING_TO_EFFORT[options.thinking] : undefined;
-
-	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
-
-	const extraArgs: Record<string, string | null> = {
-		"strict-mcp-config": null,
-		model: cliModel,
-	};
-	if (effort) extraArgs["thinking-display"] = "summarized";
-
-	debug("askClaude:",
-		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
-		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
-		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
-
-	// skills: [] suppresses Claude Code's own skill listing, a system-reminder naming every
-	// skill under the ~/.claude estate. The provider path gets this for free — `tools: []`
-	// removes the Skill tool and the listing with it — but AskClaude runs on CC's native
-	// tools, so it has to be asked for. Pi-side skills still arrive via skillsBlock below,
-	// which is meant to be the only channel.
-	const cliDebug = makeCliDebugOptions("askclaude");
-	const childProcess = new QueryProcess(cliDebug.stderr);
-	const stopWriting = () => { sessionWriters.set(sync.targetSessionId, childProcess.exited); };
-	let sdkQuery: ReturnType<typeof query>;
-	try { sdkQuery = queryImpl({
-		prompt,
-		options: {
-			cwd,
-			env: traceQueryStart(traceQueryId, { kind: "askclaude", piSessionId: askClaudeSessionId, resume: resumeSessionId, model: cliModel, mode, isolated: Boolean(options?.isolated) }, ccChildEnv()),
-			permissionMode: "bypassPermissions",
-			settings: { ...claudeCodeSettings(providerSettings), claudeMdExcludes: CLAUDE_MD_EXCLUDES },
-			skills: [],
-			...(disallowedTools.length ? { disallowedTools } : {}),
-			...(effort ? { effort } : {}),
-			// Preset unconditionally: omitting it leaves the child on the SDK's bare default,
-			// without the tool and permission guidance the bridge relies on everywhere else.
-			// Whether pi has skills to append is unrelated to whether the child needs that.
-			systemPrompt: { type: "preset", preset: "claude_code", append: skillsBlock },
-			// User settings only, as on the provider path.
-			settingSources: ["user"] as SettingSource[],
-			extraArgs,
-			...(resumeSessionId ? { resume: resumeSessionId } : {}),
-			...(sync.forkAt ? { forkSession: true, resumeSessionAt: sync.forkAt } : {}),
-			...(sync.created && (!resumeSessionId || sync.forkAt) ? { sessionId: sync.targetSessionId } : {}),
-			...(options?.isolated ? { persistSession: false } : {}),
-			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-			...cliDebug,
-			spawnClaudeCodeProcess: childProcess.spawn,
-		},
-	}); } catch (error) {
-		stopWriting();
-		childProcess.terminate();
-		await childProcess.exited;
-		if (sync.created) deleteSession(sync.targetSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
-		if (sessionWriters.get(sync.targetSessionId) === childProcess.exited) sessionWriters.delete(sync.targetSessionId);
-		throw error;
-	}
-
-	// Abort handling
-	let wasAborted = false;
-	const onAbort = () => {
-		wasAborted = true;
-		stopWriting();
-		void sdkQuery.interrupt().catch(() => {});
-		sdkQuery.close();
-		childProcess.close();
-	};
-	signal?.addEventListener("abort", onAbort, { once: true });
-
-	let madeProgress = false;
-	let responseText = "";
-	let sdkMessageCount = 0;
-	let textDeltaCount = 0;
-	let resultSubtype: string | undefined;
-
-	try {
-		if (signal?.aborted) { onAbort(); throw new Error("Aborted"); }
-		for await (const message of sdkQuery) {
-			if (wasAborted) break;
-			sdkMessageCount++;
-
-			switch (message.type) {
-				case "stream_event": {
-					const event = (message as SDKMessage & { event: any }).event;
-					// Text deltas → accumulate and stream
-					if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
-						responseText += event.delta.text;
-						textDeltaCount++;
-						options?.onStreamUpdate?.(responseText);
-					}
-					// Tool call start → track for action summary progress
-					if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") {
-						debug(`askClaude: tool_use start: ${event.content_block.name}`);
-						toolCalls.set(event.content_block.id, {
-							name: mapToolName(event.content_block.name),
-							status: "running",
-						});
-					}
-					break;
-				}
-				case "assistant": {
-					if (message.message.model !== "<synthetic>" && !message.aborted) madeProgress = true;
-					// Update tool calls with full input for action summary
-					for (const block of (message as any).message?.content ?? []) {
-						if (block.type === "tool_use") {
-							toolCalls.set(block.id, {
-								name: mapToolName(block.name),
-								status: "complete",
-								rawInput: block.input,
-							});
-						}
-					}
-					break;
-				}
-				case "result": {
-					resultSubtype = message.subtype;
-					const r = message as any;
-					if (r.usage) {
-						debug(`askClaude: result usage: in=${r.usage.input_tokens} out=${r.usage.output_tokens} cacheRead=${r.usage.cache_read_input_tokens ?? 0} cacheWrite=${r.usage.cache_creation_input_tokens ?? 0} turns=${r.num_turns ?? "?"}`);
-					}
-					// Claude Code reports an API failure with `is_error` on a result whose
-					// subtype is still "success", so without this the error text was returned
-					// as Claude's answer and pi's model read a 429 as content. Throwing hands
-					// it to the tool's own catch, which renders it as an error result.
-					const failure = wasAborted ? undefined : resultErrorText(message);
-					if (failure) throw new Error(failure);
-					if (!responseText && message.subtype === "success" && message.result) {
-						responseText = message.result;
-					}
-					break;
-				}
-			}
-		}
-
-		const stopReason = wasAborted ? "cancelled" : "stop";
-		debug(`askClaude: done`,
-			`stopReason=${stopReason} resultSubtype=${resultSubtype ?? "none"}`,
-			`sdkMessages=${sdkMessageCount} textDeltas=${textDeltaCount} responseLen=${responseText.length}`,
-			`toolCalls=${toolCalls.size}`);
-		return { responseText, stopReason };
-	} finally {
-		signal?.removeEventListener("abort", onAbort);
-		traceEvent("query-end", { queryId: traceQueryId, aborted: wasAborted, resultSubtype: resultSubtype ?? null });
-		stopWriting();
-		sdkQuery.close();
-		childProcess.close();
-		await childProcess.exited;
-		if (sync.created && !madeProgress) deleteSession(sync.targetSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
-		if (sessionWriters.get(sync.targetSessionId) === childProcess.exited) sessionWriters.delete(sync.targetSessionId);
-	}
-}
-
 // --- Extension registration ---
 
-const PREVIEW_MAX_CHARS = 1000;
-const PREVIEW_MAX_LINES = 6;
-
-let askClaudeToolName = "AskClaude";
-
 export default function (pi: ExtensionAPI) {
-	const config = loadConfig(process.cwd());
-	let askClaudeDeprecationNoticeShown = Boolean(config.askClaudeDeprecationShown);
+	const config = loadConfig();
 	debug(`bridge: version=${BRIDGE_VERSION} sdk=${packageVersion("@anthropic-ai/claude-agent-sdk")} pi=${PI_VERSION}`);
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
@@ -2847,125 +2423,6 @@ export default function (pi: ExtensionAPI) {
 			}
 			debug(`provider: registry lacks ${PROVIDER_ID}, registering (module=${moduleInstanceId})`);
 			pi.registerProvider(PROVIDER_ID, providerConfig);
-		});
-	}
-
-	// --- AskClaude tool ---
-
-	const askConf = config.askClaude;
-	const askDefaults = resolveAskClaudeDefaults(askConf);
-	askClaudeToolName = askConf?.name ?? "AskClaude";
-
-	if (askConf?.enabled) {
-		const askClaudeParams = buildAskClaudeParams(askDefaults);
-		pi.registerTool<typeof askClaudeParams>({
-			name: askConf?.name ?? "AskClaude",
-			label: askConf?.label ?? "Ask Claude Code",
-			description: askClaudeToolDescription(askDefaults, askConf?.description),
-			parameters: askClaudeParams,
-			renderCall(args, theme) {
-				let text = theme.fg("mdLink", theme.bold("AskClaude "));
-				const tags = askClaudeCallTags(args, askDefaults);
-				if (tags.length) text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
-				const truncated = args.prompt.length > PREVIEW_MAX_CHARS ? args.prompt.substring(0, PREVIEW_MAX_CHARS) : args.prompt;
-				const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
-				text += theme.fg("muted", `"${lines.join("\n")}"`);
-				if (args.prompt.length > PREVIEW_MAX_CHARS || args.prompt.split("\n").length > PREVIEW_MAX_LINES) text += theme.fg("dim", " …");
-				return new Text(text, 0, 0);
-			},
-			renderResult(result, { expanded, isPartial }, theme) {
-				if (isPartial) {
-					const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
-					return new Text(theme.fg("mdLink", "◉ Claude Code ") + theme.fg("muted", status), 0, 0);
-				}
-
-				const details = result.details as { prompt?: string; executionTime?: number; actions?: string; error?: boolean } | undefined;
-				const body = result.content[0]?.type === "text" ? result.content[0].text : "";
-
-				let text = details?.error
-					? theme.fg("error", "✗ Claude Code error")
-					: theme.fg("mdLink", "✓ Claude Code");
-
-				if (details?.executionTime) text += ` ${theme.fg("dim", `${(details.executionTime / 1000).toFixed(1)}s`)}`;
-				if (details?.actions) text += ` ${theme.fg("muted", details.actions)}`;
-
-				if (expanded) {
-					if (details?.prompt) text += `\n${theme.fg("dim", `Prompt: ${details.prompt}`)}`;
-					if (details?.prompt && body) text += `\n${theme.fg("dim", "─".repeat(40))}`;
-					if (body) text += `\n${theme.fg("toolOutput", body)}`;
-				} else {
-					const truncated = body.length > PREVIEW_MAX_CHARS ? body.substring(0, PREVIEW_MAX_CHARS) : body;
-					const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
-					if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
-					if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
-
-				}
-
-				return new Text(text, 0, 0);
-			},
-			async execute(_id, params, signal, onUpdate, ctx) {
-				if (!askClaudeDeprecationNoticeShown && piMode === "tui") {
-					ctx.ui.notify("AskClaude is deprecated and may be removed in a future release. The Claude Code provider remains supported.", "warning");
-					markAskClaudeDeprecationNoticeShown();
-					askClaudeDeprecationNoticeShown = true;
-				}
-
-				// Guard: circular delegation
-				if (ctx.model?.baseUrl === "claude-bridge") {
-					debug("askClaude: blocked circular delegation (active provider is claude-bridge)");
-					return {
-						content: [{ type: "text" as const, text: "Error: AskClaude cannot be used when the active provider is claude-bridge — you're already running through Claude Code." }],
-						details: { error: true },
-					};
-				}
-
-				const mode = resolveAskClaudeMode(params.mode, askDefaults);
-				const isolated = params.isolated ?? askDefaults.isolated;
-				const toolCalls = new Map<string, ToolCallState>();
-				const start = Date.now();
-
-				const progressInterval = setInterval(() => {
-					const elapsed = ((Date.now() - start) / 1000).toFixed(0);
-					const summary = buildActionSummary(toolCalls);
-					const status = summary ? `${elapsed}s — ${summary}` : `${elapsed}s — working...`;
-					onUpdate?.({
-						content: [{ type: "text", text: status }],
-						details: { prompt: params.prompt, executionTime: Date.now() - start },
-					});
-				}, 1000);
-
-				try {
-					const result = await promptAndWait(params.prompt, mode, toolCalls, signal, {
-						systemPrompt: ctx.getSystemPrompt(),
-						appendSkills: askConf?.appendSkills,
-						model: params.model,
-						thinking: params.thinking,
-						isolated,
-						context: isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
-						piSessionId: ctx.sessionManager.getSessionId(),
-					});
-					clearInterval(progressInterval);
-					onUpdate?.({ content: [{ type: "text", text: "" }], details: {} });
-					const executionTime = Date.now() - start;
-					const actions = buildActionSummary(toolCalls);
-
-					const text = actions
-						? `${result.responseText}\n\n[Claude Code actions: ${actions}]`
-						: result.responseText;
-					return {
-						content: [{ type: "text" as const, text }],
-						details: { prompt: params.prompt, executionTime, actions },
-					};
-				} catch (err) {
-					clearInterval(progressInterval);
-					debug(`askClaude error: mode=${mode}, model=${params.model ?? "default"}, isolated=${isolated}, elapsed=${((Date.now() - start) / 1000).toFixed(1)}s, error=`, err);
-					const msg = errorMessage(err);
-					return {
-						content: [{ type: "text" as const, text: `Error: ${msg}` }],
-						details: { prompt: params.prompt, executionTime: Date.now() - start, error: true },
-					};
-				}
-			},
 		});
 	}
 }

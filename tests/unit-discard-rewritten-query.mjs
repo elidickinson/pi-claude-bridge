@@ -29,7 +29,7 @@ import { QueryContext } from "../src/query-state.js";
 const mod = await import("../src/index.js");
 const { __test } = mod;
 const handlers = {};
-mod.default({ on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerProvider: () => {}, registerTool: () => {} });
+mod.default({ on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerProvider: () => {} });
 const {
 	activeQueryContexts, armStaleContexts, contextForToolResults, discardRewrittenQuery,
 	historyRewrittenBySession, isQueryAbandoned, markRebuildForSession,

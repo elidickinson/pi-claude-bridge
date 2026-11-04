@@ -30,7 +30,7 @@ afterEach(() => {
 	else process.env.CLAUDE_CONFIG_DIR = oldClaudeDir;
 	rmSync(root, { recursive: true, force: true });
 });
-const sync = (messages, model = "sonnet", sid = "pi", path = cwd) => __test.syncSharedSession(messages, path, undefined, model, sid);
+const sync = (messages, model = "sonnet", sid = "pi", path = cwd) => __test.syncSharedSession(messages, path, new Map(), model, sid, undefined, "");
 function seed(messages, extra = {}) {
 	const session = createSession({ projectPath: cwd, model: "sonnet" });
 	const state = stateFor(session, messages, "sonnet", extra);
@@ -79,7 +79,7 @@ describe("digest session decisions", () => {
 		const priors = [user("hi"), say("hello")];
 		const { session } = seed(priors, { promptDigest: "p1" });
 		const next = [...priors, user("next")];
-		const withPrompt = (digest) => __test.syncSharedSession(next, cwd, undefined, "sonnet", "pi", undefined, undefined, false, digest);
+		const withPrompt = (digest) => __test.syncSharedSession(next, cwd, new Map(), "sonnet", "pi", undefined, digest);
 		assert.equal(withPrompt("p1").sessionId, session.sessionId);
 		const changed = withPrompt("p2");
 		assert.notEqual(changed.sessionId, session.sessionId);
@@ -91,7 +91,6 @@ describe("digest session decisions", () => {
 		__test.setSharedSession(null, state);
 		const synced = sync([...priors, user("next")], "sonnet", null);
 		assert.notEqual(synced.sessionId, session.sessionId);
-		assert.equal(synced.writable, false);
 		assert.strictEqual(__test.getSharedSession(null), state);
 	});
 	it("missing files import into a new session instead of attempting resume", () => {
@@ -139,7 +138,7 @@ describe("digest session decisions", () => {
 		const original = createSession({ projectPath: cwd });
 		const recorded = importHistory(original, priors, undefined, [{ userOrdinal: 0, parentText: "Review @fixture.txt", attachment: { type: "file", filename: join(cwd, "fixture.txt"), content: { type: "text", file: { filePath: join(cwd, "fixture.txt"), content: "token" } } } }]);
 		original.save();
-		__test.setSharedSession("pi", { ...recorded, ccSessionId: original.sessionId, cwd, model: "sonnet", dirtyTail: true });
+		__test.setSharedSession("pi", { ...recorded, ccSessionId: original.sessionId, cwd, model: "sonnet", promptDigest: "", dirtyTail: true });
 		const notices = [];
 		__test.setPiUI({ notify: (message) => notices.push(message) });
 		const synced = sync([...priors, say("changed tail"), user("next")]);

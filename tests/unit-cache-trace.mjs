@@ -22,7 +22,7 @@ const mod = await import("../src/index.js");
 const trace = await import("../src/cache-trace.js");
 const { setQuery, resetSharedSession, activeQueryContexts, setSharedSession } = mod.__test;
 let providerConfig;
-mod.default({ on: () => {}, registerProvider: (_name, config) => { providerConfig = config; }, registerTool: () => {} });
+mod.default({ on: () => {}, registerProvider: (_name, config) => { providerConfig = config; } });
 const streamSimple = providerConfig.streamSimple;
 const model = providerConfig.models[0];
 

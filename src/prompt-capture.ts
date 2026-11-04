@@ -129,7 +129,7 @@ export class PromptCaptures {
 	}
 
 	/**
-	 * The capture to project for one query, for both the provider and AskClaude.
+	 * The capture to project for one provider query.
 	 *
 	 * An exact key is the normal case. A prompt that only *embeds* known prompts —
 	 * anything that wrapped what Pi assembled after we recorded it — resolves to a
