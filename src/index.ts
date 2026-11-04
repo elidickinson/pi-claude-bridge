@@ -2789,8 +2789,10 @@ export default function (pi: ExtensionAPI) {
 	// Claude Code models expect bash to time out (CC's default is 120s); pi's bash has none.
 	// Set it on the execution copy pi hands tool_call handlers, not in the stored call, so
 	// pi's history keeps the arguments CC sent and a rebuild matches CC's records (#203).
+	// A `background: true` call (added by an extension) doesn't block the turn, so it gets no default.
 	pi.on("tool_call", (event, ctx) => {
-		if (isToolCallEventType("bash", event) && event.input.timeout == null && ctx.model?.provider === PROVIDER_ID) {
+		if (isToolCallEventType("bash", event) && event.input.timeout == null && ctx.model?.provider === PROVIDER_ID
+			&& (event.input as { background?: unknown }).background !== true) {
 			event.input.timeout = 120;
 		}
 	});
