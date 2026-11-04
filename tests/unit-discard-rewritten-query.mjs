@@ -26,7 +26,10 @@ import assert from "node:assert/strict";
 import { emptyState } from "./lib/session-state.mjs";
 import { QueryContext } from "../src/query-state.js";
 
-const { __test } = await import("../src/index.js");
+const mod = await import("../src/index.js");
+const { __test } = mod;
+const handlers = {};
+mod.default({ on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerProvider: () => {}, registerTool: () => {} });
 const {
 	activeQueryContexts, armStaleContexts, contextForToolResults, discardRewrittenQuery,
 	historyRewrittenBySession, isQueryAbandoned, markRebuildForSession,
@@ -71,6 +74,16 @@ describe("markRebuildForSession", () => {
 
 		assert.ok(historyRewrittenBySession.has("pi-parent"),
 			"recorded only on the session, the first turn's parked query survives the compaction");
+	});
+
+	it("keeps the mark through another session's shutdown and a session switch", () => {
+		markRebuildForSession("pi-parent", "session_compact:threshold");
+
+		for (const fn of handlers.session_shutdown) fn({}, { sessionManager: { getSessionId: () => "pi-subagent" } });
+		for (const fn of handlers.session_start) fn({ reason: "resume" }, { cwd: process.cwd(), sessionManager: { getSessionId: () => "pi-other" } });
+
+		assert.ok(historyRewrittenBySession.has("pi-parent"),
+			"pi-parent's next turn still has to say its history was rewritten");
 	});
 
 	it("arms only the parked queries of the rewriting pi session", () => {

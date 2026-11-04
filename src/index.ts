@@ -2672,12 +2672,11 @@ export default function (pi: ExtensionAPI) {
 		pendingNotices.push('Are you using a Max plan? You need to set provider.plan to "max" to unlock 1M context in Opus.');
 	}
 
-	// Pi session lifecycle events: drop rewrite marks and the stream registration
+	// Pi session lifecycle events: drop the stream registration
 	const clearSession = (event: string) => {
-		// Mirrors stay: each is keyed by its own pi session id and matches its
-		// persisted pointer, so switching to another session erases none of them.
+		// Mirrors and rewrite marks stay: each is keyed by its own pi session id,
+		// so switching sessions or another session's shutdown erases none of them.
 		debug(`${event}: retaining ${sharedSessions.size} shared session${sharedSessions.size === 1 ? "" : "s"}`);
-		historyRewrittenBySession.clear();
 
 		// Clear the global streamSimple if this instance registered it.
 		// This allows /reload to work — the old instance clears the flag so
