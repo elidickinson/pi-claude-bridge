@@ -31,7 +31,7 @@ No build step — the package ships `src` TypeScript as-is (see `files` in `pack
 1. **Changelog** — rename the `## UNRELEASED` section to `## X.Y.Z — YYYY-MM-DD`.
 2. **Bump** — set `version` to `X.Y.Z` in `package.json`.
 3. **Commit** — `git commit -m "Release X.Y.Z"` (changelog + package.json only).
-4. **Tag** — `git tag vX.Y.Z` (note the `v` prefix).
+4. **Tag** — `git tag -a vX.Y.Z -m "X.Y.Z"` (note the `v` prefix; annotated so `--follow-tags` pushes it).
 5. **Push commit and tag together** — `git push --follow-tags`.
 6. **Publish** — `npm login` and `npm publish`.
 
