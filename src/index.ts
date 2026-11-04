@@ -19,6 +19,7 @@ import { extractAllToolResults as _extractAllToolResults, type McpResult } from 
 import { digestMessage, digestMessages } from "./message-digests.js";
 import { compareHistory, copyRecording, importHistory, LiveRecording, type Recording, type SessionState } from "./session-sync.js";
 import { deleteSessionState, loadSessionState, saveSessionState } from "./session-store.js";
+import { inheritParentState, promptFingerprint, rememberParentSession } from "./fork-inherit.js";
 import { QueryContext, type AssistantStep } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
 import { claudeCodeSettings, loadConfig, markAskClaudeDeprecationNoticeShown, markStartupNoticeShown, type Config } from "./config.js";
@@ -2060,6 +2061,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// Read before the consume below: with no query parked (an overflow retried
 		// after compaction), the session's mark is the only sign of the rewrite.
 		const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
+		// A fork's or clone's first query starts from its parent's state (src/fork-inherit.ts).
+		if (piSessionId !== null) {
+			try { inheritParentState(piSessionId, promptFingerprint(context.systemPrompt, context.tools), sessionStateFor, setSessionStateFor, debug); }
+			catch (error) { debug(`fork-inherit: ${piSessionId} skipped: ${errorMessage(error)}`); }
+		}
 		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId);
 		if (syncResult.created) createdBeforeLaunch = { id: syncResult.targetSessionId, cwd };
 		// This query starts from the history pi has now: consume this session's
@@ -2636,6 +2642,9 @@ export default function (pi: ExtensionAPI) {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
 		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
+		// Remember a fork's or clone's parent session for its first query (src/fork-inherit.ts).
+		try { rememberParentSession(ctx.sessionManager.getSessionId(), ctx.sessionManager.getHeader?.(), debug); }
+		catch (error) { debug(`fork-inherit: session_start skipped: ${errorMessage(error)}`); }
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}

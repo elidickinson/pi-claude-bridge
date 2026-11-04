@@ -169,7 +169,7 @@ Requires the following in `~/.pi/agent/subagents.json`:
 
 ## Session history
 
-The bridge compares conversation content before each fresh query. Unchanged history resumes the Claude Code session. Tree navigation and history edits retain Claude Code's records up to the last safe matching point, then continue in a new session. Model changes import pi's history into a fresh Claude Code session.
+The bridge compares conversation content before each fresh query. Unchanged history resumes the Claude Code session. Tree navigation and history edits retain Claude Code's records up to the last safe matching point, then continue in a new session. Model changes import pi's history into a fresh Claude Code session. A session made with `/fork`, `/clone` or `pi --fork` continues from its parent's Claude Code session the same way when its system prompt and tools match the parent's, keeping the prompt cache.
 
 Session pointers, content digests and record IDs are saved under `claude-bridge/sessions/` in pi's agent directory (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`). They let the bridge recover its matching prefix after a restart. Running the same pi session simultaneously in multiple bridge processes is unsupported.
 
