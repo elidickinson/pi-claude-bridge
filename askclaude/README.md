@@ -14,7 +14,7 @@ Claude Code must be logged in: run `claude auth login`.
 
 ## Usage
 
-The calling model picks a mode per call: `read` (default) for questions about the codebase, `none` for general knowledge with no file access, or `full` to let Claude Code make changes. By default Claude sees pi's conversation so far; `isolated: true` sends only the prompt. Model names (`opus`, `sonnet`, `haiku`, a full id) go to Claude Code as they are. pi's skills are listed in Claude Code's system prompt. AskClaude doesn't work while claude-bridge is the active provider.
+The calling model picks a mode per call: `read` (default) for questions about the codebase, `none` for general knowledge with no file access, or `full` to let Claude Code make changes. By default Claude sees pi's conversation so far; `isolated: true` sends only the prompt. Model names (`opus`, `sonnet`, `haiku`, a full id) go to Claude Code as they are, so Claude Code picks the context size; `opus[1m]` asks for 1M. pi's skills are listed in Claude Code's system prompt. AskClaude doesn't work while claude-bridge is the active provider.
 
 **Full mode risks:** in `full` mode Claude Code writes files and runs bash with `bypassPermissions`, using its own tools on your machine. pi shows none of those steps as they happen, pi's tool hooks and any permission or sandbox extension don't apply, and the calling model only gets Claude's final answer back. There is no setting to disable `full` mode alone; uninstall AskClaude if you don't want that.
 

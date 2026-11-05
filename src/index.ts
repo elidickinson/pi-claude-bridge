@@ -2205,7 +2205,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
+		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
+		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
+			clearSession(`session_start:${event.reason}`);
+		}
+		if (event.reason === "fork" && event.previousSessionFile) inheritSessionState(event.previousSessionFile, ctx.sessionManager.getSessionId());
 		// At session start, not the first bridge query: AskClaude users run other providers.
+		// Last, so a host API that throws here can't skip the session bookkeeping above.
 		if (config.askClaude?.enabled === true && !askClaudeWarningShown) {
 			askClaudeWarningShown = true;
 			// Optional calls: hosts that load pi extensions (oh-my-pi) may not implement every API.
@@ -2213,11 +2219,6 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui?.notify?.(`claude-bridge: AskClaude is now a separate package. Install it with \`pi install npm:pi-claude-bridge-askclaude\`, or remove "askClaude" from ${globalConfigPath()}.`, "warning");
 			}
 		}
-		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
-		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
-			clearSession(`session_start:${event.reason}`);
-		}
-		if (event.reason === "fork" && event.previousSessionFile) inheritSessionState(event.previousSessionFile, ctx.sessionManager.getSessionId());
 	});
 	pi.on("session_before_compact", (event, ctx) => {
 		rememberSummarySession(event.signal, ctx.sessionManager.getSessionId());
