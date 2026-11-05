@@ -118,7 +118,7 @@ describe("subagent captures", () => {
 			section("cwd", "/parent"),
 		];
 		const parentPrompt = parentSections.join("\n\n");
-		const strippedChild = `${parentSections.slice(0, 5).join("\n\n")}\n\n<active_agent name="Explore"/>\n\n# Environment\nWorking directory: /child`;
+		const strippedChild = `${parentSections.slice(0, 5).join("\n\n")}\n\n<active_agent name="Explore"/>\n\n# Environment\nWorking directory: /child\nGit repository: yes\nBranch: main\nPlatform: darwin`;
 
 		const handlers = activateWithMockPi();
 		handlers.get("before_agent_start")({ systemPrompt: parentPrompt, systemPromptOptions: {} });
