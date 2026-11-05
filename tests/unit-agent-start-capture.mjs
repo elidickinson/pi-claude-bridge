@@ -29,7 +29,8 @@ const WIDENED = "You are pi.\n# Tools\n- read: Read a file\n- Agent: Launch a su
 describe("agent_start widened-prompt capture", () => {
 	it("records ctx.getSystemPrompt() so the widened prompt itself resolves", () => {
 		const handlers = activateWithMockPi();
-		handlers.get("before_agent_start")({ systemPrompt: PRE_WIDEN, systemPromptOptions: {} });
+		const contextFiles = [{ path: "/AGENTS.md", content: "project rules" }];
+		handlers.get("before_agent_start")({ systemPrompt: PRE_WIDEN, systemPromptOptions: { contextFiles } });
 
 		// Before agent_start, only the pre-widen prompt is known; the widened one is not.
 		assert.throws(
@@ -39,10 +40,9 @@ describe("agent_start widened-prompt capture", () => {
 		);
 
 		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
-		assert.ok(
-			__test.promptCaptures.resolveOrDerive(WIDENED),
-			"after agent_start the widened prompt resolves exactly",
-		);
+		const capture = __test.promptCaptures.resolveOrDerive(WIDENED);
+		assert.ok(capture, "after agent_start the widened prompt resolves exactly");
+		assert.deepEqual(capture.contextFiles, contextFiles, "carrying the before_agent_start context files");
 	});
 
 	it("lets a child embedding the widened parent resolve by inheritance", () => {

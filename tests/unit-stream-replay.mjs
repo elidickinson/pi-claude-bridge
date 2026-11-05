@@ -138,5 +138,7 @@ describe("replaying a recorded parallel-tool turn", () => {
 		assert.deepEqual(ctx.turnToolCallIds, calls.map((c) => c.id), "routing ids must match the emitted calls, in order");
 		assert.equal(new Set(calls.map((c) => c.id)).size, calls.length, "no duplicate ids");
 		for (const call of calls) assert.equal(call.name, "read");
+		// The recording splits each call's input across several input_json_delta frames.
+		assert.deepEqual(calls.map((c) => c.arguments), [{ path: "one.txt" }, { path: "two.txt" }, { path: "three.txt" }]);
 	});
 });

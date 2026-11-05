@@ -65,8 +65,9 @@ describe("MODELS projection", () => {
 
 	it("forwards pi-ai's thinkingLevelMap verbatim", () => {
 		const withMap = () => mockPiAiModel("claude-sonnet-5", { thinkingLevelMap: { xhigh: "xhigh", max: "max" } });
-		const models = buildModels([withMap()]);
+		const models = buildModels([withMap(), mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(find(models, "claude-sonnet-5")?.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
+		assert.equal(find(models, "claude-haiku-4-5")?.thinkingLevelMap, undefined, "no fabricated default");
 	});
 });
 
