@@ -127,3 +127,20 @@ it("isolated mode sends only the prompt and writes no session", { timeout: 120_0
 	assert.doesNotMatch(JSON.stringify(requests.at(-1).messages), /SUMMARY-MARKER/);
 	assert.deepEqual(sessionFiles(), []);
 });
+
+it("an empty tool result in imported history gets Claude Code's no-output placeholder", async () => {
+	const { convertPiMessages } = await import("../askclaude/src/claude-code.js");
+	const messages = convertPiMessages([
+		{ role: "user", content: "go" },
+		{ role: "assistant", provider: "openrouter", content: [
+			{ type: "toolCall", id: "t1", name: "bash", arguments: {} },
+			{ type: "toolCall", id: "t2", name: "touch", arguments: {} },
+		] },
+		{ role: "toolResult", toolCallId: "t1", toolName: "bash", content: [{ type: "text", text: "" }], isError: true },
+		{ role: "toolResult", toolCallId: "t2", toolName: "touch", content: " " },
+	], new Map([["bash", "Bash"]]));
+	assert.deepEqual(messages[2].content, [
+		{ type: "tool_result", tool_use_id: "t1", content: "Command failed with no output", is_error: true },
+		{ type: "tool_result", tool_use_id: "t2", content: "(mcp__custom-tools__touch completed with no output)" },
+	]);
+});

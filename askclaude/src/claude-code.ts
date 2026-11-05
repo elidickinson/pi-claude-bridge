@@ -232,6 +232,7 @@ function toolResultContent(
 export function convertPiMessages(messages: PiMessage[], toolNames: ReadonlyMap<string, string>): SessionMessage[] {
 	const out: SessionMessage[] = [];
 	const sanitizedIds = new Map<string, string>();
+	const ccToolName = (name: string) => toolNames.get(name) ?? toolNames.get(name.toLowerCase()) ?? `${MCP_TOOL_PREFIX}${name}`;
 	// The user message collecting this assistant turn's tool results, and the index
 	// of the assistant message it belongs to.
 	let turnResults: { role: "user"; content: Array<ToolResultBlock | Record<string, unknown>> } | null = null;
@@ -266,8 +267,7 @@ export function convertPiMessages(messages: PiMessage[], toolNames: ReadonlyMap<
 						blocks.push({ type: "thinking", thinking: block.thinking ?? "", signature: sig });
 					}
 				} else if (block.type === "toolCall") {
-					const name = toolNames.get(block.name) ?? toolNames.get(block.name.toLowerCase()) ?? `${MCP_TOOL_PREFIX}${block.name}`;
-					blocks.push({ type: "tool_use", id: sanitizeToolId(block.id, sanitizedIds), name, input: block.arguments ?? {} });
+					blocks.push({ type: "tool_use", id: sanitizeToolId(block.id, sanitizedIds), name: ccToolName(block.name), input: block.arguments ?? {} });
 				}
 			}
 			// A turn aborted before anything streamed has no content: drop it, keeping
@@ -282,7 +282,13 @@ export function convertPiMessages(messages: PiMessage[], toolNames: ReadonlyMap<
 			// pairs only results sharing the user message directly after their assistant
 			// message, and replaces the rest with a stub. So every result of a turn goes into
 			// one user message placed right after the assistant, ahead of any steer.
-			const block = { type: "tool_result", tool_use_id: sanitizeToolId(msg.toolCallId, sanitizedIds), content: toolResultContent(msg.content), ...(msg.isError ? { is_error: true } : {}) };
+			// Claude Code never sends an empty tool result: live, it substitutes these placeholders
+			// (tests/int-cc-contracts.mjs pins them), and the API rejects an empty one marked is_error.
+			let content = toolResultContent(msg.content);
+			if (typeof content === "string" && !content.trim()) {
+				content = msg.isError ? "Command failed with no output" : `(${ccToolName(msg.toolName)} completed with no output)`;
+			}
+			const block = { type: "tool_result", tool_use_id: sanitizeToolId(msg.toolCallId, sanitizedIds), content, ...(msg.isError ? { is_error: true } : {}) };
 			if (turnResults) {
 				turnResults.content.push(block);
 			} else {
