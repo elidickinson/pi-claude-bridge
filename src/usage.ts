@@ -22,7 +22,7 @@ export type SdkUsage = {
 };
 
 /** What updateUsage derived but does not store on the message, for the debug line in index.ts. */
-export type UsageReport = {
+type UsageReport = {
 	/** Cache-read share of the prompt, rounded to a whole percentage; 0 when the prompt is empty. */
 	cachePct: number;
 	/** Thinking tokens carried by THIS frame, absent when it carried none. Distinct from

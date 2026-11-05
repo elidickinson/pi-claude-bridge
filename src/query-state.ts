@@ -12,7 +12,22 @@ import type { PromptStream } from "./prompt-stream.js";
 import { LiveRecording } from "./session-sync.js";
 import type { RateLimitInfo } from "./rate-limit.js";
 
-export interface PendingToolCall {
+export function newAssistantOutput(model: Model<any>, text: string, stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: text ? [{ type: "text", text }] : [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason,
+		...(errorMessage ? { errorMessage } : {}),
+		timestamp: Date.now(),
+	};
+}
+
+interface PendingToolCall {
 	toolName: string;
 	resolve: (result: McpResult) => void;
 }
@@ -42,6 +57,11 @@ export class QueryContext {
 	/** Synchronous progress capture before killing/discarding this query. */
 	commitRecording: ((dirty: boolean) => void) | null = null;
 	stopProcess: (() => void) | null = null;
+	/** pi's history moved out from under this query. Its completion must not touch
+	 *  the session state or the pi stream: the query that took over the turn has
+	 *  already rebuilt both from the new history, and this one's session id names the
+	 *  conversation pi just discarded. A context runs at most one SDK query (every
+	 *  fresh query gets a new one), so this marks that query abandoned too. */
 	discarded = false;
 	sawResult = false;
 	pendingToolCalls = new Map<string, PendingToolCall>();
@@ -52,8 +72,12 @@ export class QueryContext {
 	turnToolCallIds: string[] = [];
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
-	/** Steers written or awaiting a write, not yet replayed as incorporated into a turn. */
+	/** Steers written or awaiting a write, not yet incorporated into a turn. */
 	pendingSteerUuids = new Set<string>();
+	/** The input that opens CC's next turn: the query's prompt, then after each
+	 *  result the oldest steer still pending, since CC runs queued input in order.
+	 *  Cleared by that turn's first output. */
+	turnOpener: string | undefined;
 	/** Binds a later run's abort signal to this query. Set by the run that opened it;
 	 *  a run that continues it from a tool result (e.g. after pi terminated a tool
 	 *  batch and ended the opening run) has no other way to stop it. */
@@ -116,13 +140,7 @@ export class QueryContext {
 	}
 
 	resetTurnState(model: Model<any>): void {
-		this.turnOutput = {
-			role: "assistant", content: [],
-			api: model.api, provider: model.provider, model: model.id,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "stop", timestamp: Date.now(),
-		};
+		this.turnOutput = newAssistantOutput(model, "", "stop");
 		this.lastAssistantMessageId = undefined;
 		this.turnAssistantIds = [];
 		this.turnStarted = false;

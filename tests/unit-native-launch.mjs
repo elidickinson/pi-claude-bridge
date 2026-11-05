@@ -12,7 +12,7 @@ const mod = await import("../src/index.js");
 const { __test } = mod;
 const handlers = {};
 let provider;
-mod.default({ on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerProvider: (_id, value) => { provider = value; }, registerTool: () => {} });
+mod.default({ on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerProvider: (_id, value) => { provider = value; } });
 const model = provider.models.find((m) => m.id.includes("haiku")) ?? provider.models[0];
 const user = (content) => ({ role: "user", content, timestamp: 1 });
 const say = (text) => ({ role: "assistant", content: [{ type: "text", text }], provider: model.provider, timestamp: 1 });
@@ -51,7 +51,7 @@ before(async () => {
 	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 	Object.assign(env, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`, ANTHROPIC_API_KEY: "offline-test", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" });
 	for (const [key, value] of Object.entries(env)) process.env[key] = value;
-	for (const id of ["pi-native", "pi-ask"]) for (const fn of handlers.session_start) fn({}, { cwd, sessionManager: { getSessionId: () => id } });
+	for (const fn of handlers.session_start) fn({}, { cwd, sessionManager: { getSessionId: () => "pi-native" } });
 	__test.resetSharedSession();
 	__test.setQuery((params) => { launches.push(params.options); return query(params); });
 });
@@ -71,7 +71,7 @@ async function turn(messages) {
 	return output;
 }
 
-it("native Claude Code accepts import, restart fork, prefix-write and AskClaude import launches", { timeout: 120_000 }, async () => {
+it("native Claude Code accepts import, restart fork and prefix-write launches", { timeout: 120_000 }, async () => {
 	const prior = [user("first question"), say("first answer")];
 	const second = await turn([...prior, user("second")]);
 	assert.equal(launches[0].env.PROVIDER_ENV_PROBE, "1", "pi's provider env reaches Claude Code");
@@ -93,10 +93,5 @@ it("native Claude Code accepts import, restart fork, prefix-write and AskClaude 
 	assert.equal(launches[2].forkSession, undefined);
 	assert.match(requests.at(-1), /REDACTED question/);
 
-	const answer = await __test.promptAndWait("delegated", "none", new Map(), undefined, { model: model.id, appendSkills: false, context: prior, piSessionId: "pi-ask" });
-	assert.equal(answer.responseText, "ACK");
-	assert.equal(launches[3].sessionId, undefined, "AskClaude's import resumes its written id");
-	assert.ok(launches[3].resume);
-	assert.equal(__test.getSharedSession("pi-ask"), null);
 	assert.equal(existsSync(repoHookRan), false, "a hook from the repo's .claude settings ran");
 });

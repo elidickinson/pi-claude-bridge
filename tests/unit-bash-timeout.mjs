@@ -11,6 +11,9 @@ const run = (provider, toolName, input) => {
 it("bash runs with a 120s default timeout only under the bridge's models", () => {
 	assert.deepEqual(run("claude-bridge", "bash", { command: "ls" }), { command: "ls", timeout: 120 });
 	assert.deepEqual(run("claude-bridge", "bash", { command: "ls", timeout: 5 }), { command: "ls", timeout: 5 });
+	assert.deepEqual(run("claude-bridge", "bash", { command: "ls", background: true }), { command: "ls", background: true });
+	assert.deepEqual(run("claude-bridge", "bash", { command: "ls", background: false }), { command: "ls", background: false, timeout: 120 });
+	assert.deepEqual(run("claude-bridge", "bash", { command: "ls", background: true, timeout: 5 }), { command: "ls", background: true, timeout: 5 });
 	assert.deepEqual(run("claude-bridge", "read", { path: "a" }), { path: "a" });
 	assert.deepEqual(run("anthropic", "bash", { command: "ls" }), { command: "ls" });
 });

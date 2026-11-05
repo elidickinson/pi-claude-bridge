@@ -1,13 +1,13 @@
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { formatProjectContext } from "./agents-md.js";
 import { debugLogPath } from "./log-paths.js";
-import { renderSkillsBlock, type SkillReadTool } from "./skills.js";
+import { renderSkillsBlock } from "./skills.js";
 import type { ToolPrompts } from "./tool-prompts.js";
 
 // What pi assembled for one agent, kept so the bridge can append only the
 // portable parts after Claude Code's own preset.
 
-export type PromptCaptureInput = {
+type PromptCaptureInput = {
 	custom?: string;
 	append?: string;
 	contextFiles: { path: string; content: string }[];
@@ -42,7 +42,7 @@ export type PromptCapture = PromptCaptureInput & {
  * without recognizing pi prose or sub-agent markers. If pi later exposes an
  * inherited-system-prompt field, it should replace this inference.
  */
-export type PromptCaptureDiagnostic = {
+type PromptCaptureDiagnostic = {
 	/** The prompt that matched nothing: the full system prompt is too big to log
 	 *  inline, so a fingerprint plus the closest match's first divergent offset
 	 *  are enough to recognize the pump.
@@ -132,7 +132,7 @@ export class PromptCaptures {
 	}
 
 	/**
-	 * The capture to project for one query, for both the provider and AskClaude.
+	 * The capture to project for one provider query.
 	 *
 	 * An exact key is the normal case. A prompt that only *embeds* known prompts —
 	 * anything that wrapped what Pi assembled after we recorded it — resolves to a
@@ -299,7 +299,7 @@ export function sharedPromptCaptures(onDiagnose?: (diagnostic: PromptCaptureDiag
 
 export function projectPromptCapture(
 	capture: PromptCapture,
-	options: { skillReadTool: SkillReadTool },
+	options: { hasReadTool: boolean },
 ): string | undefined {
 	return projectCapture(capture, options, new Set());
 }
@@ -346,7 +346,7 @@ export function collectToolPrompts(capture: PromptCapture): ToolPrompts {
 
 function projectCapture(
 	capture: PromptCapture,
-	options: { skillReadTool: SkillReadTool },
+	options: { hasReadTool: boolean },
 	visiting: Set<PromptCapture>,
 ): string | undefined {
 	if (visiting.has(capture)) throw new Error("Cyclic prompt inheritance");
@@ -368,7 +368,7 @@ function projectCapture(
 		const parts: PromptPart[] = [];
 		const context = formatProjectContext(capture.contextFiles);
 		if (context) parts.push({ label: "the project context block", text: context });
-		const skills = renderSkillsBlock(ownSkills, options.skillReadTool);
+		const skills = renderSkillsBlock(ownSkills, options.hasReadTool);
 		if (skills) parts.push({ label: "the skills block", text: skills });
 		if (custom) parts.push({ label: "the custom prompt", text: custom });
 		if (capture.append) parts.push({ label: "the appended instructions", text: capture.append });
@@ -422,7 +422,7 @@ function preambleAtLineStart(text: string): number {
 
 function projectCustom(
 	capture: PromptCapture,
-	options: { skillReadTool: SkillReadTool },
+	options: { hasReadTool: boolean },
 	visiting: Set<PromptCapture>,
 ): string | undefined {
 	if (!capture.custom || capture.inherited.length === 0) return capture.custom;
