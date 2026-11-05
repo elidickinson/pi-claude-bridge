@@ -20,7 +20,7 @@ import { compareHistory, copyRecording, importHistory, LiveRecording, type Recor
 import { deleteSessionState, loadSessionState, saveSessionState } from "./session-store.js";
 import { newAssistantOutput, QueryContext, type AssistantStep } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
+import { claudeCodeSettings, globalConfigPath, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
 import {
 	projectPromptCapture,
 	sharedPromptCaptures,
@@ -647,6 +647,9 @@ export const __test = {
 	setPiUI(ui: ExtensionUIContext | null) {
 		piUI = ui;
 	},
+	resetAskClaudeWarning() {
+		askClaudeWarningShown = false;
+	},
 	toBridgeContext,
 	isolatedStreamFn,
 	effortForReasoning,
@@ -734,6 +737,9 @@ const activeQueryContexts = new Set<QueryContext>();
 // has this extension installed. One message, because consecutive info notifies
 // overwrite each other in the TUI.
 let pendingNotices: string[] = [];
+// Whoever had the old askClaude setting on lost the tool on upgrade. Warned at most once
+// per module instance, which pi's per-session reruns of the factory below share.
+let askClaudeWarningShown = false;
 
 function showStartupNoticeOnce(): void {
 	// `hasUI` is true in RPC mode too — it means dialogs are possible, not that a
@@ -2197,6 +2203,14 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
 		piMode = ctx.mode;
+		// At session start, not the first bridge query: AskClaude users run other providers.
+		if (config.askClaude?.enabled === true && !askClaudeWarningShown) {
+			askClaudeWarningShown = true;
+			// Optional calls: hosts that load pi extensions (oh-my-pi) may not implement every API.
+			if (!pi.getAllTools?.().some((tool) => tool.name === "AskClaude")) {
+				ctx.ui?.notify?.(`claude-bridge: AskClaude is now a separate package. Install it with \`pi install npm:pi-claude-bridge-askclaude\`, or remove "askClaude" from ${globalConfigPath()}.`, "warning");
+			}
+		}
 		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);

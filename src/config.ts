@@ -12,6 +12,8 @@ import { dirname, join } from "path";
 export interface Config {
 	/** Date (YYYY-MM-DD) the one-time startup notice was shown. Written by the extension, not the user. */
 	startupNoticeShown?: string;
+	/** Removed: AskClaude is its own package. Read only to warn whoever still has it enabled. */
+	askClaude?: { enabled?: boolean };
 	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
 		strictMcpConfig?: boolean;
@@ -74,5 +76,5 @@ export function markStartupNoticeShown(): string {
 
 export function loadConfig(): Config {
 	const global = tryParseJson(globalConfigPath());
-	return { startupNoticeShown: global.startupNoticeShown, provider: { ...global.provider } };
+	return { startupNoticeShown: global.startupNoticeShown, askClaude: global.askClaude, provider: { ...global.provider } };
 }

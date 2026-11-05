@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { claudeCodeSettings, loadConfig, markStartupNoticeShown } from "../src/config.js";
+import activate, { __test } from "../src/index.js";
 
 function withTempHome(fn) {
 	const oldHome = process.env.HOME;
@@ -46,7 +47,7 @@ describe("loadConfig", () => {
 			}));
 			process.chdir(cwd);
 
-			assert.deepEqual(loadConfig(), { startupNoticeShown: undefined, provider: {} });
+			assert.deepEqual(loadConfig(), { startupNoticeShown: undefined, askClaude: undefined, provider: {} });
 		} finally {
 			process.chdir(oldCwd);
 			rmSync(cwd, { recursive: true, force: true });
@@ -92,11 +93,59 @@ describe("loadConfig", () => {
 				provider: { plan: "max" },
 			}));
 
-			assert.deepEqual(loadConfig(), { startupNoticeShown: undefined, provider: { plan: "max" } });
+			assert.deepEqual(loadConfig(), { startupNoticeShown: undefined, askClaude: undefined, provider: { plan: "max" } });
 		} finally {
 			if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = oldEnv;
 			rmSync(agentDir, { recursive: true, force: true });
 		}
+	}));
+});
+
+describe("the old askClaude setting", () => {
+	/** pi reruns the extension factory for each session it creates: activate twice, start a
+	 *  session on each, and return the notices shown. */
+	function startSessions({ tools = [], ui } = {}) {
+		__test.resetAskClaudeWarning();
+		const notices = [];
+		const ctx = {
+			ui: ui ?? { notify: (message, type) => notices.push({ message, type }) },
+			mode: "tui", cwd: tmpdir(),
+			sessionManager: { getSessionId: () => "askclaude-warning" },
+			modelRegistry: { getProvider: () => true },
+		};
+		for (const reason of ["startup", "new"]) {
+			const starts = [];
+			activate({
+				on: (event, fn) => { if (event === "session_start") starts.push(fn); },
+				registerProvider: () => {},
+				...(tools ? { getAllTools: () => tools.map((name) => ({ name })) } : {}),
+			});
+			for (const start of starts) start({ reason }, ctx);
+		}
+		return notices;
+	}
+	const enableOldSetting = () => {
+		mkdirSync(getAgentDir(), { recursive: true });
+		writeFileSync(join(getAgentDir(), "claude-bridge.json"), JSON.stringify({ askClaude: { enabled: true } }));
+	};
+
+	it("warns once that AskClaude moved to its own package", () => withTempHome(() => {
+		enableOldSetting();
+		const notices = startSessions();
+		assert.equal(notices.length, 1);
+		assert.equal(notices[0].type, "warning");
+		assert.match(notices[0].message, /pi install npm:pi-claude-bridge-askclaude/);
+	}));
+
+	it("stays quiet once the AskClaude package is installed", () => withTempHome(() => {
+		enableOldSetting();
+		assert.deepEqual(startSessions({ tools: ["AskClaude"] }), []);
+	}));
+
+	it("still warns, without throwing, on a host missing getAllTools or notify", () => withTempHome(() => {
+		enableOldSetting();
+		assert.equal(startSessions({ tools: null }).length, 1);
+		assert.doesNotThrow(() => startSessions({ ui: {} }));
 	}));
 });
