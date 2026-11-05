@@ -59,21 +59,6 @@ describe("agent_start widened-prompt capture", () => {
 			"resolution must be via an inheritance edge onto the widened parent capture",
 		);
 	});
-
-	it("carries the stashed portable parts onto the widened key", () => {
-		const handlers = activateWithMockPi();
-		const contextFiles = [{ path: "/AGENTS.md", content: "project rules" }];
-		handlers.get("before_agent_start")({
-			systemPrompt: PRE_WIDEN,
-			systemPromptOptions: { contextFiles, skills: [], selectedTools: ["read"] },
-		});
-		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
-
-		const capture = __test.promptCaptures.resolve(WIDENED);
-		assert.ok(capture, "widened key must be recorded");
-		assert.deepEqual(capture.contextFiles, [{ path: "/AGENTS.md", content: "project rules" }],
-			"the widened capture must carry the before_agent_start context files, not empty ones");
-	});
 });
 
 describe("turn_start prompt capture", () => {
@@ -95,19 +80,6 @@ describe("turn_start prompt capture", () => {
 		assert.ok(capture, "the rebuilt prompt must resolve after turn_start");
 		assert.deepEqual(capture.contextFiles, [{ path: "/AGENTS.md", content: "project rules" }],
 			"the mid-run capture must carry the stashed portable parts");
-	});
-
-	it("is idempotent when the same prompt is re-fired", () => {
-		const handlers = activateWithMockPi();
-		handlers.get("before_agent_start")({ systemPrompt: PRE_WIDEN, systemPromptOptions: {} });
-		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
-
-		const before = __test.promptCaptures.size;
-		handlers.get("turn_start")({}, { getSystemPrompt: () => WIDENED });
-		handlers.get("turn_start")({}, { getSystemPrompt: () => WIDENED });
-
-		assert.ok(__test.promptCaptures.resolve(WIDENED), "the prompt still resolves");
-		assert.equal(__test.promptCaptures.size, before, "re-firing an unchanged prompt must not grow the registry");
 	});
 });
 

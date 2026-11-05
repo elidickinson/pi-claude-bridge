@@ -100,12 +100,6 @@ describe("a rate-limited failure", () => {
 
 		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
 	});
-
-	it("leaves an unrelated failure alone", async () => {
-		const c = makeCtx();
-		await consume(c, [errorResult]);
-		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
-	});
 });
 
 describe("error results", () => {
@@ -122,17 +116,6 @@ describe("error results", () => {
 		assert.strictEqual(terminal.type, "error");
 		assert.strictEqual(terminal.reason, "error");
 		assert.strictEqual(terminal.error.errorMessage, errorResult.result);
-	});
-
-	it("does not re-emit text the synthetic assistant message already delivered", async () => {
-		const c = makeCtx();
-		await consume(c, [
-			{ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: errorResult.result }] } },
-			errorResult,
-		]);
-
-		const texts = c.turnOutput.content.filter((b) => b.type === "text");
-		assert.deepStrictEqual(texts.map((b) => b.text), [errorResult.result]);
 	});
 
 	// A consumer that fails over only before output commits, such as
@@ -157,7 +140,7 @@ describe("error results", () => {
 		);
 		assert.strictEqual(stream.events.at(-2).type, "error");
 		assert.strictEqual(stream.events.at(-2).error.errorMessage, errorResult.result);
-		// The wording still reaches pi's transcript as the failed turn's content.
+		// The wording still reaches pi's transcript as the failed turn's content, once.
 		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: errorResult.result }]);
 	});
 

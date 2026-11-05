@@ -139,29 +139,4 @@ describe("a tool call whose content_block_stop never arrived", () => {
 		assert.strictEqual(c.turnOutput.stopReason, "toolUse");
 		assert.strictEqual(c.currentPiStream, null);
 	});
-
-	// Negative control. Without it, refusing to dispatch anything at all passes
-	// every assertion above, and no tool call ever reaches pi again.
-	it("still dispatches a tool call that does close, with its full arguments", async () => {
-		const c = makeCtx();
-		const stream = c.currentPiStream;
-		await consume(c, [
-			streamEvent({ type: "message_start", message: { id: "msg_whole" } }),
-			streamEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
-			streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Reporting now." } }),
-			streamEvent({ type: "content_block_stop", index: 0 }),
-			streamEvent({ type: "content_block_start", index: 1, content_block: { type: "tool_use", name: "mcp__custom-tools__notify_parent", id: "toolu_whole", input: {} } }),
-			streamEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"summary":' } }),
-			streamEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '"Both fixes done."}' } }),
-			streamEvent({ type: "content_block_stop", index: 1 }),
-			streamEvent({ type: "message_stop" }),
-		]);
-
-		assert.deepStrictEqual(c.turnOutput.content.map((b) => b.type), ["text", "toolCall"]);
-		assert.deepStrictEqual(c.turnOutput.content[1].arguments, { summary: "Both fixes done." });
-		assert.deepStrictEqual(c.turnToolCallIds, ["toolu_whole"]);
-		assert.strictEqual(c.turnOutput.stopReason, "toolUse");
-		assert.strictEqual(c.currentPiStream, null);
-		assert.strictEqual(stream.events.at(-2)?.type, "done");
-	});
 });

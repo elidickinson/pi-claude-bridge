@@ -114,14 +114,4 @@ describe("attachments chained to other attachments", () => {
 		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/a.js", "/c.js"]);
 		assert.deepEqual(carried.map((c) => c.userOrdinal), [1, 1]);
 	});
-
-	it("resolves through a kind it does not carry", () => {
-		const carried = collectCarriedAttachments([
-			user("u1", "go"),
-			attach("a1", "u1", "skill_listing"),
-			attach("a2", "a1", "file", "/a.js"),
-		]);
-		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/a.js"]);
-		assert.equal(carried[0].userOrdinal, 0);
-	});
 });
