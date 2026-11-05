@@ -2,8 +2,6 @@
 
 Pi extension that adds an **AskClaude** tool: when you're using another provider in pi, the model can delegate a question or task to Claude Code (via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript)) and get its answer back. A companion to [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge), which doesn't need to be installed.
 
-**Deprecated:** AskClaude is a legacy tool and may be removed in a future release. You can recreate similar functionality with one of the many Pi subagent extensions.
-
 ## Install
 
 ```
