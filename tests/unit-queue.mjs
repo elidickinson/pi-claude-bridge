@@ -123,6 +123,21 @@ describe("tool result queue", () => {
 		assert.equal(c.pendingResults.size, 0);
 	});
 
+	// The provider resets turn state before delivering each tool-result callback, and a
+	// result whose handler has not arrived yet is routed by turnToolCallIds alone.
+	it("still routes a turn's results to its query after the per-callback turn reset", () => {
+		const c = new QueryContext();
+		c.piSessionId = "pi";
+		c.turnToolCallIds = ["toolu_1", "toolu_2"];
+		__test.activeQueryContexts.add(c);
+		try {
+			c.resetTurnState({ api: "anthropic-messages", provider: "anthropic", id: "test-model" });
+			assert.equal(__test.contextForToolResults([{ toolCallId: "toolu_2" }], "pi"), c);
+		} finally {
+			__test.activeQueryContexts.delete(c);
+		}
+	});
+
 	// The invariant the two maps exist to keep: an id is waiting in at most one.
 	it("moves an id between the maps without ever holding it in both", async () => {
 		const { c, callTool } = await startQuery(["toolu_1", "toolu_2"]);

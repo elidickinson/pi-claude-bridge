@@ -304,10 +304,9 @@ export function projectPromptCapture(
 	return projectCapture(capture, options, new Set());
 }
 
-/** Skills visible through inherited prompts, ancestor first and once per file. */
-export function collectPromptSkills(capture: PromptCapture): Skill[] {
-	const result: Skill[] = [];
-	const seenPaths = new Set<string>();
+/** File paths of the skills `capture`'s inherited prompts already list. */
+function inheritedSkillPaths(capture: PromptCapture): Set<string> {
+	const paths = new Set<string>();
 	const visited = new Set<PromptCapture>();
 	const visiting = new Set<PromptCapture>();
 
@@ -316,17 +315,13 @@ export function collectPromptSkills(capture: PromptCapture): Skill[] {
 		if (visiting.has(node)) throw new Error("Cyclic prompt inheritance");
 		visiting.add(node);
 		for (const edge of node.inherited) visit(edge.parent);
-		for (const skill of node.skills) {
-			if (skill.disableModelInvocation || seenPaths.has(skill.filePath)) continue;
-			seenPaths.add(skill.filePath);
-			result.push(skill);
-		}
+		for (const skill of node.skills) if (!skill.disableModelInvocation) paths.add(skill.filePath);
 		visiting.delete(node);
 		visited.add(node);
 	};
 
-	visit(capture);
-	return result;
+	for (const edge of capture.inherited) visit(edge.parent);
+	return paths;
 }
 
 // A capture's own entry for a tool wins over an ancestor's.
@@ -352,15 +347,10 @@ function projectCapture(
 	if (visiting.has(capture)) throw new Error("Cyclic prompt inheritance");
 	visiting.add(capture);
 	try {
-		const inheritedSkillPaths = new Set(
-			capture.inherited.flatMap((edge) => collectPromptSkills(edge.parent).map((skill) => skill.filePath)),
-		);
-		const ownSkillPaths = new Set<string>();
+		const seenSkillPaths = inheritedSkillPaths(capture);
 		const ownSkills = capture.skills.filter((skill) => {
-			if (skill.disableModelInvocation || inheritedSkillPaths.has(skill.filePath) || ownSkillPaths.has(skill.filePath)) {
-				return false;
-			}
-			ownSkillPaths.add(skill.filePath);
+			if (skill.disableModelInvocation || seenSkillPaths.has(skill.filePath)) return false;
+			seenSkillPaths.add(skill.filePath);
 			return true;
 		});
 
