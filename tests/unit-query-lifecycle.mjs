@@ -3,16 +3,15 @@ import { it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createSession, getSessionPath } from "cc-session-io";
 import { digestMessages } from "../src/message-digests.js";
 import { loadSessionState, saveSessionState } from "../src/session-store.js";
 import { diagLogPath } from "../src/log-paths.js";
-const root = mkdtempSync(join(tmpdir(), "query-lifecycle-"));
-process.env.CLAUDE_CONFIG_DIR = root;
-process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+// Doubles as the cwd for spawned children and scratch files, so it must exist.
+const root = process.env.CLAUDE_CONFIG_DIR;
+mkdirSync(root, { recursive: true });
 const mod = await import("../src/index.js");
 const { __test } = mod;
 let provider;
@@ -423,16 +422,6 @@ it("an invalid persisted file is rejected, logged, and treated as no state", asy
 	assert.equal(persisted().ccSessionId, calls[1].options.resume);
 });
 
-it("an intentional null-uuid omission survives a restart", async () => {
-	const history = [user("a"), { role: "assistant", content: [], provider: model.provider, timestamp: 1 }, user("b")];
-	scripts.push({});
-	await call(history).result();
-	const saved = __test.getSharedSession("pi");
-	assert.equal(saved.uuids[1], null);
-	__test.forgetSessionMemory();
-	assert.deepEqual(__test.getSharedSession("pi"), { ...saved, dirtyTail: true });
-});
-
 it("a stale completion's CAS never overwrites the persisted replacement", async () => {
 	const controller = new AbortController();
 	scripts.push({ tool: true });
@@ -524,65 +513,27 @@ it("an abort cancels a fresh query's wait on a stopping writer", { timeout: 5000
 	await calls[0].exited;
 });
 
-it("a failed state save ends the turn with that error and is fatal, never retried as a query failure", async () => {
-	// The surfaced rejection must kill the process, so the scenario runs in a child.
+// A rejection the provider surfaces must kill the process, so these scenarios run in a
+// child. `before` runs ahead of the turn; `sessionId` is the expression the fake query reports.
+async function runFatalTurn({ before = "", sessionId }) {
 	const script = `
 		import { createHash } from "node:crypto";
-		import { mkdirSync } from "node:fs";
-		import { join } from "node:path";
-		const mod = await import(${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)});
-		let provider;
-		mod.default({ on() {}, registerProvider: (_id, value) => { provider = value; } });
-		const model = provider.models[0];
-		mod.__test.getSharedSession("pi");
-		const file = "s-" + createHash("sha256").update("pi", "utf16le").digest("hex") + ".json";
-		mkdirSync(join(process.env.PI_CODING_AGENT_DIR, "claude-bridge", "sessions", file, "occupied"), { recursive: true });
-		mod.__test.setQuery(({ prompt, options }) => {
-			const gen = (async function* () {
-				const initial = (await prompt[Symbol.asyncIterator]().next()).value;
-				yield { type: "system", subtype: "init", session_id: options.sessionId };
-				yield { type: "user", isReplay: true, parent_tool_use_id: null, uuid: initial.uuid, message: initial.message };
-				yield { type: "assistant", parent_tool_use_id: null, uuid: "answer-uuid", message: { id: "answer", model: model.id, content: [{ type: "text", text: "answer" }] } };
-				yield { type: "result", subtype: "success", is_error: false, result: "answer", session_id: options.sessionId };
-			})();
-			gen.interrupt = async () => {};
-			gen.close = () => {};
-			return gen;
-		});
-		const output = await provider.streamSimple(model, { messages: [{ role: "user", content: "hi", timestamp: 1 }], tools: [] }, { sessionId: "pi" }).result();
-		console.log(JSON.stringify({ stopReason: output.stopReason, errorMessage: output.errorMessage }));
-		setTimeout(() => console.log("survived"), 200);
-	`;
-	const child = spawn(process.execPath, ["--import", "tsx", "--import", "./tests/lib/setup.mjs", "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
-	let stdout = "", stderr = "";
-	child.stdout.on("data", (d) => { stdout += d; });
-	child.stderr.on("data", (d) => { stderr += d; });
-	const [code] = await once(child, "close");
-	const lines = stdout.trim().split("\n");
-	assert.deepEqual(JSON.parse(lines[0]).stopReason, "error", stdout + stderr);
-	assert.match(JSON.parse(lines[0]).errorMessage, /EISDIR/);
-	assert.notEqual(code, 0, "the failed save is not swallowed");
-	assert.ok(!lines.includes("survived"));
-	assert.match(stderr, /EISDIR/);
-});
-
-it("an unexpected session id ends the turn, commits nothing, and is fatal", async () => {
-	const script = `
-		import { createHash } from "node:crypto";
-		import { existsSync } from "node:fs";
+		import { existsSync, mkdirSync } from "node:fs";
 		import { join } from "node:path";
 		const mod = await import(${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)});
 		let provider;
 		mod.default({ on() {}, registerProvider: (_id, value) => { provider = value; } });
 		const model = provider.models[0];
 		const file = join(process.env.PI_CODING_AGENT_DIR, "claude-bridge", "sessions", "s-" + createHash("sha256").update("pi", "utf16le").digest("hex") + ".json");
-		mod.__test.setQuery(({ prompt }) => {
+		${before}
+		mod.__test.setQuery(({ prompt, options }) => {
+			const sessionId = ${sessionId};
 			const gen = (async function* () {
 				const initial = (await prompt[Symbol.asyncIterator]().next()).value;
-				yield { type: "system", subtype: "init", session_id: "wrong-session" };
+				yield { type: "system", subtype: "init", session_id: sessionId };
 				yield { type: "user", isReplay: true, parent_tool_use_id: null, uuid: initial.uuid, message: initial.message };
 				yield { type: "assistant", parent_tool_use_id: null, uuid: "answer-uuid", message: { id: "answer", model: model.id, content: [{ type: "text", text: "answer" }] } };
-				yield { type: "result", subtype: "success", is_error: false, result: "answer", session_id: "wrong-session" };
+				yield { type: "result", subtype: "success", is_error: false, result: "answer", session_id: sessionId };
 			})();
 			gen.interrupt = async () => {};
 			gen.close = () => {};
@@ -598,12 +549,30 @@ it("an unexpected session id ends the turn, commits nothing, and is fatal", asyn
 	child.stderr.on("data", (d) => { stderr += d; });
 	const [code] = await once(child, "close");
 	const lines = stdout.trim().split("\n");
-	const result = JSON.parse(lines[0]);
-	assert.equal(result.stopReason, "error", stdout + stderr);
+	assert.ok(lines[0].startsWith("{"), stdout + stderr);
+	return { result: JSON.parse(lines[0]), survived: lines.includes("survived"), code, stderr };
+}
+
+it("a failed state save ends the turn with that error and is fatal, never retried as a query failure", async () => {
+	const { result, survived, code, stderr } = await runFatalTurn({
+		// Load the (empty) state first, then put a directory where the save will write.
+		before: `mod.__test.getSharedSession("pi"); mkdirSync(join(file, "occupied"), { recursive: true });`,
+		sessionId: "options.sessionId",
+	});
+	assert.equal(result.stopReason, "error");
+	assert.match(result.errorMessage, /EISDIR/);
+	assert.notEqual(code, 0, "the failed save is not swallowed");
+	assert.ok(!survived);
+	assert.match(stderr, /EISDIR/);
+});
+
+it("an unexpected session id ends the turn, commits nothing, and is fatal", async () => {
+	const { result, survived, code, stderr } = await runFatalTurn({ sessionId: JSON.stringify("wrong-session") });
+	assert.equal(result.stopReason, "error");
 	assert.match(result.errorMessage, /unexpected session wrong-session/);
 	assert.equal(result.state, null, "no state under the wrong target");
 	assert.equal(result.saved, false);
 	assert.notEqual(code, 0, "the protocol violation is not swallowed");
-	assert.ok(!lines.includes("survived"));
+	assert.ok(!survived);
 	assert.match(stderr, /unexpected session wrong-session/);
 });

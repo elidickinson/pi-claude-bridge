@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { isToolCallEventType, VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource, type ThinkingConfig } from "@anthropic-ai/claude-agent-sdk";
@@ -406,8 +406,7 @@ async function runIsolatedSummary(
 		if (wasAborted) {
 			const output = newAssistantOutput(model, "", "aborted", "Operation aborted");
 			debug("compact summary: aborted");
-			stream.push({ type: "error", reason: "aborted", error: output });
-			stream.end();
+			endStream(stream, { type: "error", reason: "aborted", error: output });
 			return;
 		}
 
@@ -415,19 +414,16 @@ async function runIsolatedSummary(
 		if (errorText || !text.trim()) {
 			const msg = errorText ?? "Claude Code summary returned empty text";
 			debug(`compact summary: error ${msg}`);
-			stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
-			stream.end();
+			endStream(stream, { type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
 			return;
 		}
 
 		debug(`compact summary: done textLen=${text.length}`);
-		stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
-		stream.end();
+		endStream(stream, { type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
 	} catch (err) {
 		const msg = errorMessage(err);
 		debug("runIsolatedSummary threw; pushing terminal error", err);
-		stream.push({ type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
-		stream.end();
+		endStream(stream, { type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
 	} finally {
 		options?.signal?.removeEventListener("abort", onAbort);
 		if (sdkQuery) traceEvent("query-end", { queryId: traceQueryId, aborted: wasAborted });
@@ -956,8 +952,36 @@ function parsePartialJson(input: string, fallback: Record<string, unknown>): Rec
 
 const completedStreams = new WeakSet<object>();
 
-function markStreamComplete(stream: AssistantMessageEventStream | null): void {
-	if (stream) completedStreams.add(stream as object);
+/** Push a stream's terminal event and end it. Marked complete before end():
+ *  claimCurrentPiStream's stale-stream warning and bindRunSignal read the mark. */
+function endStream(stream: AssistantMessageEventStream, event: AssistantMessageEvent): void {
+	stream.push(event);
+	completedStreams.add(stream);
+	stream.end();
+}
+
+/** End the context's current pi stream with `event` and detach it. The caller
+ *  must have checked that there is one. */
+function endCurrentPiStream(c: QueryContext, event: AssistantMessageEvent): void {
+	endStream(c.currentPiStream!, event);
+	c.currentPiStream = null;
+}
+
+/** The turn stopped on a tool call: end pi's stream so pi runs the tool. */
+function endToolUseTurn(c: QueryContext): void {
+	c.turnOutput!.stopReason = "toolUse";
+	recordAssistantEmission(c);
+	endCurrentPiStream(c, { type: "done", reason: "toolUse", message: c.turnOutput! });
+}
+
+/** Append a complete text block to the turn and stream it to pi. */
+function pushTextBlock(c: QueryContext, text: string): void {
+	ensureTurnStarted(c);
+	c.turnBlocks.push({ type: "text", text });
+	const idx = c.turnBlocks.length - 1;
+	c.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: c.turnOutput });
+	c.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: c.turnOutput });
+	c.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: c.turnOutput });
 }
 
 function claimCurrentPiStream(stream: AssistantMessageEventStream, label: string, c: QueryContext, options: SimpleStreamOptions | undefined): void {
@@ -1058,21 +1082,17 @@ function tapRecording(message: SDKMessage, names: Map<string, string>, c: QueryC
 	completeAssistantRecording(c, step);
 }
 
-function finalizeCurrentStream(c: QueryContext, stopReason?: string): void {
+function finalizeCurrentStream(c: QueryContext): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
-	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: c.turnOutput!.stopReason, error: c.turnOutput!.errorMessage})}`);
+	debug(`provider: finalizeCurrentStream called, turnOutput=${JSON.stringify({stopReason: c.turnOutput!.stopReason, error: c.turnOutput!.errorMessage})}`);
 	if (!c.turnStarted) ensureTurnStarted(c);
-	const stream = c.currentPiStream;
 	if (c.turnOutput.stopReason === "error") {
-		stream!.push({ type: "error", reason: "error", error: c.turnOutput });
+		endCurrentPiStream(c, { type: "error", reason: "error", error: c.turnOutput });
 	} else {
-		const reason = stopReason === "length" ? "length" : "stop";
+		const reason = c.turnOutput.stopReason === "length" ? "length" : "stop";
 		recordAssistantEmission(c);
-		stream!.push({ type: "done", reason, message: c.turnOutput });
+		endCurrentPiStream(c, { type: "done", reason, message: c.turnOutput });
 	}
-	markStreamComplete(stream);
-	stream!.end();
-	c.currentPiStream = null;
 }
 
 /** Maps Anthropic stream events to pi stream events (text, thinking, toolcall).
@@ -1186,14 +1206,7 @@ function processStreamEvent(
 		// assistant message for this turn, but currentPiStream=null causes
 		// consumeQuery to skip it. The MCP handler blocks the generator until
 		// pi delivers the tool result via the next streamSimple call.
-		c.turnOutput.stopReason = "toolUse";
-		recordAssistantEmission(c);
-		const stream = c.currentPiStream;
-		stream!.push({ type: "done", reason: "toolUse", message: c.turnOutput });
-		markStreamComplete(stream);
-		stream!.end();
-		c.currentPiStream = null;
-
+		endToolUseTurn(c);
 		return;
 	}
 
@@ -1302,12 +1315,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}`);
 	for (const block of assistantMsg.content) {
 		if (block.type === "text" && block.text) {
-			ensureTurnStarted(c);
-			c.turnBlocks.push({ type: "text", text: block.text });
-			const idx = c.turnBlocks.length - 1;
-			c.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: block.text, partial: c.turnOutput });
+			pushTextBlock(c, block.text);
 		} else if (block.type === "thinking") {
 			ensureTurnStarted(c);
 			c.turnBlocks.push({ type: "thinking", thinking: block.thinking ?? "", thinkingSignature: block.signature ?? "" });
@@ -1340,15 +1348,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model, c.piSessionId);
 
 	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
-	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
-		c.turnOutput.stopReason = "toolUse";
-		recordAssistantEmission(c);
-		const stream = c.currentPiStream;
-		stream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
-		markStreamComplete(stream);
-		stream.end();
-		c.currentPiStream = null;
-	}
+	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) endToolUseTurn(c);
 }
 
 /** Background consumer: iterates the SDK generator, pushing events to currentPiStream.
@@ -1476,17 +1476,11 @@ async function consumeQuery(
 				if (!queryCtx.assistantSteps.get(message.message.id)?.emitted) processAssistantMessage(message, model, customToolNameToPi, queryCtx);
 				break;
 			case "result": {
-					// The failure itself was recorded above the guard, along with the served
-					// context window. What is left here is the success path: push the result
-					// text when no assistant message already delivered it.
-					if (resultError === undefined && !queryCtx.turnSawStreamEvent && !queryCtx.turnStarted && message.subtype === "success") {
-					ensureTurnStarted(queryCtx);
-					const text = message.result || "";
-					queryCtx.turnBlocks.push({ type: "text", text });
-					const idx = queryCtx.turnBlocks.length - 1;
-					queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
-					queryCtx.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: queryCtx.turnOutput });
-					queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
+				// The failure itself was recorded above the guard, along with the served
+				// context window. What is left here is the success path: push the result
+				// text when no assistant message already delivered it.
+				if (resultError === undefined && !queryCtx.turnSawStreamEvent && !queryCtx.turnStarted && message.subtype === "success") {
+					pushTextBlock(queryCtx, message.result || "");
 				}
 				break;
 			}
@@ -1641,10 +1635,7 @@ function dropParkedQuery(c: QueryContext): void {
 	if (c.currentPiStream && c.turnOutput) {
 		c.turnOutput.stopReason = "error";
 		c.turnOutput.errorMessage = "Conversation replaced";
-		c.currentPiStream.push({ type: "error", reason: "error", error: c.turnOutput });
-		markStreamComplete(c.currentPiStream);
-		c.currentPiStream.end();
-		c.currentPiStream = null;
+		endCurrentPiStream(c, { type: "error", reason: "error", error: c.turnOutput });
 	}
 	if (c.piSessionId) historyRewrittenBySession.delete(c.piSessionId);
 	debug("provider: discarded parked query; its recorded prefix remains available for a fork");
@@ -1676,11 +1667,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// contract expects, rather than as a synchronous exception.
 	const failBeforeQuery = (err: unknown) => {
 		const output = newAssistantOutput(model, "", "error", errorMessage(err));
-		queueMicrotask(() => {
-			stream.push({ type: "error", reason: "error", error: output });
-			markStreamComplete(stream);
-			stream.end();
-		});
+		queueMicrotask(() => endStream(stream, { type: "error", reason: "error", error: output }));
 		traceEvent("route", { callId: traceCallId, route: "failed-before-query", error: errorMessage(err) });
 		return stream;
 	};
@@ -1768,11 +1755,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// on a live parent's context would replace its turnOutput mid-stream,
 		// stranding the blocks it had already emitted.
 		const message = newAssistantOutput(model, "", "stop");
-		queueMicrotask(() => {
-			stream.push({ type: "done", reason: "stop", message });
-			markStreamComplete(stream);
-			stream.end();
-		});
+		queueMicrotask(() => endStream(stream, { type: "done", reason: "stop", message }));
 		return stream;
 	}
 
@@ -1919,8 +1902,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		const effort = effortForReasoning(model, options?.reasoning);
 		const thinking = thinkingForReasoning(model, options?.reasoning);
 
-		const extraArgs: Record<string, string | null> = { model: cliModel, "replay-user-messages": null };
-		if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
+		const extraArgs: Record<string, string | null> = { "replay-user-messages": null };
 		// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 		// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
 		if (effort) extraArgs["thinking-display"] = "summarized";
@@ -1972,6 +1954,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				type: "preset", preset: "claude_code",
 				append: systemPromptAppend ? systemPromptAppend : undefined,
 			},
+			model: cliModel,
+			strictMcpConfig: strictMcpConfigEnabled,
 			extraArgs,
 			...(effort ? { effort } : {}),
 			...(thinking ? { thinking } : {}),
@@ -2098,11 +2082,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			if (queryCtx.turnOutput && queryCtx.currentPiStream) {
 				queryCtx.turnOutput.stopReason = wasAborted ? "aborted" : "error";
 				queryCtx.turnOutput.errorMessage ??= errorMessage(error);
-				const stream = queryCtx.currentPiStream;
-				stream.push({ type: "error", reason: wasAborted ? "aborted" : "error", error: queryCtx.turnOutput });
-				markStreamComplete(stream);
-				stream.end();
-				queryCtx.currentPiStream = null;
+				endCurrentPiStream(queryCtx, { type: "error", reason: wasAborted ? "aborted" : "error", error: queryCtx.turnOutput });
 			}
 		};
 		// A query failure (SDK rejection, error result, abort). onAbort already
@@ -2137,7 +2117,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				if (wasAborted) return failQuery(new Error("Operation aborted"));
 				queryCtx.activeQuery = null;
 				activeQueryContexts.delete(queryCtx);
-				finalizeCurrentStream(queryCtx, queryCtx.turnOutput?.stopReason);
+				finalizeCurrentStream(queryCtx);
 				traceEvent("query-end", { queryId: traceQueryId, outcome: "complete", ccSession: syncResult.targetSessionId });
 			}, failQuery)
 			.finally(async () => {
@@ -2166,9 +2146,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		if (queryCtx.discarded) return;
 		activeQueryContexts.delete(queryCtx);
 		const output = newAssistantOutput(model, "", options?.signal?.aborted ? "aborted" : "error", errorMessage(error));
-		stream.push({ type: "error", reason: output.stopReason as "error" | "aborted", error: output });
-		markStreamComplete(stream);
-		stream.end();
+		endStream(stream, { type: "error", reason: output.stopReason as "error" | "aborted", error: output });
 		queryCtx.currentPiStream = null;
 	});
 	return stream;

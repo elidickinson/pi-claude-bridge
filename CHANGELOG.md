@@ -2,10 +2,11 @@
 
 ## UNRELEASED
 
-- **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` to keep using it; pi warns at startup while `askClaude.enabled` is still set and the package isn't installed. The other `askClaude` settings, the project `.pi/claude-bridge.json` and the deprecation notice are gone. AskClaude passes model names to Claude Code as given (no partial ids), so `provider.plan` and `longContextExtraUsage` no longer apply to it: Claude Code picks the context size for `opus`, and `opus[1m]` asks for 1M. Shared mode now keeps compaction and branch summaries, and no longer resumes the bridge's Claude Code session, which missed anything said after switching away from claude-bridge. On claude-bridge turns Claude Code now sees the AskClaude tool, which refuses to run there.
+- **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.
+- **Refactor: code simplification and removal of dead/duplicated code** — No change in behavior intended. Tool results are no longer serialized for the debug log when debug is off, and the package no longer depends on `pi-tui`, `typebox` or `change-case`.
 - **Fix: a Claude Code output style no longer reaches bridge turns (#220)** — The provider runs Claude Code with its default output style, so a custom `outputStyle` in `~/.claude/settings.json` no longer competes with pi's system prompt.
-- **Fix: a tool that failed with no output no longer breaks the session (#227)** — A rebuilt session sent the empty error result as-is, which the API rejects on every later turn. Empty results now get the same placeholder text Claude Code uses live, in AskClaude's shared mode too. Thanks @ShyftXero.
-- **Refactor: remove dead and duplicated code in the provider** — Tool results are no longer serialized for the debug log when debug is off.
+- **Fix: a tool that failed with no output no longer breaks the session (#227)** — A rebuilt session sent the empty error result as-is, which the API rejects on every later turn. Empty results now get the same placeholder text Claude Code uses live. This also applies when AskClaude sends pi's conversation to Claude Code. Thanks @ShyftXero.
+- **Tests: remove redundant tests** — Drop integration and unit tests that repeated other tests or covered cc-session-io rather than the bridge.
 - **Fix: `--thinking off` disables thinking (#152)** — pi sends no reasoning level when thinking is off, so Claude Code applied its default and kept thinking on (e.g. `budget_tokens: 31999` on Haiku 4.5). The provider and one-off paths now pass `thinking: { type: "disabled" }`, like pi-ai's Anthropic provider, except on models whose `thinkingLevelMap` marks `off` unsupported.
 
 ## 0.10.0 — 2026-11-04

@@ -81,7 +81,7 @@ describe("placeCarriedAttachments", () => {
 });
 
 describe("session request-audit records", () => {
-	it("keeps attachments and the next parent across uuid-less audit records", (t) => {
+	it("keeps attachments across uuid-less audit records", (t) => {
 		const cwd = mkdtempSync(join(tmpdir(), "attachment-audit-"));
 		t.after(() => rmSync(cwd, { recursive: true, force: true }));
 		const sessionId = randomUUID();
@@ -90,7 +90,7 @@ describe("session request-audit records", () => {
 		session.dangerousAppendRecord({ type: "api-request" });
 		session.addAttachment({ type: "file", filename: "/a.js" }, { parentUuid: promptUuid });
 		session.dangerousAppendRecord({ type: "api-request-shape" });
-		const lastUuid = session.addAssistantMessage([{ type: "text", text: "done" }]);
+		session.addAssistantMessage([{ type: "text", text: "done" }]);
 		session.dangerousAppendRecord({ type: "api-request-blob" });
 		session.save();
 
@@ -98,9 +98,6 @@ describe("session request-audit records", () => {
 		assert.deepEqual(collectCarriedAttachments(reopened.records), [
 			{ attachment: { type: "file", filename: "/a.js" }, userOrdinal: 0, parentText: "review @a.js" },
 		]);
-		reopened.addUserMessage("next");
-		reopened.save();
-		assert.equal(reopened.records.at(-1).parentUuid, lastUuid);
 	});
 });
 
@@ -116,15 +113,5 @@ describe("attachments chained to other attachments", () => {
 		// The uncarried kind still has to resolve, or the run breaks after it.
 		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/a.js", "/c.js"]);
 		assert.deepEqual(carried.map((c) => c.userOrdinal), [1, 1]);
-	});
-
-	it("resolves through a kind it does not carry", () => {
-		const carried = collectCarriedAttachments([
-			user("u1", "go"),
-			attach("a1", "u1", "skill_listing"),
-			attach("a2", "a1", "file", "/a.js"),
-		]);
-		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/a.js"]);
-		assert.equal(carried[0].userOrdinal, 0);
 	});
 });

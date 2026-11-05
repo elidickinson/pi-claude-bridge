@@ -26,10 +26,4 @@ describe("skills block rendering", () => {
 		assert.equal(renderSkillsBlock([], true), undefined);
 		assert.equal(renderSkillsBlock([skill("hidden", { disabled: true })], true), undefined);
 	});
-
-	it("uses Pi's XML escaping", () => {
-		const escaped = skill("browser");
-		escaped.description = "read <this> & that";
-		assert.match(renderSkillsBlock([escaped], true), /read &lt;this&gt; &amp; that/);
-	});
 });
