@@ -4,8 +4,6 @@
 // pi runs the history and turn-prefix summaries sequentially. Each call carries
 // cacheRetention:"none" and routes to the bridge's isolated summary path.
 //
-// Predecessor: int-compact-baseline.mjs must pass (compact path healthy).
-//
 // Determinism: isSplitTurn requires the cut point to land on an assistant
 // message, which needs accumulated recent tokens to exceed keepRecentTokens.
 // The default 20000 never triggers on a small seed. We lower it to 50 via a
