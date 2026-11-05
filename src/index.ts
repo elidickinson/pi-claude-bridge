@@ -1952,6 +1952,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				...claudeCodeSettings(providerSettings),
 				claudeMdExcludes: CLAUDE_MD_EXCLUDES,
 				includeGitInstructions: false,
+				// A user's output style is persona text written for standalone Claude Code; pi owns the persona here.
+				outputStyle: "default",
 			},
 			systemPrompt: {
 				type: "preset", preset: "claude_code",

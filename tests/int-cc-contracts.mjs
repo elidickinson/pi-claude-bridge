@@ -31,7 +31,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -936,6 +936,38 @@ test("claudeMdExcludes prevents native AGENTS.md from duplicating forwarded inst
 	} finally {
 		api.close();
 		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("flag-level outputStyle:default overrides a user-level output style", { timeout: 120_000 }, async () => {
+	const requests = [];
+	const api = await stubApi(requests);
+	const configDir = mkdtempSync(join(tmpdir(), "cc-output-style-"));
+	const marker = `probe-style-${randomUUID()}`;
+	mkdirSync(join(configDir, "output-styles"));
+	writeFileSync(join(configDir, "output-styles", "probe.md"), `---\nname: Probe\ndescription: probe\n---\n${marker}\n`);
+	writeFileSync(join(configDir, "settings.json"), JSON.stringify({ outputStyle: "Probe" }));
+	try {
+		for (const overridden of [false, true]) {
+			const { result } = await collect(query({
+				prompt: "Reply OK.",
+				options: providerOptions({
+					maxTurns: 1, persistSession: false,
+					settingSources: ["user"],
+					env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_API_KEY: "stub", ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
+					settings: overridden ? { outputStyle: "default" } : {},
+					systemPrompt: { type: "preset", preset: "claude_code" },
+				}),
+			}));
+			assert.equal(result?.subtype, "success");
+			const request = requests.at(-1);
+			assert.ok(request, "CC sent no request");
+			assert.equal(JSON.stringify(request).includes(marker), !overridden,
+				overridden ? "the user's output style survived outputStyle:default" : "CC did not load the user-level output style -- this test's control is obsolete");
+		}
+	} finally {
+		api.close();
+		rmSync(configDir, { recursive: true, force: true });
 	}
 });
 
