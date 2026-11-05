@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { collectPromptSkills, PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
 
 const PI_SYSTEM_PROMPT = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js", import.meta.url));
 
@@ -247,9 +247,7 @@ describe("PromptCaptures", () => {
 		captures.record(PARENT_KEY, capture({ skills: [browser] }));
 		captures.record(CHILD_KEY, capture({ custom: `${PARENT_KEY}${CHILD_SUFFIX}`, skills: [browser, review] }));
 
-		const childCapture = captures.resolve(CHILD_KEY);
-		assert.deepEqual(collectPromptSkills(childCapture).map(({ name }) => name), ["browser", "review"]);
-		const result = projectPromptCapture(childCapture, { hasReadTool: true });
+		const result = project(captures, CHILD_KEY);
 		assert.equal(occurrences(result, "/skills/browser/SKILL.md"), 1);
 		assert.equal(occurrences(result, "/skills/review/SKILL.md"), 1);
 	});

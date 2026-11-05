@@ -306,9 +306,9 @@ export function traceInput(callId: string | undefined, source: Context, effectiv
 	}
 }
 
-/** Who may still be appending to a session file when it is copied. Only
- *  "no-known-writer" is a settled copy; the others are the bytes seen at that moment. */
-type SnapshotWriter = "no-known-writer" | "possible-writer" | "query-ended";
+/** Who may still be appending to a session file when it is copied.
+ *  "no-known-writer" is a settled copy. */
+type SnapshotWriter = "no-known-writer";
 
 /** Copy a Claude Code session's files -- its JSONL and companion directory, the
  *  set deleteSession removes -- before the bridge deletes or abandons them. Raw

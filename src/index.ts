@@ -1046,15 +1046,15 @@ function tapRecording(message: SDKMessage, names: Map<string, string>, c: QueryC
 	completeAssistantRecording(c, step);
 }
 
-function finalizeCurrentStream(c: QueryContext, stopReason?: string): void {
+function finalizeCurrentStream(c: QueryContext): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
-	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: c.turnOutput!.stopReason, error: c.turnOutput!.errorMessage})}`);
+	debug(`provider: finalizeCurrentStream called, turnOutput=${JSON.stringify({stopReason: c.turnOutput!.stopReason, error: c.turnOutput!.errorMessage})}`);
 	if (!c.turnStarted) ensureTurnStarted(c);
 	const stream = c.currentPiStream;
 	if (c.turnOutput.stopReason === "error") {
 		stream!.push({ type: "error", reason: "error", error: c.turnOutput });
 	} else {
-		const reason = stopReason === "length" ? "length" : "stop";
+		const reason = c.turnOutput.stopReason === "length" ? "length" : "stop";
 		recordAssistantEmission(c);
 		stream!.push({ type: "done", reason, message: c.turnOutput });
 	}
@@ -1906,8 +1906,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 		const effort = effortForReasoning(model, options?.reasoning);
 
-		const extraArgs: Record<string, string | null> = { model: cliModel, "replay-user-messages": null };
-		if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
+		const extraArgs: Record<string, string | null> = { "replay-user-messages": null };
 		// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 		// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
 		if (effort) extraArgs["thinking-display"] = "summarized";
@@ -1959,6 +1958,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				type: "preset", preset: "claude_code",
 				append: systemPromptAppend ? systemPromptAppend : undefined,
 			},
+			model: cliModel,
+			strictMcpConfig: strictMcpConfigEnabled,
 			extraArgs,
 			...(effort ? { effort } : {}),
 			...(mcpServers ? { mcpServers } : {}),
@@ -2123,7 +2124,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				if (wasAborted) return failQuery(new Error("Operation aborted"));
 				queryCtx.activeQuery = null;
 				activeQueryContexts.delete(queryCtx);
-				finalizeCurrentStream(queryCtx, queryCtx.turnOutput?.stopReason);
+				finalizeCurrentStream(queryCtx);
 				traceEvent("query-end", { queryId: traceQueryId, outcome: "complete", ccSession: syncResult.targetSessionId });
 			}, failQuery)
 			.finally(async () => {

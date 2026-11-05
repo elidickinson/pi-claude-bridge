@@ -105,8 +105,7 @@ async function promptAndWait(
 	const skillsBlock = disallowedTools.includes("Read") ? undefined : formatSkillsForPrompt(options.skills ?? []).trim() || undefined;
 	const claudeExecutable = options.provider?.pathToClaudeCodeExecutable;
 
-	const extraArgs: Record<string, string | null> = { "strict-mcp-config": null, model };
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	const extraArgs: Record<string, string | null> = effort ? { "thinking-display": "summarized" } : {};
 
 	const cliDebug = makeCliDebugOptions("askclaude");
 	const childProcess = new QueryProcess(cliDebug.stderr);
@@ -159,6 +158,8 @@ async function promptAndWait(
 				// env and plugins, which would run with no prompt; Bedrock/Vertex users keep env and
 				// apiKeyHelper in ~/.claude/settings.json.
 				settingSources: ["user"] as SettingSource[],
+				model,
+				strictMcpConfig: true,
 				extraArgs,
 				...(sessionId ? { resume: sessionId } : { persistSession: false }),
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),

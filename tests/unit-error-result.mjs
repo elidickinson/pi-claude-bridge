@@ -117,7 +117,7 @@ describe("error results", () => {
 		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
 
 		const stream = c.currentPiStream;
-		__test.finalizeCurrentStream(c, c.turnOutput.stopReason);
+		__test.finalizeCurrentStream(c);
 		const terminal = stream.events.at(-2);
 		assert.strictEqual(terminal.type, "error");
 		assert.strictEqual(terminal.reason, "error");
@@ -148,7 +148,7 @@ describe("error results", () => {
 		]);
 
 		const stream = c.currentPiStream;
-		__test.finalizeCurrentStream(c, c.turnOutput.stopReason);
+		__test.finalizeCurrentStream(c);
 
 		const beforeTerminal = stream.events.slice(0, -2);
 		assert.ok(
@@ -196,7 +196,7 @@ describe("error results", () => {
 		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: "done" }]);
 
 		const stream = c.currentPiStream;
-		__test.finalizeCurrentStream(c, c.turnOutput.stopReason);
+		__test.finalizeCurrentStream(c);
 		assert.strictEqual(stream.events.at(-2).type, "done");
 	});
 
