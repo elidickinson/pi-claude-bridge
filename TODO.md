@@ -6,7 +6,6 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
 Beyond the session-sync ones in Ideas #1. Ordered by value; each is independent unless noted.
 
-- **Content-block mapping is written five times.** `extractUserPromptBlocks` (`src/index.ts:244`), the user branch of `convertPiMessages` and `toolResultContent` (`src/convert.ts:103`, `62`), `writeUser`/`writeToolResultBlocks` (`src/message-digests.ts:56`, `89`) and `toolResultToMcpContent` (`src/extract-tool-results.ts:20`) each decide which text and image blocks survive. Some differences are deliberate (`[type]` markers, the `[image]` fallback, MCP dropping unknown blocks), so the shared part may be little more than an "is this a live image" check.
 - **Parameters only tests use.** `deliverToolResults`' `contextLength` and optional `messages` (`src/index.ts:1516`). About 20 test call sites pass them.
 - **`loadSessionState` repeats `saveSessionState`'s field checks** and splits a catch on an error class nothing else throws (`src/session-store.ts:47-61`). `unit-session-store.mjs` pins the reject messages.
 
@@ -15,7 +14,6 @@ Beyond the session-sync ones in Ideas #1. Ordered by value; each is independent 
 1. **Session-sync simplifications.** Each is independent.
     - **`knownSessionIds` / `registry.known` is test-only.** `src/index.ts:92`, `101`, `130`. Only `__test.resetSharedSession` reads it. Don't replace it by having the reset remove the whole sessions dir: a unit file run without `tests/lib/setup.mjs` would delete the developer's real resume pointers.
     - **`LiveRecording` has parameters only tests use.** `src/session-sync.ts:166`, `204`. Production always passes `acknowledged=false` and `uuid=undefined`. Shrink to `users(messages, start, uuid, steering)` and `assistant(digest, toolCalls, resetTools)`. About 25 test call sites change.
-    - **The pending-tool rule is in two places.** `updatePendingTools` (`src/session-sync.ts:56`, import cuts) and `LiveRecording.flush` (`src/session-sync.ts:234-241`, live cuts) both decide whether a cut is safe. Their inputs differ, so a shared helper would be thin, but if the two drift apart they'll silently disagree about cut safety.
 
 2. **Surface errors that arrive with no open pi stream.** When a result lands after the turn already ended on a tool call, `consumeQuery` records the error but has no `currentPiStream` to push it to, so the user sees a stall instead of "rate limited". Surfacing it means synthesizing a turn pi didn't ask for. `tests/unit-error-result.mjs` covers the recording, nothing covers surfacing. One of the stall causes behind #35.
 
