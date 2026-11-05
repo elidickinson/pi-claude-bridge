@@ -18,8 +18,6 @@ FAIL=0
 
 TEST_CWD_PREFIX="$LOGDIR/smoke-cwd."
 TEST_CWD=$(mktemp -d "$TEST_CWD_PREFIX"XXXXXX)
-mkdir -p "$TEST_CWD/.pi"
-printf '{"askClaude":{"enabled":true}}\n' > "$TEST_CWD/.pi/claude-bridge.json"
 cd "$TEST_CWD"
 cleanup() {
   if [[ "${TEST_CWD:-}" == "$TEST_CWD_PREFIX"* && ${#TEST_CWD} -gt ${#TEST_CWD_PREFIX} && -d "$TEST_CWD" ]]; then
@@ -86,7 +84,7 @@ run "system prompt: --system-prompt reaches Claude" \
     --system-prompt 'You are a pirate. You must end every response with the exact word ARRR.' \
     -p 'What is 2+2? Answer in one short sentence.' 2>&1 | grep -q ARRR && echo ok"
 
-# AskClaude only registers when a non-claude-bridge provider is active.
+# AskClaude refuses to run when claude-bridge is the active provider, so use another.
 #
 # This covers registration too: `"toolName":"AskClaude"` appears only in tool
 # execution events, so a match proves pi dispatched a call to a registered tool.
@@ -95,7 +93,7 @@ run "system prompt: --system-prompt reaches Claude" \
 # A separate "is it registered" check by asking the model to enumerate its tools
 # was dropped as both weaker and flaky — models summarise and omit custom tools.
 run "tool: AskClaude responds" \
-  bash -c "pi --no-session -ne -e '$DIR' --provider '$ALT_PROVIDER' --model '$ALT_MODEL' --mode json \
+  bash -c "pi --no-session -ne -e '$DIR' -e '$DIR/askclaude' --provider '$ALT_PROVIDER' --model '$ALT_MODEL' --mode json \
     -p 'Use the AskClaude tool with prompt=\"What is 2+2? Reply with just the number.\" and then tell me the answer.' 2>&1 \
     | grep -q '\"toolName\":\"AskClaude\"' && echo ok"
 

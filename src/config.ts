@@ -1,28 +1,19 @@
 // User-facing extension config. Loaded once at extension registration from
-// the global agent dir (getAgentDir(), e.g. ~/.pi/agent/claude-bridge.json)
-// and the project Pi config directory, project overriding global except for
-// `provider`, which is global only. Missing or unparseable files are ignored
-// (error to console.error, empty object returned) so the extension always starts.
+// the global agent dir (getAgentDir(), e.g. ~/.pi/agent/claude-bridge.json).
+// There is no project config: a cloned repo could otherwise point the bridge at
+// its own Claude Code executable or turn on metered billing. A missing or
+// unparseable file is ignored (error to console.error, empty object returned)
+// so the extension always starts.
 
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
 export interface Config {
 	/** Date (YYYY-MM-DD) the one-time startup notice was shown. Written by the extension, not the user. */
 	startupNoticeShown?: string;
-	/** Date (YYYY-MM-DD) the AskClaude deprecation notice was shown. Written by the extension, not the user. */
-	askClaudeDeprecationShown?: string;
-	askClaude?: {
-		enabled?: boolean;
-		name?: string;
-		label?: string;
-		description?: string;
-		defaultMode?: "full" | "read" | "none";
-		defaultIsolated?: boolean;
-		allowFullMode?: boolean;
-		appendSkills?: boolean;
-	};
+	/** Removed: AskClaude is its own package. Read only to warn whoever still has it enabled. */
+	askClaude?: { enabled?: boolean };
 	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
 		strictMcpConfig?: boolean;
@@ -40,7 +31,7 @@ export interface Config {
 	};
 }
 
-export function tryParseJson(path: string): Partial<Config> {
+function tryParseJson(path: string): Partial<Config> {
 	if (!existsSync(path)) return {};
 	try {
 		return JSON.parse(readFileSync(path, "utf-8"));
@@ -83,35 +74,7 @@ export function markStartupNoticeShown(): string {
 	return path;
 }
 
-/** Record when the AskClaude deprecation notice was shown in the global config, preserving every
- *  other field. Returns the config path either way. */
-export function markAskClaudeDeprecationNoticeShown(): string {
-	const path = globalConfigPath();
-	let existing: Partial<Config> = {};
-	if (existsSync(path)) {
-		try {
-			existing = JSON.parse(readFileSync(path, "utf-8"));
-		} catch (e) {
-			console.error(`claude-bridge: leaving ${path} alone, it does not parse: ${e}`);
-			return path;
-		}
-	}
-	// Match startupNoticeShown's local YYYY-MM-DD date format.
-	const next = { ...existing, askClaudeDeprecationShown: new Date().toLocaleDateString("en-CA") };
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
-	return path;
-}
-
-export function loadConfig(cwd: string): Config {
+export function loadConfig(): Config {
 	const global = tryParseJson(globalConfigPath());
-	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
-	return {
-		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
-		askClaudeDeprecationShown: project.askClaudeDeprecationShown ?? global.askClaudeDeprecationShown,
-		askClaude: { ...global.askClaude, ...project.askClaude },
-		// Global only: a cloned repo could otherwise point the bridge at its own
-		// Claude Code executable or turn on metered billing.
-		provider: { ...global.provider },
-	};
+	return { startupNoticeShown: global.startupNoticeShown, askClaude: global.askClaude, provider: { ...global.provider } };
 }

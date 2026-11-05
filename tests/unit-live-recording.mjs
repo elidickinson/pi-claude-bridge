@@ -154,6 +154,28 @@ for (const laterTurn of [false, true]) it(`${laterTurn ? "later-turn" : "absorbe
 	assert.equal(c.recording.hasProgress, true);
 });
 
+it("a turn's opener CC never replays is recorded at that turn's first output", async () => {
+	const c = new QueryContext();
+	const output = (id) => ({ type: "assistant", parent_tool_use_id: null, uuid: id, message: { id, model: model.id, content: [] } });
+	const result = { type: "result", subtype: "success", is_error: false, result: "" };
+	const context = [user("<task-notification>prompt</task-notification>"), { role: "assistant", content: [], timestamp: 1 }, user("<task-notification>late</task-notification>"), user("queued")];
+	c.recording.users(context.slice(0, 1), 0, "prompt", false, false);
+	c.turnOpener = "prompt";
+	await consume(c, [output("answer")]);
+	c.recording.assistant(digestMessage(context[1]), [], "answer");
+	for (const [i, uuid] of [[2, "late"], [3, "queued"]]) {
+		c.recording.users(context.slice(0, i + 1), i, uuid, false);
+		c.pendingSteerUuids.add(uuid);
+	}
+	await consume(c, [output("more")]);
+	assert.deepEqual(c.recording.recorded.uuids, ["prompt", "answer"], "mid-turn output opens nothing");
+	await consume(c, [result, output("late-answer")]);
+	assert.deepEqual(c.recording.recorded.uuids, ["prompt", "answer", "late"]);
+	assert.deepEqual([...c.pendingSteerUuids], ["queued"], "only the oldest queued steer opens the turn");
+	await consume(c, [{ type: "user", parent_tool_use_id: null, isReplay: true, uuid: "queued", message: { role: "user", content: "queued" } }, result, output("next")]);
+	assert.equal(c.recording.recorded.uuids.length, 4);
+});
+
 it("result-only fallback output leaves an explicit live gap and cannot plain-resume hidden output", () => {
 	const c = new QueryContext();
 	c.recording.users([user("prompt")], 0, "prompt", true);
@@ -230,7 +252,7 @@ it("an old receipt never records changed content registered later at its index",
 	assert.deepEqual(reverse.recorded.digests, [], "the old copy now duplicates consumed content");
 });
 
-it("continues checks pending input and emitted output before acknowledgement", () => {
+it("divergence checks pending input and emitted output before acknowledgement", () => {
 	const ask = user("original");
 	const tool = { role: "assistant", provider: model.provider, timestamp: 1,
 		content: [{ type: "toolCall", id: "X", name: "read", arguments: {} }] };
@@ -238,12 +260,12 @@ it("continues checks pending input and emitted output before acknowledgement", (
 	live.users([ask], 0, "prompt", false);
 	const index = live.assistant(digestMessage(tool), ["X"]);
 	const check = () => {
-		assert.equal(live.continues([ask, tool, result("X")]), true);
-		assert.equal(live.continues([user("changed"), tool, result("X")]), false);
-		assert.equal(live.continues([ask]), false);
-		assert.equal(live.continues([{ ...ask, timestamp: 2 }, tool, result("X"), user("steer")]), true);
+		assert.equal(live.divergence([ask, tool, result("X")]), undefined);
+		assert.equal(live.divergence([user("changed"), tool, result("X")]), 0);
+		assert.equal(live.divergence([ask]), 1);
+		assert.equal(live.divergence([{ ...ask, timestamp: 2 }, tool, result("X"), user("steer")]), undefined);
 		const edited = { ...tool, content: [{ ...tool.content[0], arguments: { path: "changed" } }] };
-		assert.equal(live.continues([ask, edited, result("X")]), false);
+		assert.equal(live.divergence([ask, edited, result("X")]), 1);
 	};
 	check();
 	live.acknowledge("prompt");
@@ -252,33 +274,33 @@ it("continues checks pending input and emitted output before acknowledgement", (
 	check();
 });
 
-it("continues checks an imported prefix and pending tool results without changing coverage", () => {
+it("divergence checks an imported prefix and pending tool results without changing coverage", () => {
 	const ask = user("imported");
 	const imported = { digests: digestMessages([ask]), uuids: ["import"], cuttable: [true] };
 	const live = new LiveRecording(imported);
 	const tr = result("X");
 	live.results([ask, tr]);
-	assert.equal(live.continues([ask, tr, user("next")]), true);
-	assert.equal(live.continues([user("changed"), tr]), false);
-	assert.equal(live.continues([ask, { ...tr, content: [{ type: "text", text: "changed" }] }]), false);
+	assert.equal(live.divergence([ask, tr, user("next")]), undefined);
+	assert.equal(live.divergence([user("changed"), tr]), 0);
+	assert.equal(live.divergence([ask, { ...tr, content: [{ type: "text", text: "changed" }] }]), 1);
 	assert.deepEqual(live.recorded, imported, "a live match is not a durable acknowledgement");
 	live.result("X", "result");
-	assert.equal(live.continues([ask, tr]), true);
+	assert.equal(live.divergence([ask, tr]), undefined);
 });
 
-it("continues rejects a gap that cannot establish the live prefix", () => {
+it("divergence rejects a gap that cannot establish the live prefix", () => {
 	const live = new LiveRecording();
 	live.gap();
-	assert.equal(live.continues([user("unknown")]), false);
+	assert.equal(live.divergence([user("unknown")]), 0);
 });
 
-it("continues rejects an acknowledged duplicate not represented in pi history", () => {
+it("divergence rejects an acknowledged duplicate not represented in pi history", () => {
 	const messages = [user("prompt")];
 	const live = new LiveRecording();
 	live.users(messages, 0, "first", true);
 	live.users(messages, 0, "duplicate", false);
 	live.acknowledge("duplicate");
-	assert.equal(live.continues(messages), false);
+	assert.equal(live.divergence(messages), "duplicate");
 });
 
 it("re-registering an already covered index leaves history and pending slots untouched", () => {

@@ -96,8 +96,7 @@ export function collectCarriedAttachments(records: readonly JsonlRecord[]): Carr
 /**
  * Resolve each carried attachment to a position in the array about to be
  * imported — the messages *after* conversion and repair, since that is the index
- * space `importMessages` reads. Repair is idempotent, so an already-repaired array
- * passes through its second run unchanged and the indices stay valid.
+ * space importHistory writes from.
  *
  * Deliberately conservative: attaching a file to the wrong turn tells the model it
  * saw something at a point it did not, which is worse than the loss this exists to

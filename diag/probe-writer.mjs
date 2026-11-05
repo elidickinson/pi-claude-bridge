@@ -235,7 +235,7 @@ function buildArms(live) {
 	// BRIDGE: today's rebuild, on the next provider call's messages with no mirror.
 	bridge.resetSharedSession();
 	const sync = bridge.syncSharedSession([...live.history, { role: "user", content: CONTINUATION, timestamp: Date.now() }],
-		cwd, new Map(Object.entries(live.servedToolNames)), live.model, `probe-writer-${process.pid}`);
+		cwd, new Map(Object.entries(live.servedToolNames)), live.model, `probe-writer-${process.pid}`, undefined, "");
 	if (!sync.sessionId) throw new Error(`syncSharedSession did not rebuild: ${JSON.stringify(sync)}`);
 	ids.bridge = sync.sessionId;
 	copyFileSync(getSessionPath(ids.bridge, normalizeProjectPath(cwd)), join(OUT, "cc-sessions", `${ids.bridge}.jsonl`));

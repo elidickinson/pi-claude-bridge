@@ -4,9 +4,7 @@
 
 Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). Originally based on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal.
 
-1. **Provider** — Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI
-2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
-
+Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI.
 
 **FYI:** Anthropic [announced and then unannounced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) a change to how you would be billed for tools that use the Agent SDK like this one. It currently uses your regular subscription quota just like Claude Code.
 
@@ -21,8 +19,9 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
    ```
    pi install npm:pi-claude-bridge
    ```
-2. Log in to Claude Code with your Claude subscription: run `claude` and type `/login`. The bridge uses Claude Code's login, not pi's `/login`.
-3. In pi, pick a `claude-bridge/...` model with `/model`. (Do not use the `anthropic/...` models)
+2. Log in to Claude Code with your Claude subscription: run `claude auth login`. The bridge uses Claude Code's login, not pi's `/login`.
+3. In pi, pick a `claude-bridge/...` model with `/model`, e.g. `claude-bridge/claude-opus-5`. **Don't pick the `anthropic/...` models:** those are pi's own Anthropic provider and don't go through Claude Code or your subscription.
+4. Optional: to let other providers delegate tasks or questions to Claude Code, install the AskClaude tool: `pi install npm:pi-claude-bridge-askclaude` ([askclaude/](askclaude/README.md)).
 
 Requires pi 1.2.0 or newer to use all models (but should mostly work >=0.86.1).
 
@@ -36,22 +35,12 @@ The model list comes from pi-ai's Anthropic catalog automatically — when pi-ai
 
 **1M Context:** Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5.5/5 get 1M context. Opus 4.6 gets 1M only on a Max plan or with Extra Usage, and Sonnet 4.6 only with Extra Usage — set `provider.plan` and/or `provider.longContextExtraUsage` as described in [Configuration](#configuration).
 
-## AskClaude Tool
-
-**Deprecated:** AskClaude is an opt-in legacy tool and may be removed in a future release. You should set `askClaude.enabled` to `true` (see [Configuration](#configuration)) to use it. You can recreate similar functionality with one of the many Pi subagent extensions.
-
 ## Configuration
 
-Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global). `provider` settings are read only from the global file, so a cloned repo can't point the bridge at its own executable or turn on metered billing.
+Config: `~/.pi/agent/claude-bridge.json`. There is no project config, so a cloned repo can't point the bridge at its own executable or turn on metered billing.
 
 ```json
 {
-  "askClaude": {
-    "enabled": true,
-    "allowFullMode": true,
-    "defaultIsolated": false,
-    "description": "Custom tool description override"
-  },
   "provider": {
     "plan": "max",
     "longContextExtraUsage": false,
@@ -60,16 +49,6 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
   }
 }
 ```
-
-`askClaude`:
-- `enabled` — register the AskClaude tool (default `false`). If it's unset, the startup notice below points this out once.
-- `name` — override the tool's pi-side name (default `"AskClaude"`)
-- `label` — override the TUI label (default `"Ask Claude Code"`)
-- `description` — override the tool description. Default when `allowFullMode: true`: *"Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself."*
-- `defaultMode` — `"read"` (default), `"none"`, or `"full"`
-- `defaultIsolated` — start each call in a fresh session (default `false`)
-- `allowFullMode` — allow `mode: "full"`; set `false` to lock it out
-- `appendSkills` — forward pi's skills block into the system prompt (default `true`)
 
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` if you have a Max (or Team Premium/Enterprise) Anthropic plan. This enables Opus with 1M context.
@@ -80,7 +59,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
 
-**Notices:** the startup notice points out when `provider.plan` is unset and records `startupNoticeShown` in the global config. There's also a deprecation notice on first use of AskClaude that records its display date as `askClaudeDeprecationShown`.
+**Notices:** the startup notice points out when `provider.plan` is unset and records `startupNoticeShown` in the config.
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not work correctly with pi-claude-bridge; they only apply to pi-side settings like compaction threshold. Overriding `contextWindow` or other fields requires editing `src/models.ts` directly — to pin a model to 200K, use `provider.forceTwoHundredK` instead.
 
@@ -114,7 +93,7 @@ Integration tests spawn real `pi` and Claude Code subprocesses and need write ac
 Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 - **Bridge log** at `claude-bridge.log` in pi's agent dir (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`) — provider calls, session sync decisions, tool results, CC stderr. Override location with `CLAUDE_BRIDGE_DEBUG_PATH`.
-- **Per-query CC CLI logs** at `cc-cli-logs/<timestamp>-<tag>-<seq>.log` in the same directory — the subprocess's own debug stream; tag is `provider` or `askclaude`. Shows CC's view of session loading, API requests, and tool calls.
+- **Per-query CC CLI logs** at `cc-cli-logs/<timestamp>-<tag>-<seq>.log` in the same directory — the subprocess's own debug stream; tag is `provider` (or `askclaude` for the AskClaude package). Shows CC's view of session loading, API requests, and tool calls.
 
 When filing a bug about a session-resume failure (e.g. "No conversation found"), the most useful attachments are the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file for the failing query.
 
@@ -169,7 +148,7 @@ Requires the following in `~/.pi/agent/subagents.json`:
 
 ## Session history
 
-The bridge compares conversation content before each fresh query. Unchanged history resumes the Claude Code session. Tree navigation and history edits retain Claude Code's records up to the last safe matching point, then continue in a new session. Model changes import pi's history into a fresh Claude Code session.
+The bridge compares conversation content before each fresh query. Unchanged history resumes the Claude Code session. Tree navigation and history edits retain Claude Code's records up to the last safe matching point, then continue in a new session. `/fork` and clone start from the parent session's Claude Code records the same way. Model changes and changed instructions import pi's history into a fresh Claude Code session.
 
 Session pointers, content digests and record IDs are saved under `claude-bridge/sessions/` in pi's agent directory (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`). They let the bridge recover its matching prefix after a restart. Running the same pi session simultaneously in multiple bridge processes is unsupported.
 
@@ -179,6 +158,6 @@ Session pointers, content digests and record IDs are saved under `claude-bridge/
 
 **File snapshots in rewritten history can be lost.** Native records before the matching point keep their attachments. A rewritten suffix carries `@file` expansions, but not snapshots Claude Code recorded after editing files; the tool calls and results remain in pi's history.
 
-**System prompt changes mid-session may not reach the model.** Project context (AGENTS.md/CLAUDE.md), skills, and extension-written instructions are captured on the first request and reused while that prompt recording is retained. Start a new session if updated instructions must take effect immediately.
+**Changed instructions cost a cache miss.** When project context (AGENTS.md/CLAUDE.md), skills, or extension-written instructions change (for example, after an edit and `/reload`), the next turn imports the conversation into a new Claude Code session so the model sees them. That turn re-sends the conversation uncached and drops earlier thinking. An extension that rewrites its system prompt section every turn pays this on every turn.
 
 **Exported Anthropic environment variables override the Claude Code child (issue #107).** An exported `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` redirects Claude Code to that gateway and every turn fails with its auth error. Unset them for the pi process, or blank them in a `claude-bridge` credential's `env` (see [Configuration](#configuration)).

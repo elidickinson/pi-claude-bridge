@@ -1,7 +1,7 @@
 // Content coverage shared by imports and live queries. A null boundary is only
 // an intentional import omission, never an unacknowledged live message.
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
-import { repairWithOrigin, type Session, type ContentBlock, type UserContentBlock } from "cc-session-io";
+import { repairWithOrigin, type Session, type ContentBlock, type ToolResultBlock, type UserContentBlock } from "cc-session-io";
 import { convertPiMessages } from "./convert.js";
 import { digestMessage, digestMessages } from "./message-digests.js";
 import { placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
@@ -16,6 +16,9 @@ export interface SessionState extends Recording {
 	ccSessionId: string;
 	cwd: string;
 	model: string;
+	/** Digest of the system prompt append CC recorded for this session, which it
+	 *  replays on every resume until a full import. */
+	promptDigest: string;
 	dirtyTail: boolean;
 }
 
@@ -59,8 +62,8 @@ function updatePendingTools(pending: Set<string>, message: PiMessage): void {
 
 /** Emit the repaired messages ourselves: importMessages hides the write mapping
  * and can emit two records for a mixed user message. Track the actual writes. */
-export function importHistory(session: Session, messages: PiMessage[], names?: Map<string, string>, carried: readonly CarriedAttachment[] = []): Recording {
-	const converted = convertPiMessages(messages, names);
+export function importHistory(session: Session, messages: PiMessage[], names?: Map<string, string>, carried: readonly CarriedAttachment[] = [], results?: ReadonlyMap<string, ToolResultBlock>): Recording {
+	const converted = convertPiMessages(messages, names, results);
 	const repaired = repairWithOrigin(converted.anthropicMessages);
 	const placed = placeCarriedAttachments(carried, repaired.messages);
 	const writes: { uuid: string; sources: number[]; pending: number }[] = [];
@@ -82,11 +85,12 @@ export function importHistory(session: Session, messages: PiMessage[], names?: M
 		} else if (typeof message.content === "string") {
 			emit(session.addUserMessage(message.content), sources);
 		} else {
-			const results = message.content.filter((b) => b.type === "tool_result");
+			const results = message.content.filter((b): b is ToolResultBlock => b.type === "tool_result");
 			const rest = message.content.filter((b) => b.type !== "tool_result") as UserContentBlock[];
 			if (results.length) {
 				for (const block of results) pending.delete(block.tool_use_id);
-				emit(session.addToolResults(results.map((b) => ({ toolUseId: b.tool_use_id, content: b.content, isError: b.is_error }))), sources);
+				// Verbatim, so a block copied from CC keeps CC's key order.
+				emit(session.addToolResultBlocks(results), sources);
 			}
 			if (rest.length) emit(session.addUserMessage(rest), sources);
 		}
@@ -143,15 +147,18 @@ export class LiveRecording {
 		this.nextIndex = this.recorded.digests.length;
 		for (const message of messages.slice(0, this.nextIndex)) updatePendingTools(this.outstanding, message);
 	}
-	/** Live equality includes pending slots: a missing acknowledgement neither
-	 * conceals a rewrite nor invalidates an unchanged tool continuation. */
-	continues(messages: PiMessage[]): boolean {
-		if (this.duplicated || messages.length < this.nextIndex) return false;
+	/** Where pi's live history first leaves this recording: a message index,
+	 * "duplicate" when CC holds a record no pi slot represents, or undefined while
+	 * the history still continues it. Live equality includes pending slots: a
+	 * missing acknowledgement neither conceals a rewrite nor invalidates an
+	 * unchanged tool continuation. */
+	divergence(messages: PiMessage[]): number | "duplicate" | undefined {
+		if (this.duplicated) return "duplicate";
 		for (let i = 0; i < this.nextIndex; i++) {
 			const digest = this.recorded.digests[i] ?? this.slots.get(i)?.digest;
-			if (digest === undefined || digestMessage(messages[i]) !== digest) return false;
+			if (digest === undefined || i >= messages.length || digestMessage(messages[i]) !== digest) return i;
 		}
-		return true;
+		return undefined;
 	}
 	/** A receipt binds to the exact slots it delivered. An index already covered,
 	 * or pending with other content, keeps its first snapshot; an identical
@@ -177,10 +184,10 @@ export class LiveRecording {
 		if (acknowledged) this.acknowledge(uuid);
 		else this.flush();
 	}
-	/** Repeated or unknown receipts are no-ops. */
-	acknowledge(uuid: string): void {
+	/** Repeated or unknown receipts are no-ops; returns whether this one was pending. */
+	acknowledge(uuid: string): boolean {
 		const steer = this.steers.get(uuid);
-		if (!steer) return;
+		if (!steer) return false;
 		this.steers.delete(uuid);
 		if (steer.overlaps) this.duplicate(steer.first);
 		for (const { index, slot } of steer.bound) {
@@ -192,6 +199,7 @@ export class LiveRecording {
 			slot.nonCuttable = steer.unsafe;
 		}
 		this.flush();
+		return true;
 	}
 	assistant(digest: string, toolCalls: string[], uuid?: string, resetTools = true): number {
 		const index = this.nextIndex++;

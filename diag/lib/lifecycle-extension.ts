@@ -112,6 +112,11 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
+	pi.registerCommand("lc-reload", {
+		description: "Reload extensions and context files in place, as /reload does",
+		handler: async (_args, ctx) => { await ctx.reload(); },
+	});
+
 	pi.registerCommand("lc-tree-back", {
 		description: "Move the session leaf back to the end of the first turn",
 		handler: async (_args, ctx) => {
