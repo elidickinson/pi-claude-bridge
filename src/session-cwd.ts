@@ -36,3 +36,10 @@ export function forgetSessionCwd(sessionId: string): void {
 export function sessionCwdFor(sessionId: string | null | undefined): string {
 	return (sessionId ? store().get(sessionId) : undefined) ?? process.cwd();
 }
+
+/** Whether the extension is loaded in this session: its `session_start` ran and
+ *  `session_shutdown` has not. A provider mirrored into a session that never loaded
+ *  the extension serves that session's requests with none of the bridge's hooks fired. */
+export function sessionHasHooks(sessionId: string | null | undefined): boolean {
+	return !!sessionId && store().has(sessionId);
+}
