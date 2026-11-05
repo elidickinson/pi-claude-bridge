@@ -39,9 +39,7 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.86.1",
-    "@earendil-works/pi-coding-agent": ">=0.86.1",
-    "@earendil-works/pi-tui": ">=0.86.1",
-    "typebox": "*"
+    "@earendil-works/pi-coding-agent": ">=0.86.1"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.124.0",

@@ -88,10 +88,9 @@ describe("digest session decisions", () => {
 	it("unattributed calls import independently and never write provider state", () => {
 		const priors = [user("hi"), say("hello")];
 		const { session, state } = seed(priors);
-		__test.setSharedSession(null, state);
 		const synced = sync([...priors, user("next")], "sonnet", null);
 		assert.notEqual(synced.sessionId, session.sessionId);
-		assert.strictEqual(__test.getSharedSession(null), state);
+		assert.strictEqual(__test.getSharedSession("pi"), state);
 	});
 	it("missing files import into a new session instead of attempting resume", () => {
 		const priors = [user("hi"), say("hello")];

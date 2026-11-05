@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Two invariants on the session write path — convertPiMessages →
-// repairToolPairing → Session.importMessages:
+// Two invariants on the session write path (importHistory: convert, repair,
+// write records):
 //
 //   1. Determinism. The same pi history always produces the same transcript
 //      content. Only identity and clock fields may differ between builds.
@@ -94,12 +94,15 @@ describe("rebuilds extend the transcript instead of rewriting it", () => {
 	});
 });
 
-// convertAndImportMessages repairs before calling importMessages, which repairs
-// again — so a second pass has to be a no-op or every rebuild would differ from
-// the transcript the debug log reports.
-it("repairToolPairing is idempotent", () => {
-	const once = repairToolPairing(convertPiMessages(corpus).anthropicMessages);
-	assert.deepEqual(repairToolPairing(once), once);
+// diag/replay-write-path.mjs feeds raw pi session logs, which hold system and
+// session-only roles the provider never receives as such.
+it("transcript() takes pi session messages the way the provider receives them", () => {
+	const records = transcript([
+		{ role: "system", content: "rules", timestamp: 1 },
+		{ role: "custom", customType: "note", content: "from an extension", display: true, timestamp: 1 },
+		{ role: "user", content: "hi", timestamp: 1 },
+	]).map((record) => JSON.parse(record).message.content);
+	assert.deepEqual(records, [[{ type: "text", text: "from an extension" }], "hi"]);
 });
 
 // Prefix stability is satisfiable by a conversion that loses content

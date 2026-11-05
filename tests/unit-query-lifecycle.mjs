@@ -211,6 +211,18 @@ it("quota retries delete each new file only after the child finishes its late wr
 	}
 });
 
+it("a launch that throws fails the turn and deletes the session it imported", async () => {
+	let launched;
+	__test.setQuery(({ options }) => { launched = options; throw new Error("spawn failed"); });
+	const output = await call([user("prior"), say("prior answer"), user("retry")]).result();
+	assert.equal(output.stopReason, "error");
+	assert.match(output.errorMessage, /spawn failed/);
+	assert.ok(launched.resume, "the rebuild wrote pi's history to a file before launch");
+	assert.equal(existsSync(getSessionPath(launched.resume, launched.cwd, root)), false);
+	assert.equal(__test.getSharedSession("pi"), null);
+	assert.equal(__test.activeQueryContexts.size, 0);
+});
+
 it("a no-progress fork failing before init deletes only its pre-minted target", async () => {
 	const ask = user("warm");
 	scripts.push({});

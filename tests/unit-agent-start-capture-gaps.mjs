@@ -95,7 +95,7 @@ describe("agent_start capture — documented gaps", () => {
 		assert.ok(capture, "the tail-stripped child must be recorded before projection");
 		assert.equal(capture.inherited.length, 0, "the unsupported embedding must not invent an inheritance edge");
 		assert.throws(
-			() => projectPromptCapture(capture, { skillReadTool: "none" }),
+			() => projectPromptCapture(capture, { hasReadTool: false }),
 			/prompt-capture: refusing to send this prompt/,
 			"an unmatched recorded child must fail before its harness reaches Claude Code",
 		);

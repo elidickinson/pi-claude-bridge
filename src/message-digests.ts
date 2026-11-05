@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
-import { PROVIDER_ID } from "./convert.js";
+import { messageContentToText, PROVIDER_ID } from "./convert.js";
 
 function writeString(hash: ReturnType<typeof createHash>, value: string): void {
 	hash.update(`s${value.length}:`);
@@ -86,43 +86,6 @@ function writeUser(hash: ReturnType<typeof createHash>, message: Extract<PiMessa
 	hash.update("]user");
 }
 
-function writeToolResultText(
-	hash: ReturnType<typeof createHash>,
-	content: unknown,
-): void {
-	if (typeof content === "string") {
-		hash.update("tool-content:text:");
-		writeString(hash, content);
-		return;
-	}
-	const blocks = contentParts(content);
-	const hasText = blocks.some((block) => block.type === "text" && !!block.text);
-	let length = 0;
-	let count = 0;
-	if (hasText) {
-		for (const block of blocks) {
-			if (block.type === "text" && block.text) { length += block.text.length; count++; }
-			else if (block.type !== "text" && block.type !== "image") { length += `[${block.type}]`.length; count++; }
-		}
-		length += count - 1;
-	}
-	hash.update("tool-content:text:");
-	hash.update(`s${length}:`);
-	if (hasText) {
-		let first = true;
-		for (const block of blocks) {
-			let part: string | undefined;
-			if (block.type === "text" && block.text) part = block.text;
-			else if (block.type !== "text" && block.type !== "image") part = `[${block.type}]`;
-			if (part !== undefined) {
-				if (!first) hash.update("\n", "utf16le");
-				hash.update(part, "utf16le");
-				first = false;
-			}
-		}
-	}
-}
-
 function writeToolResultBlocks(
 	hash: ReturnType<typeof createHash>,
 	content: unknown,
@@ -151,7 +114,10 @@ function writeToolResult(hash: ReturnType<typeof createHash>, message: Extract<P
 	const content = contentParts(message.content);
 	const hasImage = content.some((block) => block.type === "image" && !!block.data && !!block.mimeType);
 	if (hasImage) writeToolResultBlocks(hash, content);
-	else writeToolResultText(hash, message.content);
+	else {
+		hash.update("tool-content:text:");
+		writeString(hash, messageContentToText(message.content));
+	}
 }
 
 function writeAssistant(hash: ReturnType<typeof createHash>, message: Extract<PiMessage, { role: "assistant" }>): void {

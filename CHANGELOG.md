@@ -3,6 +3,7 @@
 ## UNRELEASED
 
 - **Breaking: AskClaude moved to its own package** — Install `pi install pi-claude-bridge-askclaude` to keep using it; the `askClaude` settings, the project `.pi/claude-bridge.json` and the deprecation notice are gone. Model names go to Claude Code as given (no partial ids or automatic `[1m]`). Shared mode now keeps compaction and branch summaries, and no longer resumes the bridge's Claude Code session, which missed anything said after switching away from claude-bridge. On claude-bridge turns Claude Code now sees the AskClaude tool, which refuses to run there.
+- **Refactor: remove dead and duplicated code in the provider** — Tool results are no longer serialized for the debug log when debug is off.
 
 ## 0.10.0 — 2026-11-04
 

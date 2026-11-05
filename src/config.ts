@@ -29,7 +29,7 @@ export interface Config {
 	};
 }
 
-export function tryParseJson(path: string): Partial<Config> {
+function tryParseJson(path: string): Partial<Config> {
 	if (!existsSync(path)) return {};
 	try {
 		return JSON.parse(readFileSync(path, "utf-8"));

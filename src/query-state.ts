@@ -12,7 +12,22 @@ import type { PromptStream } from "./prompt-stream.js";
 import { LiveRecording } from "./session-sync.js";
 import type { RateLimitInfo } from "./rate-limit.js";
 
-export interface PendingToolCall {
+export function newAssistantOutput(model: Model<any>, text: string, stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: text ? [{ type: "text", text }] : [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason,
+		...(errorMessage ? { errorMessage } : {}),
+		timestamp: Date.now(),
+	};
+}
+
+interface PendingToolCall {
 	toolName: string;
 	resolve: (result: McpResult) => void;
 }
@@ -42,6 +57,11 @@ export class QueryContext {
 	/** Synchronous progress capture before killing/discarding this query. */
 	commitRecording: ((dirty: boolean) => void) | null = null;
 	stopProcess: (() => void) | null = null;
+	/** pi's history moved out from under this query. Its completion must not touch
+	 *  the session state or the pi stream: the query that took over the turn has
+	 *  already rebuilt both from the new history, and this one's session id names the
+	 *  conversation pi just discarded. A context runs at most one SDK query (every
+	 *  fresh query gets a new one), so this marks that query abandoned too. */
 	discarded = false;
 	sawResult = false;
 	pendingToolCalls = new Map<string, PendingToolCall>();
@@ -120,13 +140,7 @@ export class QueryContext {
 	}
 
 	resetTurnState(model: Model<any>): void {
-		this.turnOutput = {
-			role: "assistant", content: [],
-			api: model.api, provider: model.provider, model: model.id,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "stop", timestamp: Date.now(),
-		};
+		this.turnOutput = newAssistantOutput(model, "", "stop");
 		this.lastAssistantMessageId = undefined;
 		this.turnAssistantIds = [];
 		this.turnStarted = false;

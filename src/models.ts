@@ -59,7 +59,7 @@ export type LongContextSettings = {
 	forceTwoHundredK?: string[];
 };
 
-export type ClaudeCodeRuntimeModel = {
+type ClaudeCodeRuntimeModel = {
 	cliModelId: string;
 	contextWindow: number;
 };

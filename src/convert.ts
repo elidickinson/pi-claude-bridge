@@ -30,7 +30,7 @@ export function sanitizeToolId(id: string, cache: Map<string, string>): string {
  *  The AskClaude package has a trimmed copy of this conversion
  *  (askclaude/src/claude-code.ts).
  */
-export function mapPiToolNameToSdk(name: string, customToolNameToSdk: ReadonlyMap<string, string> = new Map()): string {
+function mapPiToolNameToSdk(name: string, customToolNameToSdk: ReadonlyMap<string, string> = new Map()): string {
 	if (!name) return "";
 	const normalized = name.toLowerCase();
 	// Pi history holds pi tool names. Our own SDK prefix can only reach here by

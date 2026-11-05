@@ -32,7 +32,7 @@ const handlers = {};
 mod.default({ on: (name, fn) => { (handlers[name] ??= []).push(fn); }, registerProvider: () => {} });
 const {
 	activeQueryContexts, armStaleContexts, contextForToolResults, discardRewrittenQuery,
-	historyRewrittenBySession, isQueryAbandoned, markRebuildForSession,
+	historyRewrittenBySession, markRebuildForSession,
 	getSharedSession, resetSharedSession, setSharedSession,
 } = __test;
 
@@ -45,6 +45,8 @@ function parkedQuery(toolCallId = "call_1", piSessionId = "pi-parent") {
 	};
 	const c = new QueryContext();
 	c.activeQuery = sdkQuery;
+	// What the provider installs at launch (requestAbort).
+	c.stopProcess = () => { void sdkQuery.interrupt(); sdkQuery.close(); };
 	c.piSessionId = piSessionId;
 	c.turnToolCallIds = [toolCallId];
 	c.pendingToolCalls.set(toolCallId, {
@@ -121,15 +123,10 @@ describe("markRebuildForSession", () => {
 			"--resume would replay a history pi no longer has");
 
 		markRebuildForSession(null, "session_compact:served");
-		// An unattributed rewrite marks the "(none)" bucket — the only mirror a
-		// direct caller without a session id can be serving.
 		assert.equal(getSharedSession("pi-a").dirtyTail, false,
 			"the parent's mirror is untouched by an unattributed rewrite");
-		// The discard set is keyed differently from the mirror on purpose: its
-		// readers all guard on a real piSessionId, so a "(none)" entry here could
-		// never be matched or consumed — only leaked.
-		assert.ok(!historyRewrittenBySession.has("(none)"),
-			"a null mark records no set entry: no reader could match or consume one");
+		assert.deepEqual([...historyRewrittenBySession], ["pi-b"],
+			"a null mark arms no discard: no reader could match or consume one");
 	});
 
 	it("arms the discarding session's replacement after a second rewrite (mid-turn double compaction)", () => {
@@ -183,13 +180,13 @@ describe("discardRewrittenQuery", () => {
 		assert.equal(c.pendingToolCalls.size, 0);
 	});
 
-	it("marks the query abandoned so its completion cannot overwrite the rebuild", () => {
-		const { c, sdkQuery } = parkedQuery();
-		assert.equal(isQueryAbandoned(sdkQuery), false);
+	it("marks the query discarded so its completion cannot overwrite the rebuild", () => {
+		const { c } = parkedQuery();
+		assert.equal(c.discarded, false);
 
 		discardRewrittenQuery(c);
 
-		assert.equal(isQueryAbandoned(sdkQuery), true,
+		assert.equal(c.discarded, true,
 			"its completion handler would otherwise capture the stale session id over the rebuilt one");
 	});
 
@@ -261,13 +258,5 @@ describe("per-session mirrors", () => {
 		resetSharedSession("pi-b");
 		assert.equal(getSharedSession("pi-b"), null, "reset clears only the keyed mirror");
 		assert.equal(getSharedSession("pi-a").ccSessionId, "cc-a", "a sibling survives the reset");
-	});
-
-	it("shares one bucket for unattributed callers", () => {
-		setSharedSession(null, emptyState("cc-none", "/tmp"));
-
-		assert.equal(getSharedSession(null).ccSessionId, "cc-none");
-		assert.equal(getSharedSession("pi-a"), null,
-			"an attributed session never touches the unattributed bucket");
 	});
 });
