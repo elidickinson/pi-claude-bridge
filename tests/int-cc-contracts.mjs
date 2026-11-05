@@ -905,6 +905,39 @@ test("routing through the capture proxy does not change what CC sends", { timeou
  *  moves them (and a 1h ttl) between turns, so payload comparisons strip them. */
 const sansCacheControl = (m) => JSON.parse(JSON.stringify(m, (_k, v) => (v === null || v === undefined) ? v : (typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).filter(([key]) => key !== "cache_control")) : v)));
 
+test("CC replaces an empty MCP tool result with a no-output placeholder", { timeout: 120_000 }, async () => {
+	// src/convert.ts writes the same placeholder for results Claude Code never saw,
+	// so a rebuilt session says what CC would have said live.
+	const requests = [];
+	// The bridge sends an empty pi result as one blank text block (src/extract-tool-results.ts);
+	// whitespace-only text reaches CC as-is and counts as empty too (convert.ts trims).
+	const results = { failed: { content: [{ type: "text", text: "" }], isError: true }, spaces: { content: [{ type: "text", text: "  \n " }] }, ok: { content: [{ type: "text", text: "" }] } };
+	const api = await stubApi(requests, { toolCallsFirst: Object.keys(results).map((name) => `mcp__custom-tools__${name}`) });
+	const server = new McpServer({ name: "custom-tools", version: "1.0.0" }, { capabilities: { tools: {} } });
+	server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: Object.keys(results).map(noArgTool) }));
+	server.server.setRequestHandler(CallToolRequestSchema, async (request) => results[request.params.name]);
+	try {
+		const { result } = await collect(query({
+			prompt: "Call every tool.",
+			options: providerOptions({
+				maxTurns: 3, persistSession: false,
+				mcpServers: { "custom-tools": { type: "sdk", name: "custom-tools", instance: server } },
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+			}),
+		}));
+		assert.equal(result?.subtype, "success", JSON.stringify(result));
+		const sent = requests.at(-1).messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result");
+		assert.equal(sent.length, 3);
+		assert.equal(sent[0].content, "Command failed with no output");
+		assert.equal(sent[0].is_error, true);
+		assert.equal(sent[1].content, "(mcp__custom-tools__spaces completed with no output)");
+		// CC can append a <system-reminder> to the last result of a turn.
+		assert.match(sent[2].content, /^\(mcp__custom-tools__ok completed with no output\)/);
+	} finally {
+		api.close();
+	}
+});
+
 // --- Native instruction exclusions ---
 
 test("claudeMdExcludes prevents native AGENTS.md from duplicating forwarded instructions", { timeout: 120_000 }, async () => {

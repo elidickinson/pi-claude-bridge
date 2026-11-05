@@ -105,6 +105,22 @@ it("transcript() takes pi session messages the way the provider receives them", 
 	assert.deepEqual(records, [[{ type: "text", text: "from an extension" }], "hi"]);
 });
 
+it("an empty tool result converts to Claude Code's no-output placeholder", () => {
+	const { anthropicMessages } = convertPiMessages([
+		{ role: "user", content: "go" },
+		{ role: "assistant", provider: "openrouter", content: [
+			{ type: "toolCall", id: "t1", name: "sudo_exec", arguments: {} },
+			{ type: "toolCall", id: "t2", name: "touch", arguments: {} },
+		] },
+		{ role: "toolResult", toolCallId: "t1", toolName: "sudo_exec", content: [{ type: "text", text: "" }], isError: true },
+		{ role: "toolResult", toolCallId: "t2", toolName: "touch", content: " " },
+	]);
+	assert.deepEqual(anthropicMessages[2].content, [
+		{ type: "tool_result", tool_use_id: "t1", content: "Command failed with no output", is_error: true },
+		{ type: "tool_result", tool_use_id: "t2", content: "(mcp__custom-tools__touch completed with no output)" },
+	]);
+});
+
 // Prefix stability is satisfiable by a conversion that loses content
 // consistently, so pin the content too: the pre-ff60313c conversion passed both
 // invariants above while dropping every parallel result past the first.

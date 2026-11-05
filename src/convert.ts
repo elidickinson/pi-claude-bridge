@@ -79,6 +79,17 @@ function toolResultContent(
 	return blocks;
 }
 
+/** Claude Code never sends an empty tool result: live, it substitutes these placeholders
+ *  (tests/int-cc-contracts.mjs pins them), and the API rejects an empty one marked is_error. */
+function nonEmptyToolResultContent(
+	msg: Extract<PiMessage, { role: "toolResult" }>,
+	customToolNameToSdk: ReadonlyMap<string, string>,
+): string | Array<Record<string, unknown>> {
+	const content = toolResultContent(msg.content);
+	if (typeof content !== "string" || content.trim()) return content;
+	return msg.isError ? "Command failed with no output" : `(${mapPiToolNameToSdk(msg.toolName, customToolNameToSdk)} completed with no output)`;
+}
+
 /** Convert pi message array to Anthropic API format. `recorded` replaces a tool
  * result, by pi tool call id, with the block Claude Code recorded for it. */
 export function convertPiMessages(
@@ -187,7 +198,7 @@ export function convertPiMessages(
 			// and re-inserts them after it. The on-disk form differs, the order does not.
 			const id = sanitizeToolId(msg.toolCallId, sanitizedIds);
 			const block = recorded.get(msg.toolCallId)
-				?? { type: "tool_result", tool_use_id: id, content: toolResultContent(msg.content), ...(msg.isError ? { is_error: true } : {}) };
+				?? { type: "tool_result", tool_use_id: id, content: nonEmptyToolResultContent(msg, customToolNameToSdk), ...(msg.isError ? { is_error: true } : {}) };
 			if (turnResults) {
 				turnResults.content.push(block);
 				sources.get(turnResults as unknown as SessionMessage)!.push(piIndex);
