@@ -335,14 +335,47 @@ const SCENARIOS = {
 			];
 		},	},
 
+	"hard-content-edit": {
+		contract: "An error, an image and output over CC's persistence threshold, then an earlier edit: the prefix-write sends all three as CC first did",
+		async steps(ctx) {
+			const h = await ctx.pi();
+			await prompt(h, "Look up the key alpha with lc_lookup and tell me its value.");
+			await prompt(h, `For ticket ${secret()}: call lc_fail, lc_image and lc_dump, all three in parallel in a single message. Then tell me lc_fail's error message, the image's color and the first line of the dump.`);
+			await prompt(h, "Without tools: what is 4837 * 29 - 1966? Just the number.");
+			ctx.control({ redact: true });
+			await prompt(h, "Thanks. Just say ok.");
+			await prompt(h, "Thanks again. Say goodbye.");
+			ctx.control({});
+			await shutdown(h);
+		},
+		check({ decisions, analysis, captureBodies }) {
+			const written = decisionTransition(analysis, decisions.find((d) => d.row === 7));
+			// Everything but the position: the rewrite drops CC's context records before it.
+			const content = (v) => v && JSON.stringify({ ...v, message: null });
+			// The third turn's request is the last native one holding both results.
+			const native = decisionTransition(analysis, decisions[2]);
+			const views = (tool) => ({ native: wireResult(captureBodies[native?.to.request], tool), written: wireResult(captureBodies[written?.to.request], tool) });
+			const [fail, image, dump] = ["lc_fail", "lc_image", "lc_dump"].map(views);
+			return [
+				["new session, exact resumes, prefix write, exact resume", JSON.stringify(decisions.map((d) => d.row)) === "[1,4,4,7,4]", decisions.map((d) => d.row)],
+				["CC saved the oversized output and sent a notice", dump.native?.persisted === true, dump.native],
+				["CC sent an error result", fail.native?.isError === true, fail.native],
+				["the rewrite sends the error, the image and the notice as CC did", [fail, image, dump].every((v) => content(v.native) === content(v.written)), { fail, image, dump }],
+				["the rewrite writes no oversized output to the cache", written?.cache.cacheWrite < 10_000, written?.cache],
+			];
+		},
+	},
+
 	"abort-continuation": {
 		contract: "#199/#200: a run ends with the query parked at a terminating tool; the next run continues it and is aborted",
 		async steps(ctx) {
 			const h = await ctx.pi();
 			await prompt(h, "Please record a checkpoint with the lc_stop tool, note 'start'.");
-			const streaming = h.waitForMatch((m) => m.type === "message_update" && m.assistantMessageEvent?.type === "text_delta", "streamed text", TIMEOUT);
+			// Abort at the first delta of either kind: a short reply can finish before an
+			// abort sent at its first text delta reaches the request.
+			const streaming = h.waitForMatch((m) => m.type === "message_update" && ["text_delta", "thinking_delta"].includes(m.assistantMessageEvent?.type), "streamed delta", TIMEOUT);
 			const settled = h.waitForEvent("agent_settled", TIMEOUT);
-			await h.send({ type: "prompt", message: "Now write a 400-word story about a lighthouse keeper." });
+			await h.send({ type: "prompt", message: "Without tools, write a 600-word story about a lighthouse keeper." });
 			await streaming;
 			await h.send({ type: "abort" });
 			await settled;
@@ -362,6 +395,32 @@ const SCENARIOS = {
 				["the continuing run's abort reached that query", runAbort && !runAbort.runStreamEnded, runAbort],
 				["the query ended aborted", end?.outcome === "aborted", end?.outcome],
 				["next turn retains the covered prefix and repairs the aborted suffix", [6, 7].includes(decisions.at(-1)?.row) && decisions.at(-1)?.cutCount > 0, decisions.at(-1)],
+			];
+		},
+	},
+
+	"abort-fresh": {
+		contract: "A fresh turn aborted mid-reply, then the next turn: retained prefix, cache and thinking",
+		async steps(ctx) {
+			const h = await ctx.pi();
+			await prompt(h, "Look up the key alpha with lc_lookup. Then: a farmer has 17 sheep, all but 9 run away, and he buys twice as many as remain. How many does he have? Give the value and the number.");
+			const streaming = h.waitForMatch((m) => m.type === "message_update" && ["text_delta", "thinking_delta"].includes(m.assistantMessageEvent?.type), "streamed delta", TIMEOUT);
+			const settled = h.waitForEvent("agent_settled", TIMEOUT);
+			await h.send({ type: "prompt", message: "Without tools, write a 600-word story about a lighthouse keeper." });
+			await streaming;
+			await h.send({ type: "abort" });
+			await settled;
+			await prompt(h, "Never mind the story. Without tools: what is 4837 * 29 - 1966? Just the number.");
+			await shutdown(h);
+		},
+		check({ decisions, analysis, capture, captureBodies }) {
+			const next = decisionTransition(analysis, decisions.at(-1));
+			return [
+				["the story request was cut off upstream", capture.some((r) => r.terminal === "client-disconnect"), capture.map((r) => `#${r.n} ${r.terminal}`)],
+				["next turn keeps a prefix", [6, 7].includes(decisions.at(-1)?.row) && decisions.at(-1)?.cutCount > 0, decisions.at(-1)],
+				["the next turn carries earlier thinking blocks", next && thinkingIn(captureBodies[next.to.request]) > 0, next && { ancestor: thinkingIn(captureBodies[next.from.request]), next: thinkingIn(captureBodies[next.to.request]) }],
+				["retained thinking is not dropped", noThinkingDrops(next), next?.apiTransformations],
+				["the next turn reads the ancestor's cached prefix", next?.preservation.status === "preserved" && next?.cache.status === "covered", next && { from: next.from.request, preservation: next.preservation, cache: next.cache }],
 			];
 		},
 	},
@@ -535,6 +594,59 @@ const SCENARIOS = {
 				["the fork reads the ancestor's cached prefix", fork?.cache.status === "covered", fork?.cache],
 			];
 		},	},
+
+	"clone-fork": {
+		contract: "pi clone (new pi session id, parent's pointer): the next turn forks the parent's Claude Code session",
+		async steps(ctx) {
+			const h = await ctx.pi();
+			await prompt(h, "Look up the key alpha with lc_lookup. Then: a farmer has 17 sheep, all but 9 run away, and he buys twice as many as remain. How many does he have? Give the value and the number.");
+			await prompt(h, "Look up the key beta with lc_lookup. Then: what is 4837 * 29 - 1966? Give the value and the number.");
+			const cloned = await h.send({ type: "clone" }, TIMEOUT);
+			if (cloned?.cancelled) throw new Error(`clone cancelled: ${JSON.stringify(cloned)}`);
+			await prompt(h, "Without tools: if a train leaves at 3:40 and the trip takes 2 hours 35 minutes, when does it arrive? Just the time.");
+			await shutdown(h);
+		},
+		// The analyzer cannot link requests across pi session ids, so the turn after
+		// the clone has no transition: compare its request with the one before by hand.
+		check({ decisions, capture, captureBodies }) {
+			const messages = capture.filter((r) => r.path?.startsWith("/v1/messages") && !r.path.includes("count_tokens"));
+			const [before, after] = messages.slice(-2);
+			const cached = before ? before.usage.cacheRead + before.usage.cacheWrite : 0;
+			return [
+				["two pi session ids", new Set(decisions.map((d) => d.piSessionId)).size === 2, decisions.map((d) => d.piSessionId)],
+				["turn after clone forks the parent's session", decisions.at(-1)?.row === 6, decisions.at(-1)],
+				["it reads everything the parent cached", cached > 0 && after?.usage.cacheRead >= cached, { before: before?.usage, after: after?.usage }],
+				["the fork carries earlier thinking blocks", thinkingIn(captureBodies[after?.n]) > 0, { before: before?.n, after: after?.n, thinking: thinkingIn(captureBodies[after?.n]) }],
+			];
+		},
+	},
+
+	"reload-instructions": {
+		contract: "A plain /reload resumes the session; a /reload after editing AGENTS.md imports pi's history so the new instructions reach the model",
+		async steps(ctx) {
+			const agentsMd = join(ctx.dir, "cwd", "AGENTS.md");
+			writeFileSync(agentsMd, "Project marker: LC-OLD-MARKER\n");
+			const h = await ctx.pi();
+			await prompt(h, "Please look up the key alpha with the lc_lookup tool and tell me its value.");
+			await prompt(h, "/lc-reload");
+			await prompt(h, "Thanks. Now look up the key beta.");
+			writeFileSync(agentsMd, "Project marker: LC-NEW-MARKER\n");
+			await prompt(h, "/lc-reload");
+			await prompt(h, "What is the project marker in your instructions? Just the marker.");
+			await shutdown(h);
+		},
+		check({ decisions, analysis, capture, captureBodies }) {
+			const plain = decisionTransition(analysis, decisions[1]);
+			const messages = capture.filter((r) => r.path?.startsWith("/v1/messages") && !r.path.includes("count_tokens"));
+			const system = JSON.stringify(captureBodies[messages.at(-1)?.n]?.system ?? "");
+			return [
+				["plain reload resumes the session", decisions[1]?.row === 4, decisions[1]],
+				["and reads its cached prefix", plain?.cache.status === "covered", plain?.cache],
+				["reload after the edit imports pi's history", decisions[2]?.row === 3 && decisions[2]?.reason === "prompt-changed", decisions[2]],
+				["the new instructions reach the request, the old ones do not", system.includes("LC-NEW-MARKER") && !system.includes("LC-OLD-MARKER"), messages.at(-1)?.n],
+			];
+		},
+	},
 
 	"compact": {
 		contract: "Compaction, then continuing: a necessary change must not conceal unrelated loss",

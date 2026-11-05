@@ -3,7 +3,7 @@
 // Load with `node --import tsx` (imports the bridge's own conversion).
 //
 // - Messages come from pi's history, converted exactly as the bridge's rebuild
-//   does (convertPiMessages, then cc-session-io's importMessages), so pi stays
+//   does (importHistory), so pi stays
 //   the source of message content.
 // - Optionally (`nativeToolDetails`) with Claude Code's details of tool blocks:
 //   tool_result blocks in CC's stored shape and each tool_use input as CC sent it.
@@ -19,8 +19,8 @@
 //   last-prompt, cost-state, ...) are not written.
 // - One parentUuid chain over the result, all under the new session id.
 
-import { createSession, repairToolPairing } from "cc-session-io";
-import { convertPiMessages } from "../../src/convert.js";
+import { createSession } from "cc-session-io";
+import { importHistory } from "../../src/session-sync.js";
 import { nonSystemMessages } from "../../src/transcript.js";
 
 const isMessage = (record) => record.type === "user" || record.type === "assistant";
@@ -39,10 +39,8 @@ export function priorMessages(messages) {
 
 /** pi messages as the bridge's rebuild writes them: cc-session-io records, chained. */
 export function convertedRecords(messages, servedToolNames, { sessionId, projectPath, model }) {
-	const { anthropicMessages } = convertPiMessages(messages, new Map(Object.entries(servedToolNames)));
 	const session = createSession({ projectPath, sessionId, ...(model ? { model } : {}) });
-	const repaired = repairToolPairing(anthropicMessages);
-	if (repaired.length) session.importMessages(repaired);
+	importHistory(session, messages, new Map(Object.entries(servedToolNames)));
 	return [...session.records];
 }
 

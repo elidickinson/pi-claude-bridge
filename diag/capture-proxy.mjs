@@ -5,7 +5,7 @@
 // honours ANTHROPIC_BASE_URL, so pointing that at this server captures the exact
 // request bodies CC sends. That is the only way to see whether a `--resume`
 // boundary re-sends a prompt prefix that differs from what CC sent live, which is
-// the open ~25% cold-resume finding in diag/AUDIT.md.
+// the unexplained boundary breaks in diag/CACHE.md.
 //
 //   node diag/capture-proxy.mjs [--port 8787] [--out DIR] [--upstream URL]
 //                               [--shape-only] [--max-body-bytes N] [--max-run-bytes N]

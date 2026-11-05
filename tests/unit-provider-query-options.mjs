@@ -87,6 +87,6 @@ describe("provider query options", () => {
 
 	it("turns off the user's Claude Code hooks while keeping their settings sources", () => {
 		assert.equal(options.settings.disableAllHooks, true);
-		assert.equal(options.settingSources, undefined);
+		assert.deepEqual(options.settingSources, ["user"]);
 	});
 });

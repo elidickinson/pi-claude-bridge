@@ -15,7 +15,7 @@ const mod = await import("../src/index.js");
 const { __test } = mod;
 const { setQuery, getSharedSession, resetSharedSession } = __test;
 let providerConfig;
-mod.default({ on: () => {}, registerProvider: (_name, config) => { providerConfig = config; }, registerTool: () => {} });
+mod.default({ on: () => {}, registerProvider: (_name, config) => { providerConfig = config; } });
 const model = providerConfig.models[0];
 const user = (content) => ({ role: "user", content, timestamp: 1 });
 const result = (id) => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "file" }], isError: false, timestamp: 1 });

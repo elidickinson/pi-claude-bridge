@@ -12,9 +12,10 @@
 
 console.log("=== session-resume-test.mjs ===");
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRpcHarness, requireEnv } from "./lib/rpc-harness.mjs";
 
 const OTHER_PROVIDER = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER");
@@ -37,13 +38,11 @@ const CODE = `code${Math.random().toString(36).slice(2, 6)}`;
 
 const TEST_CWD_PREFIX = join(tmpdir(), "pi-claude-bridge-session-resume-");
 const TEST_CWD = mkdtempSync(TEST_CWD_PREFIX);
-mkdirSync(join(TEST_CWD, ".pi"));
-writeFileSync(join(TEST_CWD, ".pi", "claude-bridge.json"), '{"askClaude":{"enabled":true}}\n');
 
 // Use harness but with custom args - start on non-provider model
 const harness = createRpcHarness({
 	name: "session-resume",
-	args: ["--model", `${OTHER_PROVIDER}/${OTHER_MODEL}`],
+	args: ["-e", fileURLToPath(new URL("../askclaude", import.meta.url)), "--model", `${OTHER_PROVIDER}/${OTHER_MODEL}`],
 	cwd: TEST_CWD,
 	defaultTimeout: TIMEOUT,
 });
@@ -133,7 +132,7 @@ try {
 
   console.log("Turn 3: AskClaude shared mode (should see non-provider context)...");
   const text3 = await promptAndWait(
-    'Use the AskClaude tool with prompt="What is the access code? Reply with just the code."'
+    'Use the AskClaude tool with prompt="What is the access code? Reply with just the code." and isolated=false'
   );
   console.log(`  AskClaude args: ${JSON.stringify(lastToolArgs)}`);
   console.log(`  AskClaude result: ${(lastToolResult || "").slice(0, 120)}`);

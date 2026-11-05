@@ -28,7 +28,6 @@ let providerConfig;
 activate({
 	on: () => {},
 	registerProvider: (_name, config) => { providerConfig = config; },
-	registerTool: () => {},
 });
 const model = providerConfig.models[0];
 const turn = (systemPrompt) => providerConfig.streamSimple(

@@ -44,10 +44,10 @@ export function loadSessionState(piSessionId: string, onReject: (message: string
 	const stored = value as Record<string, unknown>;
 	if (!("version" in stored)) return reject(onReject, "missing version");
 	if (stored.version !== FORMAT_VERSION) return reject(onReject, `unsupported version; expected ${FORMAT_VERSION}`);
-	for (const key of ["ccSessionId", "cwd", "model", "digests", "uuids", "cuttable"] as const) {
+	for (const key of ["ccSessionId", "cwd", "model", "promptDigest", "digests", "uuids", "cuttable"] as const) {
 		if (!(key in stored)) return reject(onReject, `missing ${key}`);
 	}
-	for (const key of ["ccSessionId", "cwd", "model"] as const) {
+	for (const key of ["ccSessionId", "cwd", "model", "promptDigest"] as const) {
 		if (typeof stored[key] !== "string") return reject(onReject, `${key} must be a string`);
 		if (stored[key] === "") return reject(onReject, `${key} must not be empty`);
 	}
@@ -64,6 +64,7 @@ export function loadSessionState(piSessionId: string, onReject: (message: string
 		ccSessionId: stored.ccSessionId as string,
 		cwd: stored.cwd as string,
 		model: stored.model as string,
+		promptDigest: stored.promptDigest as string,
 		digests: stored.digests as string[],
 		uuids: stored.uuids as (string | null)[],
 		cuttable: stored.cuttable as boolean[],
@@ -72,7 +73,7 @@ export function loadSessionState(piSessionId: string, onReject: (message: string
 }
 
 export function saveSessionState(piSessionId: string, state: SessionState): void {
-	for (const key of ["ccSessionId", "cwd", "model"] as const) {
+	for (const key of ["ccSessionId", "cwd", "model", "promptDigest"] as const) {
 		if (typeof state[key] !== "string" || state[key] === "") throw new Error(`${key} must be a non-empty string`);
 	}
 	validateRecording(state);
@@ -86,6 +87,7 @@ export function saveSessionState(piSessionId: string, state: SessionState): void
 		ccSessionId: state.ccSessionId,
 		cwd: state.cwd,
 		model: state.model,
+		promptDigest: state.promptDigest,
 		digests: state.digests,
 		uuids: state.uuids,
 		cuttable: state.cuttable,
