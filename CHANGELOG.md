@@ -6,6 +6,7 @@
 - **Refactor: code simplification and removal of dead/duplicated code** — No change in behavior intended. Tool results are no longer serialized for the debug log when debug is off, and the package no longer depends on `pi-tui`, `typebox` or `change-case`.
 - **Fix: a Claude Code output style no longer reaches bridge turns (#220)** — The provider runs Claude Code with its default output style, so a custom `outputStyle` in `~/.claude/settings.json` no longer competes with pi's system prompt.
 - **Fix: a tool that failed with no output no longer breaks the session (#227)** — A rebuilt session sent the empty error result as-is, which the API rejects on every later turn. Empty results now get the same placeholder text Claude Code uses live. This also applies when AskClaude sends pi's conversation to Claude Code. Thanks @ShyftXero.
+- **Fix: tool calls with JSON-encoded arguments no longer rebuild the session on every prompt (#242)** — Claude Code converts some string arguments before running a tool, such as "5" for a number parameter or an object sent as text. pi now gets the converted arguments, so the Claude Code session is reused and pi runs the tool with the arguments Claude Code recorded. Thanks @alppp.
 - **Tests: remove redundant tests** — Drop integration and unit tests that repeated other tests or covered cc-session-io rather than the bridge.
 
 ## 0.10.0 — 2026-11-04

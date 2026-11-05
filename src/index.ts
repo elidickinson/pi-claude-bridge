@@ -1169,9 +1169,16 @@ function processStreamEvent(
 			c.currentPiStream!.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: c.turnOutput });
 		} else if (block.type === "toolCall") {
 			c.turnSawToolCall = true;
-			block.arguments = mapToolArgs(
-				block.name, parsePartialJson(block.partialJson, block.arguments),
-			);
+			// CC's finished tool_use (already in assistantSteps) carries the input it
+			// runs and records, e.g. "5" converted for an integer param. Copied so pi
+			// can change its arguments without changing the recorded step.
+			const finished = c.assistantSteps.get(c.turnStreamMessageId!)?.content
+				.find((b): b is Extract<typeof b, { type: "toolCall" }> => b.type === "toolCall" && b.id === block.id);
+			if (finished) block.arguments = { ...finished.arguments };
+			else {
+				debug(`WARNING: Claude Code's finished tool_use ${block.id} did not arrive before content_block_stop; keeping the streamed arguments`);
+				block.arguments = mapToolArgs(block.name, parsePartialJson(block.partialJson, block.arguments));
+			}
 			delete block.partialJson;
 			c.currentPiStream!.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: c.turnOutput });
 		}
