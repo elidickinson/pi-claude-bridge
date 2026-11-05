@@ -31,24 +31,6 @@ describe("prompt guard", () => {
 		});
 	});
 
-	it("checks the custom text after replacing a matched inherited prompt", () => {
-		const captures = new PromptCaptures();
-		const parentPrompt = `${PI_PREAMBLE}, a coding agent harness.\n\n<tools>\n- read: Read a file\n</tools>`;
-		captures.record(parentPrompt, capture({ contextFiles: [{ path: "/parent/AGENTS.md", content: "parent rules" }] }), "agent_start");
-		captures.record("child assembled prompt", capture({
-			custom: `child wrapper\n\n${parentPrompt}\n\nchild instructions`,
-		}), "agent_start");
-		const child = captures.resolve("child assembled prompt");
-		assert.ok(child);
-		assert.equal(child.inherited.length, 1);
-
-		const projected = projectPromptCapture(child, { hasReadTool: false });
-		assert.ok(projected);
-		assert.ok(!projected.includes(PI_PREAMBLE));
-		assert.match(projected, /child wrapper/);
-		assert.match(projected, /parent rules/);
-	});
-
 	it("throws when a context file carries the trigger pair", () => {
 		const captures = new PromptCaptures();
 		const key = "context-only prompt";

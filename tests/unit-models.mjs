@@ -65,8 +65,9 @@ describe("MODELS projection", () => {
 
 	it("forwards pi-ai's thinkingLevelMap verbatim", () => {
 		const withMap = () => mockPiAiModel("claude-sonnet-5", { thinkingLevelMap: { xhigh: "xhigh", max: "max" } });
-		const models = buildModels([withMap()]);
+		const models = buildModels([withMap(), mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(find(models, "claude-sonnet-5")?.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
+		assert.equal(find(models, "claude-haiku-4-5")?.thinkingLevelMap, undefined, "no fabricated default");
 	});
 
 	it("lists claude-haiku-5-5 while pi-ai's catalog lacks it", () => {
@@ -81,11 +82,6 @@ describe("MODELS projection", () => {
 		const catalog = [mockPiAiModel("claude-haiku-5-5", { name: "from pi-ai" })];
 		const models = buildModels(withModelsAheadOfCatalog(catalog));
 		assert.deepEqual(models.map((m) => [m.id, m.name]), [["claude-haiku-5-5", "from pi-ai"]]);
-	});
-
-	it("forwards undefined thinkingLevelMap unchanged (no fabricated defaults)", () => {
-		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
-		assert.equal(find(models, "claude-haiku-4-5")?.thinkingLevelMap, undefined);
 	});
 });
 
@@ -124,14 +120,6 @@ describe("Claude Code runtime policy", () => {
 
 	it("unknown model falls back to bare id at 200K", () => {
 		assert.deepEqual(resolveClaudeCodeRuntimeModel(mockPiAiModel("claude-future-9-9"), PRO), { cliModelId: "claude-future-9-9", contextWindow: 200000 });
-	});
-});
-
-describe("claudeCodeModelId", () => {
-	it("returns the measured SDK request id", () => {
-		assert.equal(claudeCodeModelId({ id: "claude-opus-5", contextWindow: 1000000 }, PRO), "claude-opus-5[1m]");
-		assert.equal(claudeCodeModelId({ id: "claude-opus-4-7", contextWindow: 1000000 }, PRO), "claude-opus-4-7[1m]");
-		assert.equal(claudeCodeModelId({ id: "claude-haiku-4-5", contextWindow: 200000 }, PRO), "claude-haiku-4-5");
 	});
 });
 

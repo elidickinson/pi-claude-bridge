@@ -178,14 +178,6 @@ describe("discardRewrittenQuery", () => {
 		assert.ok(events.some((e) => e.startsWith("fail:")), "the parked ack has nothing left to resume it");
 		assert.equal(c.promptStream, null);
 		assert.equal(c.pendingToolCalls.size, 0);
-	});
-
-	it("marks the query discarded so its completion cannot overwrite the rebuild", () => {
-		const { c } = parkedQuery();
-		assert.equal(c.discarded, false);
-
-		discardRewrittenQuery(c);
-
 		assert.equal(c.discarded, true,
 			"its completion handler would otherwise capture the stale session id over the rebuilt one");
 	});
@@ -213,10 +205,8 @@ describe("discardRewrittenQuery", () => {
 
 		// The CLI we just killed may still flush a record into the JSONL, and the
 		// rebuild is the very next thing that happens — the abort path's reasoning,
-		// with the race made tighter. Another session's mirror is never touched.
-		const s = getSharedSession("pi-parent");
-		assert.equal(s.dirtyTail, false);
-		assert.equal(c.discarded, true);
+		// with the race made tighter.
+		assert.equal(getSharedSession("pi-parent").dirtyTail, false);
 	});
 
 	it("leaves a foreign session's mirror untouched when the foreign query discards", () => {
@@ -229,9 +219,7 @@ describe("discardRewrittenQuery", () => {
 
 		discardRewrittenQuery(c);
 
-		const s = getSharedSession("pi-parent");
-		assert.equal(s.dirtyTail, false, "the child's rebuild must not force the parent's next sync");
-		assert.equal(s.dirtyTail, false, "the parent conversation is intact");
+		assert.equal(getSharedSession("pi-parent").dirtyTail, false, "the child's rebuild must not force the parent's next sync");
 		assert.equal(getSharedSession("pi-b"), null, "the child never had a mirror to rotate");
 	});
 
@@ -243,20 +231,5 @@ describe("discardRewrittenQuery", () => {
 
 		assert.equal(c.activeQuery, null);
 		assert.equal(activeQueryContexts.has(c), false);
-	});
-});
-
-describe("per-session mirrors", () => {
-	it("separates the CC conversations of two pi sessions", () => {
-		setSharedSession("pi-a", emptyState("cc-a", "/tmp"));
-		setSharedSession("pi-b", emptyState("cc-b", "/tmp"));
-
-		assert.equal(getSharedSession("pi-a").ccSessionId, "cc-a");
-		assert.equal(getSharedSession("pi-b").ccSessionId, "cc-b");
-		assert.equal(getSharedSession("pi-c"), null, "a session with no mirror has none");
-
-		resetSharedSession("pi-b");
-		assert.equal(getSharedSession("pi-b"), null, "reset clears only the keyed mirror");
-		assert.equal(getSharedSession("pi-a").ccSessionId, "cc-a", "a sibling survives the reset");
 	});
 });

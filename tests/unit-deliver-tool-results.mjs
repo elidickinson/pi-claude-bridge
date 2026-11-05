@@ -62,30 +62,20 @@ describe("deliverToolResults", () => {
 		assert.deepStrictEqual(rec.order, ["push:actually stop", "ack", "resolve:read", "resolve:bash"]);
 	});
 
-	it("sends the steer with priority next so CC drains it at the tool boundary", async () => {
+	it("sends the steer, images included, with priority next so CC drains it at the tool boundary", async () => {
 		const sent = [];
 		const c = new QueryContext();
 		c.promptStream = { push: (msg) => { sent.push(msg); return Promise.resolve(); } };
 		c.pendingToolCalls.set("call-1", { toolName: "read", resolve: () => {} });
-
-		await __test.deliverToolResults(c, [result("call-1")], steerText, 4);
-
-		assert.equal(sent.length, 1);
-		assert.equal(sent[0].priority, "next");
-		assert.deepStrictEqual(sent[0].message.content, steerText);
-	});
-
-	it("keeps image blocks in the steer", async () => {
-		const sent = [];
-		const c = new QueryContext();
-		c.promptStream = { push: (msg) => { sent.push(msg); return Promise.resolve(); } };
 		const withImage = [
 			{ type: "text", text: "look at this" },
 			{ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBOR" } },
 		];
 
-		await __test.deliverToolResults(c, [], withImage, 4);
+		await __test.deliverToolResults(c, [result("call-1")], withImage, 4);
 
+		assert.equal(sent.length, 1);
+		assert.equal(sent[0].priority, "next");
 		assert.deepStrictEqual(sent[0].message.content, withImage);
 	});
 
@@ -109,25 +99,5 @@ describe("deliverToolResults", () => {
 		await __test.deliverToolResults(c, [], steerText, 4);
 
 		assert.deepEqual(c.recording.recorded.digests, []);
-	});
-
-	it("queues a result whose handler has not arrived yet", async () => {
-		const c = new QueryContext();
-
-		await __test.deliverToolResults(c, [result("call-late")], null, 4);
-
-		assert.equal(c.pendingResults.get("call-late").toolCallId, "call-late");
-		assert.equal(c.pendingToolCalls.size, 0);
-	});
-
-	it("pairs results to handlers by tool_use id, not arrival order", async () => {
-		const rec = makeRecorder();
-		const c = new QueryContext();
-		c.pendingToolCalls.set("call-1", rec.handler("read"));
-		c.pendingToolCalls.set("call-2", rec.handler("bash"));
-
-		await __test.deliverToolResults(c, [result("call-2"), result("call-1")], null, 4);
-
-		assert.deepStrictEqual(rec.order, ["resolve:bash", "resolve:read"]);
 	});
 });

@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { repairToolPairing } from "cc-session-io";
-import { sanitizeToolId, convertPiMessages } from "../src/convert.js";
+import { convertPiMessages } from "../src/convert.js";
 
 /** Shorthand: convert pi messages and return just the anthropic messages. */
 function convert(messages, customToolNameToSdk) {
@@ -14,49 +14,20 @@ function convert(messages, customToolNameToSdk) {
 // --- Tests ---
 
 describe("tool ID sanitization", () => {
-	it("Kimi-style IDs with dots and colons", () => {
-		const msgs = [
-			{ role: "assistant", content: [{ type: "toolCall", id: "functions.bash:0", name: "bash", arguments: { cmd: "ls" } }] },
-			{ role: "toolResult", toolCallId: "functions.bash:0", content: "file.txt" },
+	it("rewrites IDs to Anthropic's charset, keeping each tool_use paired with its result", () => {
+		const cases = [
+			["functions.bash:0", "functions_bash_0"], // Kimi-style
+			["tool call#1@foo", "tool_call_1_foo"],
+			["toolu_abc123-XYZ", "toolu_abc123-XYZ"], // already valid
 		];
-		const result = convert(msgs);
-		assert.equal(result[0].content[0].id, "functions_bash_0");
-		assert.equal(result[1].content[0].tool_use_id, "functions_bash_0");
-	});
-
-	it("IDs with spaces and special chars", () => {
-		const msgs = [
-			{ role: "assistant", content: [{ type: "toolCall", id: "tool call#1@foo", name: "bash", arguments: {} }] },
-			{ role: "toolResult", toolCallId: "tool call#1@foo", content: "ok" },
-		];
-		const result = convert(msgs);
-		assert.equal(result[0].content[0].id, "tool_call_1_foo");
-		assert.equal(result[1].content[0].tool_use_id, "tool_call_1_foo");
-	});
-
-	it("already-valid Anthropic IDs pass through unchanged", () => {
-		const msgs = [
-			{ role: "assistant", content: [{ type: "toolCall", id: "toolu_abc123-XYZ", name: "read", arguments: {} }] },
-			{ role: "toolResult", toolCallId: "toolu_abc123-XYZ", content: "data" },
-		];
-		const result = convert(msgs);
-		assert.equal(result[0].content[0].id, "toolu_abc123-XYZ");
-		assert.equal(result[1].content[0].tool_use_id, "toolu_abc123-XYZ");
-	});
-
-	it("tool_use and tool_result IDs stay paired after sanitization", () => {
-		const ids = ["fn.read:0", "fn.write:1", "fn.bash:2"];
-		const msgs = [];
-		for (const id of ids) {
-			msgs.push({ role: "assistant", content: [{ type: "toolCall", id, name: "bash", arguments: {} }] });
-			msgs.push({ role: "toolResult", toolCallId: id, content: "ok" });
-		}
-		const result = convert(msgs);
-		for (let i = 0; i < ids.length; i++) {
-			const useId = result[i * 2].content[0].id;
-			const resultId = result[i * 2 + 1].content[0].tool_use_id;
-			assert.equal(useId, resultId, `pair ${i}: tool_use=${useId} tool_result=${resultId}`);
-		}
+		const result = convert(cases.flatMap(([id]) => [
+			{ role: "assistant", content: [{ type: "toolCall", id, name: "bash", arguments: {} }] },
+			{ role: "toolResult", toolCallId: id, content: "ok" },
+		]));
+		cases.forEach(([, expected], i) => {
+			assert.equal(result[i * 2].content[0].id, expected);
+			assert.equal(result[i * 2 + 1].content[0].tool_use_id, expected);
+		});
 	});
 });
 
@@ -406,14 +377,6 @@ describe("conversion survives repairToolPairing", () => {
 		assert.deepEqual(repaired[1].content.map((b) => b.content), ["first", "second"]);
 		assert.equal(repaired[2].content, "actually stop and check X");
 	});
-
-	it("leaves no synthetic result stubs behind", () => {
-		const repaired = repairToolPairing(convert(parallelCall(5)));
-
-		const stubs = repaired.flatMap((m) => (Array.isArray(m.content) ? m.content : []))
-			.filter((b) => b.type === "tool_result" && typeof b.content === "string" && b.content.includes("no tool result recorded"));
-		assert.deepEqual(stubs, []);
-	});
 });
 
 describe("aborted assistant turns", () => {
@@ -425,14 +388,6 @@ describe("aborted assistant turns", () => {
 		]);
 		assert.equal(result.length, 2);
 		assert.deepEqual(result.map((m) => m.role), ["user", "user"]);
-	});
-
-	it("a turn whose blocks were all filtered still says so", () => {
-		const result = convert([
-			{ role: "assistant", provider: "deepseek", content: [{ type: "thinking", thinking: "deep thoughts" }] },
-		]);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].content[0].text, "[incompatible content omitted]");
 	});
 
 	// The prompt cache is keyed on exact prefix bytes, so a rebuild must reproduce

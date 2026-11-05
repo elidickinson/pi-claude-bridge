@@ -14,9 +14,7 @@ import { snapshotControl } from "../diag/lib/trace-analysis.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const claudeDir = mkdtempSync(join(tmpdir(), "claude-bridge-trace-cc-"));
-process.env.CLAUDE_CONFIG_DIR = claudeDir;
-process.on("exit", () => rmSync(claudeDir, { recursive: true, force: true }));
+const claudeDir = process.env.CLAUDE_CONFIG_DIR;
 
 const mod = await import("../src/index.js");
 const trace = await import("../src/cache-trace.js");

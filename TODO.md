@@ -6,11 +6,7 @@ Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
 Beyond the session-sync ones in Ideas #1. Ordered by value; each is independent unless noted.
 
-- **Stream-ending code is copied about 11 times.** Push, `markStreamComplete`, `end()`, null `currentPiStream`: `src/index.ts:1055`, `1175`, `1330`, `1627`, `1663`, `1755`, `2081`, `2148` and `runIsolatedSummary` (`407-428`). Helpers `endPiStream(c, event)` and `endToolUseTurn(c)` (the identical tails at `1166` and `1325`), plus `pushTextBlock(c, text)` for the text triple at `1286` and `1465`. Keep `recordAssistantEmission` before the push and the null after `end()`; a dropped `markStreamComplete` silently breaks the stale-stream warning and `bindRunSignal`.
-- **Content-block mapping is written five times.** `extractUserPromptBlocks` (`src/index.ts:244`), the user branch of `convertPiMessages` and `toolResultContent` (`src/convert.ts:103`, `62`), `writeUser`/`writeToolResultBlocks` (`src/message-digests.ts:56`, `89`) and `toolResultToMcpContent` (`src/extract-tool-results.ts:20`) each decide which text and image blocks survive. Some differences are deliberate (`[type]` markers, the `[image]` fallback, MCP dropping unknown blocks), so the shared part may be little more than an "is this a live image" check.
-- **Inherited skills are collected only to become paths.** `collectPromptSkills` (`src/prompt-capture.ts:305`) builds an ordered `Skill[]`, and its only production caller turns it straight into a path set. Collect paths directly and reuse the set for own-skill dedup; keep the cycle check.
-- **Raw CLI flags that have typed SDK options.** `strict-mcp-config` and `model` go through `extraArgs` (`src/index.ts:1903-1904`, `askclaude/src/index.ts:108`); `runIsolatedSummary` already uses the typed `strictMcpConfig` and `model`.
-- **Parameters only tests use.** `deliverToolResults`' `contextLength` and optional `messages` (`src/index.ts:1516`); `finalizeCurrentStream`'s `stopReason` (`1043`), which `turnOutput` already holds. About 20 test call sites pass them.
+- **Parameters only tests use.** `deliverToolResults`' `contextLength` and optional `messages` (`src/index.ts:1516`). About 20 test call sites pass them.
 - **`loadSessionState` repeats `saveSessionState`'s field checks** and splits a catch on an error class nothing else throws (`src/session-store.ts:47-61`). `unit-session-store.mjs` pins the reject messages.
 
 ## Ideas
@@ -18,8 +14,6 @@ Beyond the session-sync ones in Ideas #1. Ordered by value; each is independent 
 1. **Session-sync simplifications.** Each is independent.
     - **`knownSessionIds` / `registry.known` is test-only.** `src/index.ts:92`, `101`, `130`. Only `__test.resetSharedSession` reads it. Don't replace it by having the reset remove the whole sessions dir: a unit file run without `tests/lib/setup.mjs` would delete the developer's real resume pointers.
     - **`LiveRecording` has parameters only tests use.** `src/session-sync.ts:166`, `204`. Production always passes `acknowledged=false` and `uuid=undefined`. Shrink to `users(messages, start, uuid, steering)` and `assistant(digest, toolCalls, resetTools)`. About 25 test call sites change.
-    - **`SnapshotWriter`'s `"possible-writer"` and `"query-ended"` values are never passed.** `src/cache-trace.ts:311`. The only snapshot (`src/index.ts:573`) passes `"no-known-writer"`. Narrow the type but keep the field: `diag/lib/trace-analysis.mjs:95` reads it.
-    - **The pending-tool rule is in two places.** `updatePendingTools` (`src/session-sync.ts:56`, import cuts) and `LiveRecording.flush` (`src/session-sync.ts:234-241`, live cuts) both decide whether a cut is safe. Their inputs differ, so a shared helper would be thin, but if the two drift apart they'll silently disagree about cut safety.
 
 2. **Surface errors that arrive with no open pi stream.** When a result lands after the turn already ended on a tool call, `consumeQuery` records the error but has no `currentPiStream` to push it to, so the user sees a stall instead of "rate limited". Surfacing it means synthesizing a turn pi didn't ask for. `tests/unit-error-result.mjs` covers the recording, nothing covers surfacing. One of the stall causes behind #35.
 

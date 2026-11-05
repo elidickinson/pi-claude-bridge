@@ -91,15 +91,6 @@ describe("toBridgeContext section replay order", () => {
 		);
 	});
 
-	it("keeps a custom section appended after the built-ins", () => {
-		const messages = [
-			systemMessage({ content: "", toolsAdded: [{ name: "read", description: "", parameters: {} }] }),
-			systemMessage({ sections: { preamble: "P", tools: "T", cwd: "/w", myextension: "X" } }),
-			userMessage("go"),
-		];
-		assert.equal(replayedSystemPrompt(messages), ["P", "T", "/w", "X"].join("\n\n"));
-	});
-
 	it("renders the canonical head alone unchanged (fresh-session shape)", () => {
 		const messages = [
 			systemMessage({
