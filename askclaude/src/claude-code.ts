@@ -25,12 +25,15 @@ import { dirname, join } from "path";
 // - CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1: a resumed session that ends at a
 //   tool call reads to CC as an interrupted turn, and CC may insert a "Continue from
 //   where you left off." message ahead of the prompt. Every turn counts as too old.
+// - CLAUDE_CODE_SILENT_TURN_REMINDER=0: on Opus 5.5, Fable 5.1, Mythos 5.1 and Sonnet 5.5,
+//   CC adds "The user hasn't heard from you in a while..." after 5 silent assistant messages.
 const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
 	CLAUDE_CODE_ELEGANT_MEADOW: "0",
 	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 	CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
+	CLAUDE_CODE_SILENT_TURN_REMINDER: "0",
 } as const;
 
 // Set by Claude Code on its own child processes. When pi runs inside a Claude Code

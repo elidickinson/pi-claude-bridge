@@ -8,6 +8,7 @@
 - **Fix: a tool that failed with no output no longer breaks the session (#227)** — A rebuilt session sent the empty error result as-is, which the API rejects on every later turn. Empty results now get the same placeholder text Claude Code uses live. This also applies when AskClaude sends pi's conversation to Claude Code. Thanks @ShyftXero.
 - **Fix: JSON-encoded tool arguments no longer rebuild the session every prompt (#242)** — pi now gets the arguments as Claude Code converted them. Thanks @alppp.
 - **Fix: `--thinking off` turns thinking off (#152, #209)** — On models that allow it; Claude Code keeps it on for Haiku 5.5. Thanks @pcbeingused333.
+- **Fix: Claude Code no longer adds "The user hasn't heard from you" reminders or cuts tool descriptions at 4096 characters** — The description limit is now 16384.
 - **Tests: remove redundant tests** — Drop integration and unit tests that repeated other tests or covered cc-session-io rather than the bridge.
 
 ## 0.10.0 — 2026-11-04

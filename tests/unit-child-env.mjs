@@ -11,13 +11,15 @@ const { __test } = await import("../src/index.js");
 const { activateWithMockPi } = await import("./lib/mock-pi.mjs");
 
 describe("Claude Code child environment", () => {
-	it("disables auto-compaction, claude.ai MCP servers, request logging, non-essential traffic and interrupted-turn resume", () => {
+	it("disables auto-compaction, claude.ai MCP servers, request logging, non-essential traffic, interrupted-turn resume and the silent-turn reminder; raises the MCP description limit", () => {
 		assert.deepEqual(__test.CC_CHILD_ENV, {
 			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 			DISABLE_AUTO_COMPACT: "1",
 			CLAUDE_CODE_ELEGANT_MEADOW: "0",
 			CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 			CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
+			CLAUDE_CODE_SILENT_TURN_REMINDER: "0",
+			CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH: "16384",
 		});
 	});
 

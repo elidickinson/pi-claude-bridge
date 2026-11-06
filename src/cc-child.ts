@@ -23,12 +23,22 @@ import type { EffortLevel, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 //   as an interrupted turn, and behind a server flag CC inserts a "Continue from where
 //   you left off." user message ahead of pi's prompt. pi supplies every prompt, so
 //   every turn counts as too old to resume.
+// - CLAUDE_CODE_SILENT_TURN_REMINDER=0: on Opus 5.5, Fable 5.1, Mythos 5.1 and
+//   Sonnet 5.5, CC adds "The user hasn't heard from you in a while..." after 5
+//   assistant messages with no visible text. pi decides what the model is told; the
+//   message is not in pi's history and the user never sees it.
+// - CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=16384: CC cuts MCP tool descriptions
+//   mid-sentence at 4096 chars (16384 for tools loaded through tool search), so long
+//   pi tools lost their tail; pi's own providers send them whole. 16384 is CC's own
+//   larger limit and still stops a runaway description.
 export const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
 	CLAUDE_CODE_ELEGANT_MEADOW: "0",
 	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 	CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
+	CLAUDE_CODE_SILENT_TURN_REMINDER: "0",
+	CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH: "16384",
 } as const;
 
 // Set by Claude Code on its own child processes (eXe(), its session-env list and
