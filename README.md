@@ -54,6 +54,7 @@ Config: `~/.pi/agent/claude-bridge.json`. There is no project config, so a clone
 - `plan` (default `"pro"`) — set to `"max"` if you have a Max (or Team Premium/Enterprise) Anthropic plan. This enables Opus with 1M context.
 - `longContextExtraUsage` — set to `true` to enable 1M context models even if they cost money through Extra Usage on your plan. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro.
 - `forceTwoHundredK` — array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
+- `systemPromptMode` — `"append"` (default) adds pi's prompt parts (context files, skills, `--system-prompt`/`--append-system-prompt` text, extension sections) to Claude Code's `claude_code` preset; `"replace"` sends them without the preset. Pi's own base prompt is never sent. A change takes effect on the next turn (the bridge rebuilds the Claude Code session once). The AskClaude package always uses the preset.
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.

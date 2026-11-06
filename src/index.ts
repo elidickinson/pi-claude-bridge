@@ -516,7 +516,7 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 }
 
 // Compare pi's values, then retain CC's own records up to the last valid cut.
-// `promptDigest` is the provider's system prompt append; a change takes a full
+// `promptDigest` is the provider's system prompt append (and mode); a change takes a full
 // import, the only path on which CC records a new one.
 function syncSharedSession(
 	messages: Context["messages"],
@@ -1776,6 +1776,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// transformContext after turn_start, so ctx.getSystemPrompt() is not the head.
 	let promptCapture: PromptCapture | undefined;
 	let systemPromptAppend: string | undefined;
+	const replacePrompt = providerSettings.systemPromptMode === "replace";
 	try {
 		traceAssertReady();
 		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
@@ -1819,7 +1820,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// Read before the consume below: with no query parked (an overflow retried
 		// after compaction), the session's mark is the only sign of the rewrite.
 		const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
-		const promptDigest = createHash("sha256").update(systemPromptAppend ?? "").digest("hex");
+		// Only "replace" alters the digest, so default sessions keep their upstream digest.
+		const promptDigest = createHash("sha256").update((replacePrompt ? "replace\0" : "") + (systemPromptAppend ?? "")).digest("hex");
 		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, promptDigest);
 		if (syncResult.created) createdBeforeLaunch = { id: syncResult.targetSessionId, cwd };
 		// This query starts from the history pi has now: consume this session's
@@ -1937,7 +1939,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				// A user's output style is persona text written for standalone Claude Code; pi owns the persona here.
 				outputStyle: "default",
 			},
-			systemPrompt: {
+			// "" is the SDK's bare default, not the preset.
+			systemPrompt: replacePrompt ? systemPromptAppend ?? "" : {
 				type: "preset", preset: "claude_code",
 				append: systemPromptAppend ? systemPromptAppend : undefined,
 			},
@@ -2205,8 +2208,8 @@ export default function (pi: ExtensionAPI) {
 		rememberSummarySession(event.signal, ctx.sessionManager.getSessionId());
 	});
 	// `--system-prompt` replaces pi's default rather than adding to it, but Claude
-	// Code's preset carries its own tool and permission guidance that the bridge
-	// still depends on, so both flags are forwarded as an append.
+	// Code's preset carries its own tool and permission guidance, so by default both
+	// flags are forwarded as an append (systemPromptMode "replace" drops the preset).
 	//
 	// The options (custom/append/contextFiles/skills/sections) are pi config, stable across a
 	// turn; only the auto-generated tool list in the rendered prompt varies. Stash them
