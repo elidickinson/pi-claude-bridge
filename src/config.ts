@@ -16,6 +16,8 @@ export interface Config {
 	askClaude?: { enabled?: boolean };
 	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
+		// "append" (default): CC's claude_code preset + pi's prompt parts; "replace": pi's parts only.
+		systemPromptMode?: "append" | "replace";
 		strictMcpConfig?: boolean;
 		autoMemoryEnabled?: boolean;
 		pathToClaudeCodeExecutable?: string;
