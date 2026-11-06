@@ -19,21 +19,23 @@ Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's 
    ```
    pi install npm:pi-claude-bridge
    ```
-2. Log in to Claude Code with your Claude subscription: run `claude auth login`. The bridge uses Claude Code's login, not pi's `/login`.
-3. In pi, pick a `claude-bridge/...` model with `/model`, e.g. `claude-bridge/claude-opus-5`. **Don't pick the `anthropic/...` models:** those are pi's own Anthropic provider and don't go through Claude Code or your subscription.
-4. Optional: to let other providers delegate tasks or questions to Claude Code, install the AskClaude tool: `pi install npm:pi-claude-bridge-askclaude` ([askclaude/](askclaude/README.md)).
+2. Log in to Claude Code with your Claude subscription: run `claude auth login`. The bridge uses Claude Code's login, *not* pi's `/login`.
+3. In pi, pick a `claude-bridge/...` model with `/model`, e.g. `claude-bridge/claude-opus-5-5`. **Don't pick the `anthropic/...` models:** those are pi's own Anthropic provider and don't go through Claude Code or your subscription.
+
+
+Optional: to let other providers delegate tasks or questions to Claude Code, install the AskClaude tool: `pi install npm:pi-claude-bridge-askclaude` ([askclaude/](askclaude/README.md)).
 
 Requires pi 1.2.0 or newer to use all models (but should mostly work >=0.86.1).
 
 ## Provider
 
-Use `/model` to select any Claude model in pi-ai's catalog, e.g. `claude-bridge/claude-fable-5-1`, `claude-bridge/claude-opus-5`, or `claude-bridge/claude-haiku-4-5`.
+Use `/model` to select any Claude model in pi-ai's catalog, e.g. `claude-bridge/claude-fable-5-1`, `claude-bridge/claude-opus-5-5`, or `claude-bridge/claude-haiku-5-5`.
 
 Behind the scenes, pi's tools are bridged to Claude Code but everything works like normal in pi. Bash commands get Claude Code's 120-second default timeout since pi's bash has none. Skills are forwarded to Claude Code's system prompt, and steering mid-turn reaches Claude at the next tool boundary.
 
 The model list comes from pi-ai's Anthropic catalog automatically — when pi-ai adds a new Claude model, it appears in `/model` after updating the package, no bridge update needed. Dated snapshot ids (e.g. `claude-opus-4-5-20251101`) are not shown.
 
-**1M Context:** Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5.5/5 get 1M context. Opus 4.6 gets 1M only on a Max plan or with Extra Usage, and Sonnet 4.6 only with Extra Usage — set `provider.plan` and/or `provider.longContextExtraUsage` as described in [Configuration](#configuration).
+All current models run with 1M context. Opus 4.6 and Sonnet 4.6 need extra settings for 1M (see [Configuration](#configuration)).
 
 ## Configuration
 
@@ -42,8 +44,6 @@ Config: `~/.pi/agent/claude-bridge.json`. There is no project config, so a clone
 ```json
 {
   "provider": {
-    "plan": "max",
-    "longContextExtraUsage": false,
     "strictMcpConfig": true,
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
   }
@@ -51,15 +51,12 @@ Config: `~/.pi/agent/claude-bridge.json`. There is no project config, so a clone
 ```
 
 `provider`:
-- `plan` (default `"pro"`) — set to `"max"` if you have a Max (or Team Premium/Enterprise) Anthropic plan. This enables Opus with 1M context.
-- `longContextExtraUsage` — set to `true` to enable 1M context models even if they cost money through Extra Usage on your plan. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro.
-- `forceTwoHundredK` — array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
-
-
-**Notices:** the startup notice points out when `provider.plan` is unset and records `startupNoticeShown` in the config.
+- `forceTwoHundredK` — array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
+- `plan` (default `"pro"`) — set to `"max"` on a Max (or Team Premium/Enterprise) plan to run Opus 4.6 with 1M context.
+- `longContextExtraUsage` — set to `true` to run Opus 4.6 (on Pro) and Sonnet 4.6 with 1M context, billed through Extra Usage.
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not work correctly with pi-claude-bridge; they only apply to pi-side settings like compaction threshold. Overriding `contextWindow` or other fields requires editing `src/models.ts` directly — to pin a model to 200K, use `provider.forceTwoHundredK` instead.
 

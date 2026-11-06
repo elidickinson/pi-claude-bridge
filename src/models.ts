@@ -65,8 +65,9 @@ type ClaudeCodeRuntimeModel = {
 };
 
 // Measured Claude Agent SDK behavior - see diag/CONTEXT-SIZE.md:
-// - The `[1m]` suffix is the only reliable way to request 1M context through
-//   the SDK; bare ids serve 200K.
+// - The `[1m]` suffix is the reliable way to request 1M context through the
+//   SDK. Bare ids serve 1M for current models on Pro, but older models and some
+//   Max-plan measurements serve 200K.
 // - An unentitled `[1m]` id is rejected outright (400/429), failing every turn
 //   — worse than serving 200K, so the default is bare id at 200K and only
 //   measured-good ids get `[1m]`.
