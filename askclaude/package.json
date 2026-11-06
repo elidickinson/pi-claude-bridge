@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-bridge-askclaude",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Pi extension that adds an AskClaude tool: delegate questions or tasks to Claude Code (via Agent SDK) from any provider.",
   "keywords": [
