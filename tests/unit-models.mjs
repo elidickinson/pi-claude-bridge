@@ -1,12 +1,14 @@
 /**
  * Tests for MODELS construction.
  * Pins: catalog-driven picker excludes pi-ai's dated snapshot aliases, projection strips
- * pi-ai's baseUrl/api/provider/headers, and the runtime policy gates [1m] ids
- * on measurement and plan settings.
+ * pi-ai's baseUrl/api/provider/headers, extra ids from
+ * CLAUDE_BRIDGE_EXTRA_MODELS register after the catalog and only when set, and
+ * the runtime policy gates [1m] ids on measurement and plan settings.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { applyLongContext, buildModels, resolveClaudeCodeRuntimeModel } from "../src/models.js";
+import { execFileSync } from "node:child_process";
+import { applyLongContext, buildExtraModels, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel } from "../src/models.js";
 import { getModels } from "@earendil-works/pi-ai/compat";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
@@ -148,5 +150,117 @@ describe("applyLongContext", () => {
 
 		const extra = applyLongContext(models, EXTRA);
 		assert.equal(find(extra, "claude-sonnet-4-6").name, "Claude Sonnet 4.6 1M");
+	});
+});
+
+it("claude-opus-5-5 requests 1M on Pro", () => {
+	assert.deepEqual(resolveClaudeCodeRuntimeModel({ id: "claude-opus-5-5" }, PRO), { cliModelId: "claude-opus-5-5[1m]", contextWindow: 1000000 });
+});
+
+// The model list is composed at import time, so a fresh process is the honest
+// probe: in-process the env var is read before any test could set it, and the
+// provider is already registered.
+function registeredModelsInChild(extraModels) {
+	const env = { ...process.env };
+	delete env.CLAUDE_BRIDGE_DEBUG;
+	if (extraModels === undefined) delete env.CLAUDE_BRIDGE_EXTRA_MODELS;
+	else env.CLAUDE_BRIDGE_EXTRA_MODELS = extraModels;
+	const src = new URL("../src/index.ts", import.meta.url).href;
+	const probe = `
+		const { default: activate } = await import(${JSON.stringify(src)});
+		let models;
+		activate({
+			on: () => {},
+			registerProvider: (_name, config) => { models = config.models; },
+			registerTool: () => {},
+		});
+		console.log(JSON.stringify(models));
+	`;
+	const out = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", probe], {
+		env, encoding: "utf8", timeout: 60_000,
+	});
+	return JSON.parse(out);
+}
+
+describe("CLAUDE_BRIDGE_EXTRA_MODELS", () => {
+	const catalogIds = () => buildModels(getModels("anthropic")).map((m) => m.id);
+	// id, window and cap of each registered extra — the exact id is what the
+	// colon-splitting bug got wrong, so every case pins it.
+	const extra = (spec) => buildExtraModels(spec).map((m) => [m.id, m.contextWindow, m.maxTokens]);
+
+	it("registers the catalog alone when the variable is unset", () => {
+		const registered = registeredModelsInChild(undefined);
+		const expected = applyLongContext(buildModels(getModels("anthropic")), PRO);
+		assert.deepEqual(registered, JSON.parse(JSON.stringify(expected)));
+	});
+
+	it("registers the listed ids after the catalog", () => {
+		const registered = registeredModelsInChild("my-model,my-long-model:128000:8192");
+		const catalogLength = catalogIds().length;
+		assert.deepEqual(registered.slice(0, catalogLength).map((m) => m.id), catalogIds());
+		assert.deepEqual(registered.slice(catalogLength), [
+			{
+				id: "my-model", name: "my-model", reasoning: false, input: ["text"],
+				contextWindow: 200000, maxTokens: 32000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+			{
+				id: "my-long-model", name: "my-long-model", reasoning: false, input: ["text"],
+				// A declared window and cap survive registration: the [1m]/200K policy
+				// is measured Claude behavior and must not rewrite a foreign id.
+				contextWindow: 128000, maxTokens: 8192,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+		]);
+	});
+
+	it("adds nothing for a blank list, and skips repeats and catalog ids", () => {
+		assert.deepEqual(buildExtraModels(undefined), []);
+		assert.deepEqual(buildExtraModels(""), []);
+		assert.deepEqual(buildExtraModels(" , ,"), []);
+		assert.deepEqual(buildExtraModels("my-model,my-model").map((m) => m.id), ["my-model"]);
+		assert.deepEqual(buildExtraModels("my-model", ["my-model"]), []);
+	});
+
+	// Zero and empty limit fields fall back to the defaults rather than asking for
+	// a zero-token model; a non-numeric field is not a window at all (below).
+	it("keeps the documented defaults for a zero window or cap", () => {
+		const [model] = buildExtraModels("my-model:0:0");
+		assert.equal(model.id, "my-model");
+		assert.equal(model.contextWindow, 200000);
+		assert.equal(model.maxTokens, 32000);
+	});
+
+	// Served ids carry colons: splitting on every one of them registered the last
+	// segment as the id (`free`) and left the variant unselectable.
+	it("registers colon-bearing variants under their complete ids", () => {
+		assert.deepEqual(
+			extra("meta-llama/llama-3.2-3b-instruct:free,anthropic/claude-opus-5:nitro"),
+			[
+				["meta-llama/llama-3.2-3b-instruct:free", 200000, 32000],
+				["anthropic/claude-opus-5:nitro", 200000, 32000],
+			],
+		);
+	});
+
+	it("takes one or two trailing numeric limits off a colon-bearing id", () => {
+		assert.deepEqual(extra("anthropic/claude-opus-5:nitro:128000:8192"), [["anthropic/claude-opus-5:nitro", 128000, 8192]]);
+		// One numeric field is the window; the cap keeps its default.
+		assert.deepEqual(extra("meta-llama/llama-3.2-3b-instruct:free:64000"), [["meta-llama/llama-3.2-3b-instruct:free", 64000, 32000]]);
+		// A non-numeric field before the limit is a variant suffix, so it stays in the id.
+		assert.deepEqual(extra("my-model:beta:200000"), [["my-model:beta", 200000, 32000]]);
+	});
+
+	it("treats an empty or zero limit field as unset", () => {
+		assert.deepEqual(extra("my-model::8192"), [["my-model", 200000, 8192]]);
+		assert.deepEqual(extra("my-model:0:0"), [["my-model", 200000, 32000]]);
+		assert.deepEqual(extra("my-model:"), [["my-model", 200000, 32000]]);
+	});
+
+	// The flat syntax has no escape: a numeric last field is read as a limit even
+	// when it is part of the served id, and a non-numeric one joins the id.
+	it("reads a numeric id suffix as a limit", () => {
+		assert.deepEqual(extra("gateway/model:200000"), [["gateway/model", 200000, 32000]]);
+		assert.deepEqual(extra("my-model:200k:0"), [["my-model:200k", 200000, 32000]]);
 	});
 });

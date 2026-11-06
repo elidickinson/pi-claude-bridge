@@ -11,7 +11,7 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { QueryProcess } from "./query-process.js";
 import { readTranscript, recordedToolResults, resolveRecordingCut, savePrefixSession } from "./session-transcript.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
-import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings } from "./models.js";
+import { applyLongContext, buildExtraModels, buildModels, claudeCodeModelId, type LongContextSettings } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -55,7 +55,11 @@ function diagDump(label: string, data: Record<string, unknown>) {
 const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
 
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
-const MODELS = buildModels(getModels("anthropic"));
+// Ids an endpoint serves outside that catalog (a gateway or router behind
+// ANTHROPIC_BASE_URL) are opt-in through CLAUDE_BRIDGE_EXTRA_MODELS.
+const CATALOG_MODELS = buildModels(getModels("anthropic"));
+const EXTRA_MODELS = buildExtraModels(process.env.CLAUDE_BRIDGE_EXTRA_MODELS, CATALOG_MODELS.map((m) => m.id));
+const MODELS = [...CATALOG_MODELS, ...EXTRA_MODELS];
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
 
@@ -2156,8 +2160,10 @@ export default function (pi: ExtensionAPI) {
 		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
 		forceTwoHundredK,
 	};
-	const registeredModels = applyLongContext(MODELS, longContextSettings);
-	if (registeredModels.length === 0) {
+	// Extra ids are not Claude models, so the measured [1m]/200K policy must not
+	// rewrite them: they register with the window and max tokens they declared.
+	const registeredModels = [...applyLongContext(CATALOG_MODELS, longContextSettings), ...EXTRA_MODELS];
+	if (CATALOG_MODELS.length === 0) {
 		console.error("claude-bridge: no models available from pi-ai's anthropic catalog — update @earendil-works/pi-ai (requires >=0.86.1)");
 	}
 
