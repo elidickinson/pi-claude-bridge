@@ -1,7 +1,6 @@
 /**
- * Tests for MODELS construction + resolveModel.
- * Pins: catalog-driven picker excludes pi-ai's dated snapshot aliases, family
- * shortcuts resolve newest-first regardless of sort order, projection strips
+ * Tests for MODELS construction.
+ * Pins: catalog-driven picker excludes pi-ai's dated snapshot aliases, projection strips
  * pi-ai's baseUrl/api/provider/headers, extra ids from
  * CLAUDE_BRIDGE_EXTRA_MODELS register after the catalog and only when set, and
  * the runtime policy gates [1m] ids on measurement and plan settings.
@@ -9,7 +8,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { applyLongContext, buildExtraModels, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel, resolveModel } from "../src/models.js";
+import { applyLongContext, buildExtraModels, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel } from "../src/models.js";
 import { getModels } from "@earendil-works/pi-ai/compat";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
@@ -56,10 +55,9 @@ describe("MODELS projection", () => {
 		assert.deepEqual(models.map((m) => m.id), ["claude-opus-5", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5"]);
 	});
 
-	it("keeps dated aliases from stealing shortcuts from bare ids", () => {
+	it("drops dated aliases in favor of bare ids", () => {
 		const models = buildModels([mockPiAiModel("claude-opus-4-5-20251101"), mockPiAiModel("claude-opus-4-5")]);
 		assert.deepEqual(models.map((m) => m.id), ["claude-opus-4-5"]);
-		assert.equal(resolveModel(models, "opus-4-5")?.id, "claude-opus-4-5");
 	});
 
 	it("sinks unknown families below the known shortcut families", () => {
@@ -69,39 +67,15 @@ describe("MODELS projection", () => {
 
 	it("forwards pi-ai's thinkingLevelMap verbatim", () => {
 		const withMap = () => mockPiAiModel("claude-sonnet-5", { thinkingLevelMap: { xhigh: "xhigh", max: "max" } });
-		const models = buildModels([withMap()]);
+		const models = buildModels([withMap(), mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(find(models, "claude-sonnet-5")?.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
-	});
-
-	it("forwards undefined thinkingLevelMap unchanged (no fabricated defaults)", () => {
-		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
-		assert.equal(find(models, "claude-haiku-4-5")?.thinkingLevelMap, undefined);
-	});
-});
-
-describe("resolveModel", () => {
-	const models = buildModels(getModels("anthropic"));
-
-	it("opus shortcut resolves to the newest opus in the catalog", () => {
-		// buildModels sorts newest-first within a family and resolveModel's partial
-		// tiebreak ranks by the same version, so a new Anthropic release (pi-ai 0.87.1
-		// added claude-opus-5-5) keeps both green without edits here.
-		const newestOpus = models.find((m) => m.id.includes("opus"));
-		assert.ok(newestOpus, "catalog contains an opus model");
-		assert.equal(resolveModel(models, "opus")?.id, newestOpus.id);
-		// Order independence: reversed input puts the oldest opus first, so a resolver
-		// that settled for the first partial match would fail here.
-		assert.equal(resolveModel([...models].reverse(), "opus")?.id, newestOpus.id);
-	});
-
-	it("exact id beats newer partial match (claude-fable-5 → fable-5, not 5-1)", () => {
-		assert.equal(resolveModel(models, "claude-fable-5")?.id, "claude-fable-5");
+		assert.equal(find(models, "claude-haiku-4-5")?.thinkingLevelMap, undefined, "no fabricated default");
 	});
 });
 
 describe("Claude Code runtime policy", () => {
 	it("measured-1M ids send [1m] on every plan", () => {
-		for (const id of ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"]) {
+		for (const id of ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"]) {
 			assert.deepEqual(resolveClaudeCodeRuntimeModel(oneM(id), PRO), { cliModelId: `${id}[1m]`, contextWindow: 1000000 });
 		}
 	});
@@ -137,14 +111,6 @@ describe("Claude Code runtime policy", () => {
 	});
 });
 
-describe("claudeCodeModelId", () => {
-	it("returns the measured SDK request id", () => {
-		assert.equal(claudeCodeModelId({ id: "claude-opus-5", contextWindow: 1000000 }, PRO), "claude-opus-5[1m]");
-		assert.equal(claudeCodeModelId({ id: "claude-opus-4-7", contextWindow: 1000000 }, PRO), "claude-opus-4-7[1m]");
-		assert.equal(claudeCodeModelId({ id: "claude-haiku-4-5", contextWindow: 200000 }, PRO), "claude-haiku-4-5");
-	});
-});
-
 describe("applyLongContext", () => {
 	const models = buildModels(getModels("anthropic"));
 
@@ -157,11 +123,6 @@ describe("applyLongContext", () => {
 
 	it("leaves unmeasured sonnet-4-5 at 200K", () => {
 		assert.equal(find(applyLongContext(models, PRO), "claude-sonnet-4-5").contextWindow, 200000);
-	});
-
-	it("haiku shortcut and no-match still resolve", () => {
-		assert.equal(resolveModel(models, "haiku")?.id, "claude-haiku-5-5");
-		assert.equal(resolveModel(models, "gpt-9"), undefined);
 	});
 
 	it("plan gates only the measured exceptions", () => {

@@ -59,35 +59,23 @@ const fallbackMessages = (id) => [
 ].map((block, i) => ({ type: "assistant", parent_tool_use_id: null, uuid: `${id}-${i}`, message: { id, content: [block] } }));
 
 describe("non-streaming fallback after a stalled stream", () => {
-	it("delivers the fallback's tool call to pi and ends the stream on toolUse", async () => {
+	it("delivers the fallback in place of the dead stream and ends the turn on its tool call", async () => {
 		const c = makeCtx();
 		const stream = c.currentPiStream;
 		await consume(c, [...stalledStream("msg_dead"), ...fallbackMessages("msg_fallback")]);
 
-		const toolCalls = c.turnOutput.content.filter((b) => b.type === "toolCall");
-		assert.deepStrictEqual(toolCalls.map((b) => b.id), ["toolu_a"]);
+		// The dead stream's partial thinking and tool call are dropped, not replayed.
+		assert.deepStrictEqual(c.turnOutput.content.map((b) => [b.type, b.id]),
+			[["thinking", undefined], ["text", undefined], ["toolCall", "toolu_a"]]);
+		assert.strictEqual(c.turnOutput.content[0].thinking, "Let me look.");
+		assert.strictEqual(c.turnOutput.content[0].thinkingSignature, "sig");
 		assert.deepStrictEqual(c.turnToolCallIds, ["toolu_a"]);
 		assert.strictEqual(c.turnOutput.stopReason, "toolUse");
 		assert.strictEqual(c.currentPiStream, null);
 		assert.deepStrictEqual(stream.events.filter((e) => e.type === "done" || e.type === "end").map((e) => e.type), ["done", "end"]);
-	});
-
-	it("records the fallback as Claude Code's copy of the emitted message", async () => {
-		const c = makeCtx();
-		await consume(c, [...stalledStream("msg_dead"), ...fallbackMessages("msg_fallback")]);
-
+		// Recorded as Claude Code's copy of the emitted message.
 		assert.deepStrictEqual(c.recording.recorded.digests, [digestMessage(c.turnOutput)]);
 		assert.deepStrictEqual(c.recording.recorded.uuids, ["msg_fallback-2"]);
-	});
-
-	it("drops the dead stream's partial blocks instead of replaying them", async () => {
-		const c = makeCtx();
-		await consume(c, [...stalledStream("msg_dead"), ...fallbackMessages("msg_fallback")]);
-
-		assert.deepStrictEqual(c.turnOutput.content.map((b) => b.type), ["thinking", "text", "toolCall"]);
-		assert.strictEqual(c.turnOutput.content[0].thinking, "Let me look.");
-		assert.strictEqual(c.turnOutput.content[0].thinkingSignature, "sig");
-		assert.ok(!c.turnOutput.content.some((b) => b.id === "toolu_dead"));
 	});
 
 	it("drops the dead stream when Claude Code retries it as a new stream", async () => {

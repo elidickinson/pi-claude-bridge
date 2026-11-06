@@ -1,12 +1,12 @@
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { formatProjectContext } from "./agents-md.js";
 import { debugLogPath } from "./log-paths.js";
-import { renderSkillsBlock, type SkillReadTool } from "./skills.js";
+import { renderSkillsBlock } from "./skills.js";
 
 // What pi assembled for one agent, kept so the bridge can append only the
 // portable parts after Claude Code's own preset.
 
-export type PromptCaptureInput = {
+type PromptCaptureInput = {
 	custom?: string;
 	append?: string;
 	contextFiles: { path: string; content: string }[];
@@ -40,7 +40,7 @@ export type PromptCapture = PromptCaptureInput & {
  * without recognizing pi prose or sub-agent markers. If pi later exposes an
  * inherited-system-prompt field, it should replace this inference.
  */
-export type PromptCaptureDiagnostic = {
+type PromptCaptureDiagnostic = {
 	/** The prompt that matched nothing: the full system prompt is too big to log
 	 *  inline, so a fingerprint plus the closest match's first divergent offset
 	 *  are enough to recognize the pump.
@@ -129,7 +129,7 @@ export class PromptCaptures {
 	}
 
 	/**
-	 * The capture to project for one query, for both the provider and AskClaude.
+	 * The capture to project for one provider query.
 	 *
 	 * An exact key is the normal case. A prompt that only *embeds* known prompts —
 	 * anything that wrapped what Pi assembled after we recorded it — resolves to a
@@ -296,15 +296,14 @@ export function sharedPromptCaptures(onDiagnose?: (diagnostic: PromptCaptureDiag
 
 export function projectPromptCapture(
 	capture: PromptCapture,
-	options: { skillReadTool: SkillReadTool },
+	options: { hasReadTool: boolean },
 ): string | undefined {
 	return projectCapture(capture, options, new Set());
 }
 
-/** Skills visible through inherited prompts, ancestor first and once per file. */
-export function collectPromptSkills(capture: PromptCapture): Skill[] {
-	const result: Skill[] = [];
-	const seenPaths = new Set<string>();
+/** File paths of the skills `capture`'s inherited prompts already list. */
+function inheritedSkillPaths(capture: PromptCapture): Set<string> {
+	const paths = new Set<string>();
 	const visited = new Set<PromptCapture>();
 	const visiting = new Set<PromptCapture>();
 
@@ -313,36 +312,27 @@ export function collectPromptSkills(capture: PromptCapture): Skill[] {
 		if (visiting.has(node)) throw new Error("Cyclic prompt inheritance");
 		visiting.add(node);
 		for (const edge of node.inherited) visit(edge.parent);
-		for (const skill of node.skills) {
-			if (skill.disableModelInvocation || seenPaths.has(skill.filePath)) continue;
-			seenPaths.add(skill.filePath);
-			result.push(skill);
-		}
+		for (const skill of node.skills) if (!skill.disableModelInvocation) paths.add(skill.filePath);
 		visiting.delete(node);
 		visited.add(node);
 	};
 
-	visit(capture);
-	return result;
+	for (const edge of capture.inherited) visit(edge.parent);
+	return paths;
 }
 
 function projectCapture(
 	capture: PromptCapture,
-	options: { skillReadTool: SkillReadTool },
+	options: { hasReadTool: boolean },
 	visiting: Set<PromptCapture>,
 ): string | undefined {
 	if (visiting.has(capture)) throw new Error("Cyclic prompt inheritance");
 	visiting.add(capture);
 	try {
-		const inheritedSkillPaths = new Set(
-			capture.inherited.flatMap((edge) => collectPromptSkills(edge.parent).map((skill) => skill.filePath)),
-		);
-		const ownSkillPaths = new Set<string>();
+		const seenSkillPaths = inheritedSkillPaths(capture);
 		const ownSkills = capture.skills.filter((skill) => {
-			if (skill.disableModelInvocation || inheritedSkillPaths.has(skill.filePath) || ownSkillPaths.has(skill.filePath)) {
-				return false;
-			}
-			ownSkillPaths.add(skill.filePath);
+			if (skill.disableModelInvocation || seenSkillPaths.has(skill.filePath)) return false;
+			seenSkillPaths.add(skill.filePath);
 			return true;
 		});
 
@@ -350,7 +340,7 @@ function projectCapture(
 		const parts: PromptPart[] = [];
 		const context = formatProjectContext(capture.contextFiles);
 		if (context) parts.push({ label: "the project context block", text: context });
-		const skills = renderSkillsBlock(ownSkills, options.skillReadTool);
+		const skills = renderSkillsBlock(ownSkills, options.hasReadTool);
 		if (skills) parts.push({ label: "the skills block", text: skills });
 		if (custom) parts.push({ label: "the custom prompt", text: custom });
 		if (capture.append) parts.push({ label: "the appended instructions", text: capture.append });
@@ -404,7 +394,7 @@ function preambleAtLineStart(text: string): number {
 
 function projectCustom(
 	capture: PromptCapture,
-	options: { skillReadTool: SkillReadTool },
+	options: { hasReadTool: boolean },
 	visiting: Set<PromptCapture>,
 ): string | undefined {
 	if (!capture.custom || capture.inherited.length === 0) return capture.custom;

@@ -12,13 +12,6 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-const claudeDir = mkdtempSync(join(tmpdir(), "claude-bridge-orphan-restart-cc-"));
-process.env.CLAUDE_CONFIG_DIR = claudeDir;
-process.on("exit", () => rmSync(claudeDir, { recursive: true, force: true }));
 
 const mod = await import("../src/index.js");
 const { setQuery, resetSharedSession, activeQueryContexts, markRebuildForSession } = mod.__test;
@@ -26,7 +19,6 @@ let providerConfig;
 mod.default({
 	on: () => {},
 	registerProvider: (_name, config) => { providerConfig = config; },
-	registerTool: () => {},
 });
 const streamSimple = providerConfig.streamSimple;
 const model = providerConfig.models[0];

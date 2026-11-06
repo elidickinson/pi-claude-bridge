@@ -13,7 +13,7 @@
 //
 // Each turn is a fresh one-shot query() with no resume, which is what a bridge
 // turn is: CC re-invoked from scratch. That isolates the system prompt from the
-// cold-resume finding in diag/AUDIT.md, which would otherwise swamp it.
+// resume-boundary breaks in diag/CACHE.md, which would otherwise swamp it.
 //
 // Findings, against CC 2.1.141 / SDK 0.2.141:
 //   - The git block is the trailing suffix of system[2], which carries

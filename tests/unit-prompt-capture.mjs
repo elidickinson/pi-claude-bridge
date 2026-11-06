@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { collectPromptSkills, PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
 
 const PI_SYSTEM_PROMPT = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js", import.meta.url));
 
@@ -28,10 +28,21 @@ function capture(overrides = {}) {
 	return { contextFiles: [], skills: [], ...overrides };
 }
 
-function project(captures, key, skillReadTool = "mcp") {
+/** At capacity 2, recording "unrelated" evicts PARENT_KEY's lookup key while the child
+ *  keeps the parent node itself alive by reference. */
+function withEvictedParent(parentRules) {
+	const captures = new PromptCaptures(2);
+	captures.record(PARENT_KEY, capture({ contextFiles: [{ path: "/AGENTS.md", content: parentRules }] }));
+	captures.record(CHILD_KEY, capture({ custom: `${PARENT_KEY}${CHILD_SUFFIX}` }));
+	captures.record("unrelated", capture());
+	assert.equal(captures.resolve(PARENT_KEY), undefined, "precondition: the key is gone");
+	return captures;
+}
+
+function project(captures, key, hasReadTool = true) {
 	const found = captures.resolve(key);
 	assert.ok(found, `missing capture for ${key.slice(0, 30)}`);
-	return projectPromptCapture(found, { skillReadTool });
+	return projectPromptCapture(found, { hasReadTool });
 }
 
 function occurrences(text, needle) {
@@ -61,7 +72,7 @@ describe("PromptCaptures", () => {
 		// wrapped in text we never saw.
 		const wrapped = `PREFIX FROM ANOTHER EXTENSION\n\n${PARENT_KEY}\n\nSUFFIX`;
 		const derived = captures.resolveOrDerive(wrapped);
-		const projected = projectPromptCapture(derived, { skillReadTool: "mcp" });
+		const projected = projectPromptCapture(derived, { hasReadTool: true });
 
 		assert.match(projected, /parent rules/, "the wrapped prompt's own instructions must survive");
 		assert.match(projected, /browser/, "and so must its skills");
@@ -75,13 +86,7 @@ describe("PromptCaptures", () => {
 	});
 
 	it("revives an exact capture whose lookup key was evicted", () => {
-		const captures = new PromptCaptures(2);
-		captures.record(PARENT_KEY, capture({ contextFiles: [{ path: "/AGENTS.md", content: "parent rules" }] }));
-		// A child keeps the parent node alive by reference even once its key is gone.
-		captures.record(CHILD_KEY, capture({ custom: `${PARENT_KEY}${CHILD_SUFFIX}` }));
-		// Evicts PARENT_KEY's lookup key while the child keeps the node itself alive.
-		captures.record("unrelated", capture());
-		assert.equal(captures.resolve(PARENT_KEY), undefined, "precondition: the key is gone");
+		const captures = withEvictedParent("parent rules");
 
 		// findInheritedPrompts skips a node whose key IS the prompt, so an evicted
 		// exact match would otherwise embed nothing and throw.
@@ -121,7 +126,7 @@ describe("PromptCaptures", () => {
 	it("reports the closest known capture when a prompt matches nothing", () => {
 		const diagnostics = [];
 		const captures = new PromptCaptures(64, (d) => diagnostics.push(d));
-		captures.record("prefix-common-THE-REST", capture());
+		captures.record("prefix-common-THE-REST", capture(), "agent_start");
 
 		let error;
 		try {
@@ -130,7 +135,8 @@ describe("PromptCaptures", () => {
 			error = e;
 		}
 
-		assert.match(String(error?.message), /diverges at offset 14 \(22-char key\)/);
+		// Names which boundary last recorded the closest prompt.
+		assert.match(String(error?.message), /diverges at offset 14 \(22-char key, last recorded at agent_start\)/);
 		assert.equal(diagnostics.length, 1);
 		assert.equal(diagnostics[0].matches[0].key, "prefix-common-THE-REST");
 		assert.equal(diagnostics[0].matches[0].firstDivergent, 14);
@@ -193,20 +199,11 @@ describe("PromptCaptures", () => {
 	});
 
 	it("retains inherited nodes after their lookup keys are evicted", () => {
-		const captures = new PromptCaptures(2);
-		captures.record(PARENT_KEY, capture({ contextFiles: [{ path: "/AGENTS.md", content: "survives eviction" }] }));
-		captures.record(CHILD_KEY, capture({ custom: `${PARENT_KEY}${CHILD_SUFFIX}` }));
-		captures.record("unrelated", capture());
-
-		assert.equal(captures.resolve(PARENT_KEY), undefined);
-		assert.match(project(captures, CHILD_KEY), /survives eviction/);
+		assert.match(project(withEvictedParent("survives eviction"), CHILD_KEY), /survives eviction/);
 	});
 
 	it("relinks an evicted ancestor through the live inheritance graph", () => {
-		const captures = new PromptCaptures(2);
-		captures.record(PARENT_KEY, capture({ contextFiles: [{ path: "/AGENTS.md", content: "reachable ancestor" }] }));
-		captures.record(CHILD_KEY, capture({ custom: `${PARENT_KEY}${CHILD_SUFFIX}` }));
-		captures.record("unrelated", capture());
+		const captures = withEvictedParent("reachable ancestor");
 		const changedKey = "changed child assembled prompt";
 		captures.record(changedKey, capture({ custom: `${PARENT_KEY}\n\nchanged child rules` }));
 
@@ -247,9 +244,7 @@ describe("PromptCaptures", () => {
 		captures.record(PARENT_KEY, capture({ skills: [browser] }));
 		captures.record(CHILD_KEY, capture({ custom: `${PARENT_KEY}${CHILD_SUFFIX}`, skills: [browser, review] }));
 
-		const childCapture = captures.resolve(CHILD_KEY);
-		assert.deepEqual(collectPromptSkills(childCapture).map(({ name }) => name), ["browser", "review"]);
-		const result = projectPromptCapture(childCapture, { skillReadTool: "mcp" });
+		const result = project(captures, CHILD_KEY);
 		assert.equal(occurrences(result, "/skills/browser/SKILL.md"), 1);
 		assert.equal(occurrences(result, "/skills/review/SKILL.md"), 1);
 	});
@@ -348,32 +343,10 @@ describe("prompt sections", () => {
 			captures.record("guarded prompt", capture({ sections: { [name]: content } }), "before_agent_start");
 
 			assert.throws(
-				() => projectPromptCapture(captures.resolve("guarded prompt"), { skillReadTool: "none" }),
+				() => projectPromptCapture(captures.resolve("guarded prompt"), { hasReadTool: false }),
 				(error) => error.message.includes(`in the ${name} section`),
 				`the ${name} section must be checked on its own`,
 			);
 		}
-	});
-});
-
-describe("capture provenance", () => {
-	it("records which boundary last wrote a key", () => {
-		const captures = new PromptCaptures();
-		captures.record("key", capture(), "agent_start");
-
-		assert.equal(captures.resolve("key").source, "agent_start");
-		captures.record("key", capture(), "turn_start");
-		assert.equal(captures.resolve("key").source, "turn_start", "a re-record replaces the earlier source");
-	});
-
-	it("names the closest match's boundary in a throw", () => {
-		const captures = new PromptCaptures();
-		captures.record("prefix-common-THE-REST", capture(), "agent_start");
-
-		assert.throws(
-			() => captures.resolveOrDerive("prefix-common-WHO-ARE-YOU"),
-			/recorded at agent_start/,
-			"the diagnostic must say which boundary last recorded the closest known prompt",
-		);
 	});
 });

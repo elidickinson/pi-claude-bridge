@@ -17,6 +17,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { PI_PREAMBLE, projectPromptCapture } from "../src/prompt-capture.js";
 import { activateWithMockPi } from "./lib/mock-pi.mjs";
 
 const { __test } = await import("../src/index.js");
@@ -28,7 +29,8 @@ const WIDENED = "You are pi.\n# Tools\n- read: Read a file\n- Agent: Launch a su
 describe("agent_start widened-prompt capture", () => {
 	it("records ctx.getSystemPrompt() so the widened prompt itself resolves", () => {
 		const handlers = activateWithMockPi();
-		handlers.get("before_agent_start")({ systemPrompt: PRE_WIDEN, systemPromptOptions: {} });
+		const contextFiles = [{ path: "/AGENTS.md", content: "project rules" }];
+		handlers.get("before_agent_start")({ systemPrompt: PRE_WIDEN, systemPromptOptions: { contextFiles } });
 
 		// Before agent_start, only the pre-widen prompt is known; the widened one is not.
 		assert.throws(
@@ -38,10 +40,9 @@ describe("agent_start widened-prompt capture", () => {
 		);
 
 		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
-		assert.ok(
-			__test.promptCaptures.resolveOrDerive(WIDENED),
-			"after agent_start the widened prompt resolves exactly",
-		);
+		const capture = __test.promptCaptures.resolveOrDerive(WIDENED);
+		assert.ok(capture, "after agent_start the widened prompt resolves exactly");
+		assert.deepEqual(capture.contextFiles, contextFiles, "carrying the before_agent_start context files");
 	});
 
 	it("lets a child embedding the widened parent resolve by inheritance", () => {
@@ -57,21 +58,6 @@ describe("agent_start widened-prompt capture", () => {
 			resolved.inherited.length >= 1,
 			"resolution must be via an inheritance edge onto the widened parent capture",
 		);
-	});
-
-	it("carries the stashed portable parts onto the widened key", () => {
-		const handlers = activateWithMockPi();
-		const contextFiles = [{ path: "/AGENTS.md", content: "project rules" }];
-		handlers.get("before_agent_start")({
-			systemPrompt: PRE_WIDEN,
-			systemPromptOptions: { contextFiles, skills: [], selectedTools: ["read"] },
-		});
-		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
-
-		const capture = __test.promptCaptures.resolve(WIDENED);
-		assert.ok(capture, "widened key must be recorded");
-		assert.deepEqual(capture.contextFiles, [{ path: "/AGENTS.md", content: "project rules" }],
-			"the widened capture must carry the before_agent_start context files, not empty ones");
 	});
 });
 
@@ -95,17 +81,64 @@ describe("turn_start prompt capture", () => {
 		assert.deepEqual(capture.contextFiles, [{ path: "/AGENTS.md", content: "project rules" }],
 			"the mid-run capture must carry the stashed portable parts");
 	});
+});
 
-	it("is idempotent when the same prompt is re-fired", () => {
+describe("subagent captures", () => {
+	it("makes isolated subagent captures resolve via the shared registry (#64)", async () => {
+		activateWithMockPi();
+		// An isolated agent re-evaluates the module; its records land in the same
+		// process-wide registry the pinned stream resolves against.
+		const { default: activateFresh, __test: freshTest } = await import("../src/index.js?isolated-child");
+		const child = activateWithMockPi(activateFresh);
+
+		const isolatedPrompt = "You are an isolated smoke-test agent. Respond with ZZ_ISO_OK.";
+		child.get("before_agent_start")({ systemPrompt: isolatedPrompt, systemPromptOptions: {} });
+		child.get("agent_start")({}, { getSystemPrompt: () => isolatedPrompt });
+
+		assert.ok(freshTest.promptCaptures.resolve(isolatedPrompt), "the child instance recorded its own prompt");
+		assert.ok(
+			__test.promptCaptures.resolveOrDerive(isolatedPrompt),
+			"the shared registry the pinned stream resolves against resolves the child's prompt",
+		);
+		assert.equal(freshTest.promptCaptures, __test.promptCaptures, "both instances share one capture registry");
+	});
+
+	// Tail-stripped inheritance (#88) is unsupported: a child embedding its parent prompt
+	// minus pi's per-session tail (skills catalogue, cwd footer) matches no full-prompt key.
+	// gotgenes/pi-subagents strips the tail; elidickinson/pi-subagents embeds verbatim.
+	it("fails loudly when a recorded tail-stripped child has no inheritance edge (#88)", () => {
+		const section = (name, content) => `<${name}>\n${content}\n</${name}>`;
+		const parentSections = [
+			`${PI_PREAMBLE}, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.`,
+			section("tools", "- read: Read a file\n- bash: Run commands\n\nIn addition to the tools above, you may have access to other custom tools depending on the project."),
+			section("rules", "- Use bash for file operations like ls, rg, find\n- Be concise in your responses"),
+			section("docs", "Pi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md"),
+			section("project_context", "Project-specific instructions and guidelines:\n\n<project_instructions path=\"/parent/AGENTS.md\">\nParent rules.\n</project_instructions>"),
+			section("skills", "The following skills provide specialized instructions for specific tasks.\n\n<available_skills>\n  <skill>\n    <name>deploy</name>\n    <description>Deploy the application.</description>\n  </skill>\n</available_skills>"),
+			section("cwd", "/parent"),
+		];
+		const parentPrompt = parentSections.join("\n\n");
+		const strippedChild = `${parentSections.slice(0, 5).join("\n\n")}\n\n<active_agent name="Explore"/>\n\n# Environment\nWorking directory: /child\nGit repository: yes\nBranch: main\nPlatform: darwin`;
+
 		const handlers = activateWithMockPi();
-		handlers.get("before_agent_start")({ systemPrompt: PRE_WIDEN, systemPromptOptions: {} });
-		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
+		handlers.get("before_agent_start")({ systemPrompt: parentPrompt, systemPromptOptions: {} });
+		handlers.get("agent_start")({}, { getSystemPrompt: () => parentPrompt });
 
-		const before = __test.promptCaptures.size;
-		handlers.get("turn_start")({}, { getSystemPrompt: () => WIDENED });
-		handlers.get("turn_start")({}, { getSystemPrompt: () => WIDENED });
+		// The child is recorded at both production capture boundaries, but its custom
+		// prompt contains only the tail-stripped parent shape, so no edge is matched.
+		handlers.get("before_agent_start")({
+			systemPrompt: strippedChild,
+			systemPromptOptions: { customPrompt: strippedChild },
+		});
+		handlers.get("agent_start")({}, { getSystemPrompt: () => strippedChild });
 
-		assert.ok(__test.promptCaptures.resolve(WIDENED), "the prompt still resolves");
-		assert.equal(__test.promptCaptures.size, before, "re-firing an unchanged prompt must not grow the registry");
+		const capture = __test.promptCaptures.resolve(strippedChild);
+		assert.ok(capture, "the tail-stripped child must be recorded before projection");
+		assert.equal(capture.inherited.length, 0, "the unsupported embedding must not invent an inheritance edge");
+		assert.throws(
+			() => projectPromptCapture(capture, { hasReadTool: false }),
+			/prompt-capture: refusing to send this prompt/,
+			"an unmatched recorded child must fail before its harness reaches Claude Code",
+		);
 	});
 });

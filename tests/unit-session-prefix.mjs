@@ -31,12 +31,12 @@ afterEach(() => {
 });
 function seed(messages, carried = []) {
 	const session = createSession({ projectPath: root, model: "sonnet" });
-	const state = { ...importHistory(session, messages, undefined, carried), ccSessionId: session.sessionId, cwd: root, model: "sonnet", dirtyTail: false };
+	const state = { ...importHistory(session, messages, undefined, carried), ccSessionId: session.sessionId, cwd: root, model: "sonnet", promptDigest: "", dirtyTail: false };
 	session.save();
 	__test.setSharedSession("pi", state);
 	return { session, state };
 }
-const sync = (messages) => __test.syncSharedSession([...messages, user("next")], root, undefined, "sonnet", "pi");
+const sync = (messages) => __test.syncSharedSession([...messages, user("next")], root, new Map(), "sonnet", "pi", undefined, "");
 
 it("row6 forks a real history prefix at its attachment run, with a pre-minted fresh id", () => {
 	const history = [user("first"), say("answer"), user("second"), say("later")];
@@ -63,7 +63,7 @@ it("row7 retains parallel siblings in its file and the native SDK request", { ti
 	source.save();
 	const records = source.records.map((r) => r.uuid === uuids[5] ? { ...r, parentUuid: uuids[3] } : r);
 	writeFileSync(source.jsonlPath, records.map((r) => JSON.stringify(r) + "\n").join(""));
-	const state = { ccSessionId: source.sessionId, cwd: root, model: "sonnet", dirtyTail: false, digests: digestMessages(history), uuids, cuttable: [true, true, true, false, false, true, true] };
+	const state = { ccSessionId: source.sessionId, cwd: root, model: "sonnet", promptDigest: "", dirtyTail: false, digests: digestMessages(history), uuids, cuttable: [true, true, true, false, false, true, true] };
 	__test.setSharedSession("pi", state);
 	assert.throws(() => resolveCut(readTranscript(state), uuids[4]), /primary parent chain/);
 	const before = readFileSync(source.jsonlPath);
@@ -161,7 +161,7 @@ it("c0 rewrites carry @file expansions of later unchanged prompts, for an early 
 	for (const [messages, modelId] of [[[user("REDACTED first"), ...history.slice(1)], "sonnet"], [history, "opus"]]) {
 		const { session } = seed(history, [{ userOrdinal: 1, parentText: prompt, attachment: file }]);
 		const before = readFileSync(session.jsonlPath);
-		const synced = __test.syncSharedSession([...messages, user("next")], root, undefined, modelId, "pi");
+		const synced = __test.syncSharedSession([...messages, user("next")], root, new Map(), modelId, "pi", undefined, "");
 		assert.equal(synced.forkAt, undefined);
 		const rewritten = openSession({ sessionId: synced.targetSessionId, projectPath: root });
 		assert.deepEqual(rewritten.attachments.map((r) => r.attachment.filename), ["fixture"]);
@@ -175,14 +175,14 @@ it("a symlinked cwd resolves the same transcript for reuse and fork, not a missi
 	symlinkSync(real, link);
 	const history = [user("a"), say("b")];
 	const session = createSession({ projectPath: real, model: "sonnet" });
-	const state = { ...importHistory(session, history), ccSessionId: session.sessionId, cwd: link, model: "sonnet", dirtyTail: false };
+	const state = { ...importHistory(session, history), ccSessionId: session.sessionId, cwd: link, model: "sonnet", promptDigest: "", dirtyTail: false };
 	session.save();
 	__test.setSharedSession("pi", state);
-	const reuse = __test.syncSharedSession([...history, user("next")], link, undefined, "sonnet", "pi");
+	const reuse = __test.syncSharedSession([...history, user("next")], link, new Map(), "sonnet", "pi", undefined, "");
 	assert.equal(reuse.created, false);
 	assert.equal(reuse.sessionId, session.sessionId);
 	state.dirtyTail = true;
-	const fork = __test.syncSharedSession([...history, user("next")], link, undefined, "sonnet", "pi");
+	const fork = __test.syncSharedSession([...history, user("next")], link, new Map(), "sonnet", "pi", undefined, "");
 	assert.equal(fork.sessionId, session.sessionId);
 	assert.equal(fork.forkAt, state.uuids.at(-1));
 });
@@ -229,7 +229,7 @@ it("a replay acknowledged before result frames retains its later-on-disk steer b
 	live.result("Y", ryId);
 	assert.deepEqual(live.recorded.uuids, [promptId, callId, rxId, "steer-source", ryId], "every live slot retains its own anchor");
 	assert.deepEqual(live.recorded.cuttable, [true, false, false, false, true]);
-	const state = { ...live.recorded, ccSessionId: source.sessionId, cwd: root, model: "sonnet", dirtyTail: true };
+	const state = { ...live.recorded, ccSessionId: source.sessionId, cwd: root, model: "sonnet", promptDigest: "", dirtyTail: true };
 	const records = readTranscript(state);
 	assert.equal(resolveRecordingCut(records, state, 5).uuid, reminder);
 	assert.equal(records[resolveRecordingCut(records, state, 5).index - 1].uuid, steerId);

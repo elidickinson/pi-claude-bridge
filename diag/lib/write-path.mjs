@@ -4,8 +4,10 @@
 // the test cannot drift into disagreeing about the same invariant.
 
 import { readFileSync } from "node:fs";
-import { createSession, repairToolPairing } from "cc-session-io";
-import { convertPiMessages } from "../../src/convert.js";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { createSession } from "cc-session-io";
+import { importHistory } from "../../src/session-sync.js";
+import { nonSystemMessages } from "../../src/transcript.js";
 
 /** Record fields that legitimately differ between two builds of the same
  *  history: identity and clock, none of which reaches the Anthropic prompt. */
@@ -26,13 +28,17 @@ export function loadPiMessages(file) {
 	return { messages, skipped };
 }
 
-/** The whole write path — convertPiMessages → repairToolPairing →
- *  Session.importMessages — reduced to the record content the prompt cache is
- *  keyed on. */
+/** A pi session's messages as the provider receives them: pi's convertToLlm,
+ *  system messages out. */
+export function providerMessages(piMessages) {
+	return nonSystemMessages(convertToLlm(piMessages));
+}
+
+/** The rebuild's write path (importHistory) reduced to the record content the
+ *  prompt cache is keyed on. */
 export function transcript(piMessages) {
-	const repaired = repairToolPairing(convertPiMessages(piMessages).anthropicMessages);
 	const session = createSession({ projectPath: process.cwd() });
-	if (repaired.length) session.importMessages(repaired);
+	importHistory(session, providerMessages(piMessages));
 	return session.records.map((r) => JSON.stringify({
 		...Object.fromEntries(Object.entries(r).filter(([k]) => !VOLATILE.has(k))),
 		message: { ...r.message, id: undefined },

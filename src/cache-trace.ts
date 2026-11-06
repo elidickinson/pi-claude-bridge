@@ -22,7 +22,6 @@
 
 import type { Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
-import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { getSessionPath, normalizeProjectPath } from "cc-session-io";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -80,17 +79,7 @@ export function packageVersion(name: string): string | null {
 	}
 }
 
-export function bridgeRevision(): { version: string | null; revision: string | null; dirty: string | null } {
-	const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version ?? null;
-	try {
-		const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-		const status = git("status", "--porcelain");
-		return { version, revision: git("rev-parse", "HEAD").trim(), dirty: status ? digest(status + git("diff", "HEAD")) : null };
-	} catch {
-		return { version, revision: null, dirty: null }; // an npm install, not a checkout
-	}
-}
+export const BRIDGE_VERSION: string = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version;
 
 function startRun(root: string): TraceRun {
 	const proxy = process.env.CLAUDE_BRIDGE_TRACE_PROXY?.replace(/\/$/, "") || undefined;
@@ -116,7 +105,7 @@ function startRun(root: string): TraceRun {
 		pid: process.pid,
 		platform: `${process.platform}-${process.arch}`,
 		node: process.version,
-		bridge: bridgeRevision(),
+		bridge: BRIDGE_VERSION,
 		sdk: packageVersion("@anthropic-ai/claude-agent-sdk"),
 		pi: PI_VERSION,
 		recording: r.raw ? "raw" : "shape",
@@ -317,9 +306,9 @@ export function traceInput(callId: string | undefined, source: Context, effectiv
 	}
 }
 
-/** Who may still be appending to a session file when it is copied. Only
- *  "no-known-writer" is a settled copy; the others are the bytes seen at that moment. */
-export type SnapshotWriter = "no-known-writer" | "possible-writer" | "query-ended";
+/** Who may still be appending to a session file when it is copied.
+ *  "no-known-writer" is a settled copy. */
+type SnapshotWriter = "no-known-writer";
 
 /** Copy a Claude Code session's files -- its JSONL and companion directory, the
  *  set deleteSession removes -- before the bridge deletes or abandons them. Raw

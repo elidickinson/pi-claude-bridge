@@ -160,12 +160,13 @@ describe("tool-message integration", () => {
 		);
 		await send({
 			type: "prompt",
-			message: "After you finish, also say the exact word 'PINEAPPLE' on its own line.",
+			message: "After you finish, add a last line giving how many sentences you wrote, as 'Total: N'.",
 			streamingBehavior: "steer",
 		});
 		await waitForEvent("agent_end");
 		const text = collector.stop();
-		assert.match(text.toLowerCase(), /pineapple/);
+		// On-topic steers: the model refuses code-word ones as prompt injection.
+		assert.match(text, /total:\s*\d+/i);
 	});
 
 	it("steer during tool execution is visible to assistant", { timeout: 20_000 }, async () => {
@@ -269,14 +270,14 @@ describe("tool-message integration", () => {
 		);
 		await send({
 			type: "prompt",
-			message: "After you finish, also say the exact word 'KIWI' on its own line.",
+			message: "After you finish, add a one-sentence summary that starts with 'In short,'.",
 			streamingBehavior: "steer",
 		});
 		await waitForEvent("agent_end");
 		const text = collector.stop();
 		const log = logSince(mark);
 
-		assert.match(text.toLowerCase(), /kiwi/);
+		assert.match(text, /in short,/i);
 		assert.doesNotMatch(log, /steer written to CC stdin/, "text-only steer was pushed into the active query's input stream");
 		assert.doesNotMatch(log, /steer push rejected/, "text-only steer reached the push path at all");
 	});

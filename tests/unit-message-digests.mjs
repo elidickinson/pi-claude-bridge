@@ -54,6 +54,15 @@ describe("pi message digests", () => {
 		assert.notEqual(digest(withImage("one")), digest(withImage("two")));
 	});
 
+	it("keeps tool-result digests stable, since they are persisted", () => {
+		const text = (value) => ({ type: "text", text: value });
+		assert.equal(digestMessage(result("plain output")), "6cd2609cca708a3e8203f7b38d7a2596b27717ec3da4ad6edf69b81dc486ddc6");
+		assert.equal(digestMessage(result([{ type: "audio" }])), "277623b5640952dc800f647f8ccb08aba3e9fd7d3212b6265995b40a1598bc14");
+		assert.equal(digestMessage(result([text("first"), text("second")])), "2e7e22b1cf9d2682251ba659bf3a8cf8b31dc9c71560814dfaa9b461a90f85c5");
+		assert.equal(digestMessage(result([text("x"), { type: "audio" }])), "cda50cfa7fab79df4db4ed3db00f460537fea065e6fe945ded9c94dd36e41ec1");
+		assert.equal(digestMessage(result([text("x"), { type: "image", data: "AAA", mimeType: "image/png" }])), "e421bd8347bcdb3e841a05d66d43d6781cdf3d8c2ac890a5d3688d8ca9d009a8");
+	});
+
 	it("replays only bridge-owned signed thinking", () => {
 		const content = [{ type: "thinking", thinking: "plan", thinkingSignature: "sig" }];
 		const own = assistant(content, { provider: "claude-bridge" });

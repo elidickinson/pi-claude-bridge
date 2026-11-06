@@ -1,21 +1,18 @@
 // Behavioral provider sequences with a scripted external SDK and real transcripts.
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { createSession, getSessionPath } from "cc-session-io";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { digestMessages } from "../src/message-digests.js";
 import { copyRecording } from "../src/session-sync.js";
 
-const root = mkdtempSync(join(tmpdir(), "cross-session-"));
-process.env.CLAUDE_CONFIG_DIR = root;
-process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+const root = process.env.CLAUDE_CONFIG_DIR;
 const mod = await import("../src/index.js");
 const { __test } = mod;
 const { setQuery, getSharedSession, resetSharedSession } = __test;
 let providerConfig;
-mod.default({ on: () => {}, registerProvider: (_name, config) => { providerConfig = config; }, registerTool: () => {} });
+mod.default({ on: () => {}, registerProvider: (_name, config) => { providerConfig = config; } });
 const model = providerConfig.models[0];
 const user = (content) => ({ role: "user", content, timestamp: 1 });
 const result = (id) => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "file" }], isError: false, timestamp: 1 });

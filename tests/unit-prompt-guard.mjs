@@ -21,7 +21,7 @@ describe("prompt guard", () => {
 		const found = captures.resolve("leaking prompt");
 		assert.ok(found);
 
-		assert.throws(() => projectPromptCapture(found, { skillReadTool: "none" }), (error) => {
+		assert.throws(() => projectPromptCapture(found, { hasReadTool: false }), (error) => {
 			assert.ok(error instanceof Error);
 			assert.ok(error.message.includes(PI_PREAMBLE));
 			assert.match(error.message, /offset 0 of \d+ chars/);
@@ -29,24 +29,6 @@ describe("prompt guard", () => {
 			assert.match(error.message, /Compatibility with other extensions/);
 			return true;
 		});
-	});
-
-	it("checks the custom text after replacing a matched inherited prompt", () => {
-		const captures = new PromptCaptures();
-		const parentPrompt = `${PI_PREAMBLE}, a coding agent harness.\n\n<tools>\n- read: Read a file\n</tools>`;
-		captures.record(parentPrompt, capture({ contextFiles: [{ path: "/parent/AGENTS.md", content: "parent rules" }] }), "agent_start");
-		captures.record("child assembled prompt", capture({
-			custom: `child wrapper\n\n${parentPrompt}\n\nchild instructions`,
-		}), "agent_start");
-		const child = captures.resolve("child assembled prompt");
-		assert.ok(child);
-		assert.equal(child.inherited.length, 1);
-
-		const projected = projectPromptCapture(child, { skillReadTool: "none" });
-		assert.ok(projected);
-		assert.ok(!projected.includes(PI_PREAMBLE));
-		assert.match(projected, /child wrapper/);
-		assert.match(projected, /parent rules/);
 	});
 
 	it("throws when a context file carries the trigger pair", () => {
@@ -59,7 +41,7 @@ describe("prompt guard", () => {
 		assert.ok(found);
 
 		assert.throws(
-			() => projectPromptCapture(found, { skillReadTool: "none" }),
+			() => projectPromptCapture(found, { hasReadTool: false }),
 			(error) => {
 				assert.match(error.message, /docs\/custom-provider\.md and docs\/packages\.md in the project context block/);
 				return true;
@@ -73,7 +55,7 @@ describe("prompt guard", () => {
 			const custom = `see ${path}`;
 			captures.record("one path", capture({ custom }), "before_agent_start");
 
-			assert.equal(projectPromptCapture(captures.resolve("one path"), { skillReadTool: "none" }), custom);
+			assert.equal(projectPromptCapture(captures.resolve("one path"), { hasReadTool: false }), custom);
 		}
 	});
 
@@ -84,7 +66,7 @@ describe("prompt guard", () => {
 		const found = captures.resolve("mid-line prompt");
 		assert.ok(found);
 
-		assert.equal(projectPromptCapture(found, { skillReadTool: "none" }), custom);
+		assert.equal(projectPromptCapture(found, { hasReadTool: false }), custom);
 	});
 
 	it("pins the guard's marker in pi's own rendered system prompt", async () => {
