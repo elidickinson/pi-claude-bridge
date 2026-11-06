@@ -119,7 +119,9 @@ export class PromptCaptures {
 	 *  nothing. */
 	private touch(systemPrompt: string, capture: PromptCapture): void {
 		this.captures.delete(systemPrompt);
-		this.captures.set(systemPrompt, capture);
+		// Equal lookup strings can have a different backing store. Keep the string
+		// already owned by the capture rather than retaining a second prompt copy.
+		this.captures.set(capture.assembledPrompt, capture);
 		// Trims here, not only in record(): reviving an evicted node re-adds a key that
 		// was not in the map, so without this a run of revivals grows it without bound.
 		for (const key of this.captures.keys()) {
