@@ -2,10 +2,15 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, edited, reopened, synchronize]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   unit-tests:
@@ -22,3 +27,58 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:unit
+  commit-title:
+    name: Commit title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - id: title
+        name: lint the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/commitlint" --save-exact @commitlint/cli@21.2.4 @commitlint/config-conventional@21.2.4
+          cat > "$RUNNER_TEMP/commitlint/commitlint.config.cjs" <<'EOF'
+          module.exports = {
+            extends: ['@commitlint/config-conventional'],
+            rules: { 'header-max-length': [2, 'always', 89] },
+          };
+          EOF
+          printf '%s\n' "$TITLE" | "$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" --config "$RUNNER_TEMP/commitlint/commitlint.config.cjs"
+      # A fork pull request's token is read only, so the status write would fail there.
+      - name: report the title as commitlint
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        uses: avi2d/workflows/commitlint-status@v1
+        with:
+          outcome: ${{ steps.title.outcome }}
+  secrets:
+    name: Secrets scan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
