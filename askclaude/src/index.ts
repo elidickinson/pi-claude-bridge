@@ -2,7 +2,7 @@
 // runs its own tools. A separate package from the pi-claude-bridge provider; the
 // helpers it shares with the provider are copies, in claude-code.ts.
 
-import { StringEnum, type Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm, formatSkillsForPrompt, keyHint, type ExtensionAPI, type Skill } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { query, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
@@ -48,13 +48,19 @@ const ASKCLAUDE_TOOL_NAMES = new Map(Object.entries({ read: "Read", write: "Writ
 const PREVIEW_MAX_CHARS = 1000;
 const PREVIEW_MAX_LINES = 6;
 
+// Not Type.Union of literals: Google's API rejects the anyOf/const schema that emits. Not
+// pi-ai's StringEnum: from pi 1.5.0 it returns a pi-schema Schema, which Type.Object infers as unknown.
+function stringEnum<const T extends readonly string[]>(values: T, options: { description: string }) {
+	return Type.Unsafe<T[number]>({ type: "string", enum: [...values], ...options });
+}
+
 const askClaudeParams = Type.Object({
 	prompt: Type.String({ description: "The question or task for Claude Code. By default Claude sees the recorded conversation history. Don't research up front, let Claude explore." }),
-	mode: Type.Optional(StringEnum(["read", "full", "none"] as const, {
+	mode: Type.Optional(stringEnum(["read", "full", "none"], {
 		description: '"read" (default): questions about the codebase — review, analysis, explain. "none": general knowledge only (no file access). "full": allows writing and bash execution (careful: runs without feedback to pi).',
 	})),
 	model: Type.Optional(Type.String({ description: 'Claude model (e.g. "opus", "sonnet", "haiku", or full ID). Defaults to "opus".' })),
-	thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const, { description: "Thinking effort level. Omit to use Claude Code's default." })),
+	thinking: Type.Optional(stringEnum(["off", "minimal", "low", "medium", "high", "xhigh"], { description: "Thinking effort level. Omit to use Claude Code's default." })),
 	isolated: Type.Optional(Type.Boolean({ description: "When true, Claude sees only this prompt (clean session). When false (default), Claude sees the recorded conversation history." })),
 });
 

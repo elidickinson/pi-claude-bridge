@@ -273,11 +273,13 @@ export class PromptCaptures {
 	}
 }
 
-/** Pi's own preamble, the first section of every prompt pi renders for a session
- *  without a custom prompt. Machine-generated, so operator text never carries it;
- *  forwarding it makes Claude Code's subscription path read the request as a
- *  third-party app. */
-export const PI_PREAMBLE = "You are an expert coding assistant operating inside pi";
+// Pi opens every prompt it renders without a custom prompt with one of these; operator
+// text never does. Forwarding one makes Claude Code's subscription path read the request
+// as a third-party app. The peer range still admits pi before 1.5.0, which renders the first.
+export const PI_PREAMBLES = [
+	"You are an expert coding assistant operating inside pi",
+	"You are a coding assistant running inside pi",
+] as const;
 
 /** Both doc paths from pi's documentation-routing line. Anthropic's subscription gate
  *  rejects a system prompt carrying both, while either alone passes (issues #883, #88). */
@@ -378,9 +380,11 @@ function projectCapture(
 function assertSendablePrompt(parts: readonly PromptPart[], capture: PromptCapture): void {
 	const findings: string[] = [];
 	for (const { label, text } of parts) {
-		const offset = preambleAtLineStart(text);
-		if (offset !== -1) {
-			findings.push(`pi's preamble ("${PI_PREAMBLE}") in ${label}, at offset ${offset} of ${text.length} chars`);
+		for (const preamble of PI_PREAMBLES) {
+			const offset = offsetAtLineStart(text, preamble);
+			if (offset !== -1) {
+				findings.push(`pi's preamble ("${preamble}") in ${label}, at offset ${offset} of ${text.length} chars`);
+			}
 		}
 		// The pair has to co-occur in one part; the two phrases split across parts are not detected.
 		if (ANTHROPIC_THIRD_PARTY_TRIGGERS.every((trigger) => text.includes(trigger))) {
@@ -401,10 +405,9 @@ function assertSendablePrompt(parts: readonly PromptPart[], capture: PromptCaptu
 	].join("\n"));
 }
 
-/** Offset of pi's preamble at the start of a line, or -1. Mid-line mentions are someone
- *  describing pi's prompt, not pi's prompt. */
-function preambleAtLineStart(text: string): number {
-	for (let offset = text.indexOf(PI_PREAMBLE); offset !== -1; offset = text.indexOf(PI_PREAMBLE, offset + PI_PREAMBLE.length)) {
+// Mid-line mentions are someone describing pi's prompt, not pi's prompt.
+function offsetAtLineStart(text: string, needle: string): number {
+	for (let offset = text.indexOf(needle); offset !== -1; offset = text.indexOf(needle, offset + needle.length)) {
 		if (offset === 0 || text[offset - 1] === "\n") return offset;
 	}
 	return -1;

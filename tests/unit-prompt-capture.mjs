@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
 
 const PI_SYSTEM_PROMPT = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js", import.meta.url));
 
@@ -340,7 +340,7 @@ describe("prompt sections", () => {
 
 	it("refuses a section carrying pi's preamble or Anthropic's trigger pair", () => {
 		const offending = {
-			leaked_harness: `${PI_PREAMBLE}, a coding agent harness.`,
+			leaked_harness: "You are a coding assistant running inside pi, a coding agent harness.",
 			triggers: "see docs/custom-provider.md and docs/packages.md",
 		};
 		for (const [name, content] of Object.entries(offending)) {

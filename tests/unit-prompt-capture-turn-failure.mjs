@@ -22,7 +22,6 @@ delete process.env.CLAUDE_BRIDGE_DEBUG;
 process.on("exit", () => rmSync(tmpRoot, { recursive: true, force: true }));
 
 const { default: activate, __test } = await import("../src/index.js");
-const { PI_PREAMBLE } = await import("../src/prompt-capture.js");
 
 let providerConfig;
 activate({
@@ -54,7 +53,7 @@ describe("a prompt the bridge refuses", () => {
 	});
 
 	it("fails the turn on the stream when the sendability guard refuses the capture", async () => {
-		const prompt = `${PI_PREAMBLE}, recorded with pi's harness in its custom prompt.`;
+		const prompt = "You are a coding assistant running inside pi, recorded with pi's harness in its custom prompt.";
 		__test.promptCaptures.record(prompt, { custom: prompt, contextFiles: [], skills: [] });
 		const result = await turn(prompt).result();
 		assert.equal(result.stopReason, "error");

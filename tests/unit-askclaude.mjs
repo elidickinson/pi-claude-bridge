@@ -112,6 +112,15 @@ it("a failed query still deletes its imported session", { timeout: 120_000 }, as
 	assert.deepEqual(sessionFiles(), []);
 });
 
+it("declares mode and thinking as plain string enums, not anyOf/const or an untyped field", () => {
+	const wire = JSON.parse(JSON.stringify(tool.parameters.properties));
+	for (const [name, values] of [["mode", ["read", "full", "none"]], ["thinking", ["off", "minimal", "low", "medium", "high", "xhigh"]]]) {
+		const { description, ...schema } = wire[name];
+		assert.deepEqual(schema, { type: "string", enum: values }, name);
+		assert.equal(typeof description, "string", name);
+	}
+});
+
 it("rejects an unknown mode before writing or launching anything", async () => {
 	const before = launches.length;
 	await assert.rejects(mod.__test.promptAndWait("x", "bogus", new Map(), undefined, { cwd, history: [] }), /Invalid AskClaude mode/);

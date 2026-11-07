@@ -17,7 +17,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { PI_PREAMBLE, projectPromptCapture } from "../src/prompt-capture.js";
+import { projectPromptCapture } from "../src/prompt-capture.js";
 import { activateWithMockPi } from "./lib/mock-pi.mjs";
 
 const { __test } = await import("../src/index.js");
@@ -109,7 +109,7 @@ describe("subagent captures", () => {
 	it("fails loudly when a recorded tail-stripped child has no inheritance edge (#88)", () => {
 		const section = (name, content) => `<${name}>\n${content}\n</${name}>`;
 		const parentSections = [
-			`${PI_PREAMBLE}, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.`,
+			"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
 			section("tools", "- read: Read a file\n- bash: Run commands\n\nIn addition to the tools above, you may have access to other custom tools depending on the project."),
 			section("rules", "- Use bash for file operations like ls, rg, find\n- Be concise in your responses"),
 			section("docs", "Pi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md"),

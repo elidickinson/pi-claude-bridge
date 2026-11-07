@@ -4,32 +4,39 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { PI_PREAMBLES, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
 
 const PI_SYSTEM_PROMPT = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js", import.meta.url));
+
+const PI_HARNESS_OPENINGS = {
+	"1.4.0": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
+	"1.5.0": "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.",
+};
 
 function capture(overrides = {}) {
 	return { contextFiles: [], skills: [], ...overrides };
 }
 
 describe("prompt guard", () => {
-	it("throws when a recorded custom prompt carries pi's preamble at a line start", () => {
-		const captures = new PromptCaptures();
-		captures.record("leaking prompt", capture({
-			custom: `${PI_PREAMBLE}, a coding agent harness.\n\n<tools>\n- read: Read a file\n</tools>`,
-		}), "before_agent_start");
-		const found = captures.resolve("leaking prompt");
-		assert.ok(found);
+	for (const [version, opening] of Object.entries(PI_HARNESS_OPENINGS)) {
+		it(`throws on pi ${version}'s preamble at a line start, not only the installed pi's`, () => {
+			const captures = new PromptCaptures();
+			captures.record("leaking prompt", capture({
+				custom: `${opening}\n\n<tools>\n- read: Read a file\n</tools>`,
+			}), "before_agent_start");
+			const found = captures.resolve("leaking prompt");
+			assert.ok(found);
 
-		assert.throws(() => projectPromptCapture(found, { hasReadTool: false }), (error) => {
-			assert.ok(error instanceof Error);
-			assert.ok(error.message.includes(PI_PREAMBLE));
-			assert.match(error.message, /offset 0 of \d+ chars/);
-			assert.match(error.message, /Capture: before_agent_start/);
-			assert.match(error.message, /Compatibility with other extensions/);
-			return true;
+			assert.throws(() => projectPromptCapture(found, { hasReadTool: false }), (error) => {
+				assert.ok(error instanceof Error);
+				assert.match(error.message, /pi's preamble \("You are (an expert|a) coding assistant/);
+				assert.match(error.message, /offset 0 of \d+ chars/);
+				assert.match(error.message, /Capture: before_agent_start/);
+				assert.match(error.message, /Compatibility with other extensions/);
+				return true;
+			});
 		});
-	});
+	}
 
 	it("throws when a context file carries the trigger pair", () => {
 		const captures = new PromptCaptures();
@@ -61,7 +68,7 @@ describe("prompt guard", () => {
 
 	it("ignores a mid-line mention of pi's preamble", () => {
 		const captures = new PromptCaptures();
-		const custom = `note: ${PI_PREAMBLE}, allegedly`;
+		const custom = `note: ${PI_HARNESS_OPENINGS["1.5.0"]}, allegedly`;
 		captures.record("mid-line prompt", capture({ custom }), "before_agent_start");
 		const found = captures.resolve("mid-line prompt");
 		assert.ok(found);
@@ -77,8 +84,8 @@ describe("prompt guard", () => {
 		const { buildSystemPrompt } = await import(PI_SYSTEM_PROMPT);
 		const harness = buildSystemPrompt({ cwd: "/tmp" });
 		assert.ok(
-			harness.includes(PI_PREAMBLE),
-			"pi reworded its preamble, so the harness guard matches nothing; update PI_PREAMBLE in src/prompt-capture.ts",
+			PI_PREAMBLES.some((preamble) => harness.includes(preamble)),
+			"pi reworded its preamble, so the harness guard matches nothing; add it to PI_PREAMBLES in src/prompt-capture.ts",
 		);
 		for (const trigger of ["docs/custom-provider.md", "docs/packages.md"]) {
 			assert.ok(
@@ -90,7 +97,7 @@ describe("prompt guard", () => {
 		// presence mean "this prompt carries pi's harness or its gate fingerprint".
 		const custom = buildSystemPrompt({ cwd: "/tmp", customPrompt: "custom" });
 		assert.ok(
-			!custom.includes(PI_PREAMBLE) && !custom.includes("docs/packages.md"),
+			!PI_PREAMBLES.some((preamble) => custom.includes(preamble)) && !custom.includes("docs/packages.md"),
 			"pi now emits its harness alongside a custom prompt, so these strings no longer imply a leak",
 		);
 	});

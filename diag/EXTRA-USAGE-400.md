@@ -45,7 +45,7 @@ The [August 5 report on PR #21](https://github.com/elidickinson/pi-claude-bridge
 
 ### SDK versus print mode: October 31, 2026
 
-One request per arm, same login, Extra Usage disabled (`org_level_disabled`), Haiku 4.5 unless noted. Every arm but the control sent pi 1.4.0's default system prompt unchanged (16.4K characters, including `PI_PREAMBLE` and both `docs/custom-provider.md` and `docs/packages.md`):
+One request per arm, same login, Extra Usage disabled (`org_level_disabled`), Haiku 4.5 unless noted. Every arm but the control sent pi 1.4.0's default system prompt unchanged (16.4K characters, including pi's preamble and both `docs/custom-provider.md` and `docs/packages.md`):
 
 | route | CC | result |
 | --- | --- | --- |
