@@ -21,8 +21,8 @@
 // and nothing else, so none of McpServer's higher-level machinery is required.
 // The `McpServer` wrapper is kept only because the SDK's `mcpServers` option is
 // typed against that class. If this breaks after an SDK update, check whether
-// the SDK began inspecting the instance — reading registered tools, or expecting
-// tools/list_changed notifications we never send.
+// the SDK began inspecting the instance, such as reading registered tools.
+// The one piece of MCP protocol we drive ourselves is tools/list_changed (setTools).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -136,21 +136,31 @@ function flattenRootCombinators(schema: Record<string, unknown>): { schema: Reco
 	return { schema: flat, note: combinatorNote(combinators, branchesOf) };
 }
 
-export function createToolServer(name: string, tools: McpToolDef[]) {
-	const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
-	const byName = new Map(tools.map((tool) => [tool.name, tool]));
-	for (const tool of tools) assertObjectSchema(tool);
+// Cap on setTools' wait for CC's re-list, so a CC that ignores tools/list_changed
+// does not strand the held tool result.
+const RELIST_TIMEOUT_MS = 2_000;
 
-	server.server.setRequestHandler(ListToolsRequestSchema, () => ({
-		tools: tools.map((tool) => {
-			const { schema, note } = flattenRootCombinators(tool.inputSchema as Record<string, unknown>);
-			return {
-				name: tool.name,
-				description: [note, tool.description].filter(Boolean).join("\n\n"),
-				inputSchema: schema,
-			};
-		}),
-	}));
+export function createToolServer(name: string, initialTools: McpToolDef[]) {
+	const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+	let tools = initialTools;
+	let byName = new Map(tools.map((tool) => [tool.name, tool]));
+	for (const tool of tools) assertObjectSchema(tool);
+	const relistWaiters: Array<() => void> = [];
+
+	server.server.setRequestHandler(ListToolsRequestSchema, () => {
+		// Next macrotask: the held tool result must not overtake this response.
+		for (const release of relistWaiters.splice(0)) setImmediate(release);
+		return {
+			tools: tools.map((tool) => {
+				const { schema, note } = flattenRootCombinators(tool.inputSchema as Record<string, unknown>);
+				return {
+					name: tool.name,
+					description: [note, tool.description].filter(Boolean).join("\n\n"),
+					inputSchema: schema,
+				};
+			}),
+		};
+	});
 
 	server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		const tool = byName.get(request.params.name);
@@ -165,5 +175,26 @@ export function createToolServer(name: string, tools: McpToolDef[]) {
 		return { content, isError };
 	});
 
-	return { type: "sdk" as const, name, instance: server };
+	/** Replace the served tools and notify CC. Resolves true once CC has re-listed,
+	 *  false after RELIST_TIMEOUT_MS. */
+	async function setTools(next: McpToolDef[]): Promise<boolean> {
+		for (const tool of next) assertObjectSchema(tool);
+		tools = next;
+		byName = new Map(tools.map((tool) => [tool.name, tool]));
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const relisted = new Promise<boolean>((resolve) => {
+			relistWaiters.push(() => resolve(true));
+			timer = setTimeout(() => resolve(false), RELIST_TIMEOUT_MS);
+		});
+		try {
+			await server.server.sendToolListChanged();
+			return await relisted;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	return { type: "sdk" as const, name, instance: server, setTools };
 }
+
+export type ToolServer = ReturnType<typeof createToolServer>;
