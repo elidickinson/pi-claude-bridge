@@ -82,4 +82,17 @@ describe("pi message digests", () => {
 		const right = assistant([toolCall("a", "b\nc", {})]);
 		assert.notEqual(digestMessage(left), digestMessage(right));
 	});
+
+	it("hashes omp developer reminders like user text and never throws on unknown roles (#253)", () => {
+		const reminder = [{ type: "text", text: "<system-reminder>todo</system-reminder>" }];
+		const developer = { role: "developer", content: reminder, timestamp: 1 };
+		assert.match(digestMessage(developer), /^[0-9a-f]{64}$/);
+		assert.equal(digestMessage(developer), digestMessage(user(reminder)));
+		const odd = { role: "custom", content: "x", timestamp: 1 };
+		assert.match(digestMessage(odd), /^[0-9a-f]{64}$/);
+		assert.notEqual(digestMessage(odd), digestMessage({ ...odd, content: "y" }));
+		assert.notEqual(digestMessage(odd), digestMessage({ ...odd, sections: { note: "z" } }));
+		assert.equal(digestMessages([user("a"), developer, odd]).length, 3);
+		assert.throws(() => digestMessage({ role: "system", content: "s" }));
+	});
 });

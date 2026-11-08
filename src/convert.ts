@@ -111,7 +111,8 @@ export function convertPiMessages(
 	let turnAssistantIdx: number | null = null;
 
 	for (const [piIndex, msg] of messages.entries()) {
-		if (msg.role === "user") {
+		// omp `developer`-role reminders ride along as user text (issue #253).
+		if (msg.role === "user" || (msg as { role: string }).role === "developer") {
 			if (typeof msg.content === "string") {
 				append({ role: "user", content: msg.content || "[empty]" }, piIndex);
 			} else if (Array.isArray(msg.content)) {

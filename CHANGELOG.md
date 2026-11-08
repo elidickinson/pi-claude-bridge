@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: omp sessions with `developer`-role messages no longer fail every turn (#253)** — omp keeps `<system-reminder>` nudges in the transcript as `developer` messages, and the history digest threw on them. They now go to Claude Code as user text, and any other unknown role is hashed instead of throwing.
+
 ## 0.12.0 — 2026-11-10
 
 - **Add: Claude Fable 5.2 with 1M context** — Agent SDK bumped to 0.3.321 (Claude Code 2.1.321), which knows Fable 5.2; AskClaude's too.
