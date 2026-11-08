@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: isolated summaries record the SDK result usage** — Compactions and other one-off summaries ended the stream with all-zero usage; the stream now carries the result message's input, cache and output tokens through the existing usage counters.
 - **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.
 - **Refactor: code simplification and removal of dead/duplicated code** — No change in behavior intended. Tool results are no longer serialized for the debug log when debug is off, and the package no longer depends on `pi-tui`, `typebox` or `change-case`.
 - **Add: plan usage readings in the tui-dash usage ledger** — Each `rate_limit_event` is appended as a `claude-headless-reading` entry tagged with the session's `CLAUDE_CONFIG_DIR`, when tui-dash's state folder exists.

@@ -383,6 +383,7 @@ async function runIsolatedSummary(
 		let assistantText = "";
 		let finalText = "";
 		let errorText: string | undefined;
+		let resultUsage: SdkUsage | undefined;
 		let firstEventLogged = false;
 
 		for await (const message of sdkQuery) {
@@ -399,7 +400,10 @@ async function runIsolatedSummary(
 			} else if (message.type === "result") {
 				logServedContextWindow("compact summary", message, model);
 				errorText = resultErrorText(message);
-				if (!errorText && message.subtype === "success") finalText = message.result || assistantText;
+				if (!errorText && message.subtype === "success") {
+					finalText = message.result || assistantText;
+					resultUsage = message.usage;
+				}
 			}
 		}
 
@@ -419,7 +423,9 @@ async function runIsolatedSummary(
 		}
 
 		debug(`compact summary: done textLen=${text.length}`);
-		endStream(stream, { type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
+		const output = newAssistantOutput(model, text, "stop");
+		if (resultUsage) recordUsage(output, resultUsage, model, options?.sessionId ?? null);
+		endStream(stream, { type: "done", reason: "stop", message: output });
 	} catch (err) {
 		const msg = errorMessage(err);
 		debug("runIsolatedSummary threw; pushing terminal error", err);
