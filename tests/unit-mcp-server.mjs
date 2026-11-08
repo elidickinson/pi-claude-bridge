@@ -9,6 +9,8 @@
  */
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { Type } from "typebox";
+import { Compile } from "typebox/compile";
 import { createToolServer } from "../src/mcp-server.js";
 
 const NESTED_TOOL_SCHEMA = {
@@ -144,6 +146,97 @@ describe("MCP tool schema with top-level combinators", () => {
 		]);
 		const { request } = await connectClient(server);
 		return (await request("tools/list", {})).result.tools[0];
+	}
+
+	// pi-better-edit 2.17.0's read shape: the object union has no root type,
+	// and the same mode/windows properties have different branch constraints.
+	const window = Type.Union([
+		Type.Object({ around_anchor: Type.String({ minLength: 4, maxLength: 4 }) }, { additionalProperties: false }),
+		Type.Object({ offset: Type.Optional(Type.Integer({ minimum: 1 })) }, { additionalProperties: false }),
+	]);
+	const readBranches = [
+		Type.Object({ file: Type.String(), mode: Type.Literal("outline"), windows: Type.Optional(Type.Array(window)) }),
+		Type.Object({
+			file: Type.String(),
+			mode: Type.Optional(Type.Union([Type.Literal("served"), Type.Literal("verbatim")])),
+			windows: Type.Optional(Type.Array(window, { maxItems: 16 })),
+		}),
+	];
+
+	it("accepts a TypeBox object union without a root type and preserves every read mode", async () => {
+		for (const branches of [readBranches, [...readBranches].reverse()]) {
+			const schema = Type.Union(branches);
+			const before = JSON.stringify(schema);
+			assert.ok(!("type" in schema), "exercise the actual TypeBox union shape");
+			const { inputSchema: listed } = await listTool(schema);
+			assert.strictEqual(listed.type, "object");
+			for (const key of ["anyOf", "oneOf", "allOf"]) assert.ok(!(key in listed));
+			assert.deepStrictEqual(Object.keys(listed.properties).sort(), ["file", "mode", "windows"]);
+			assert.deepStrictEqual(listed.properties.file, { type: "string" }, "identical property schemas need no wrapper");
+			const original = Compile(schema);
+			const advertised = Compile(listed);
+			for (const mode of [undefined, "outline", "served", "verbatim"]) {
+				for (const windows of [[{ offset: 1 }], [{ around_anchor: "a1b2" }]]) {
+					const args = { file: "README.md", windows, ...(mode ? { mode } : {}) };
+					assert.ok(original.Check(args));
+					assert.ok(advertised.Check(args), `advertised schema lost mode ${mode}`);
+				}
+			}
+			assert.ok(!advertised.Check({ file: "README.md", mode: "bogus" }));
+			assert.ok(!advertised.Check({ file: "README.md", windows: [{ around_anchor: "bad" }] }));
+			assert.ok(!advertised.Check({ file: "README.md", windows: [{ offset: 0 }] }));
+			assert.strictEqual(JSON.stringify(schema), before, "advertising must not mutate pi's schema");
+		}
+	});
+
+	for (const key of ["anyOf", "oneOf"]) {
+		it(`merges conflicting branch-only ${key} properties instead of choosing the first`, async () => {
+			// Keep a root type to catch property loss independently of the guard fix.
+			const { inputSchema: listed } = await listTool({ type: "object", [key]: readBranches });
+			const advertised = Compile(listed);
+			for (const mode of ["outline", "served", "verbatim"]) {
+				assert.ok(advertised.Check({ file: "README.md", mode }), `lost mode ${mode}`);
+			}
+		});
+
+		for (const defsKey of ["$defs", "definitions"]) {
+			it(`accepts ${key} object branches referenced through ${defsKey} without a root type`, async () => {
+				const { inputSchema: listed } = await listTool({
+					[defsKey]: { outline: readBranches[0], served: readBranches[1] },
+					[key]: [{ $ref: `#/${defsKey}/outline` }, { $ref: `#/${defsKey}/served` }],
+				});
+				const advertised = Compile(listed);
+				for (const mode of ["outline", "served", "verbatim"]) assert.ok(advertised.Check({ file: "README.md", mode }));
+			});
+		}
+	}
+
+	it("accepts directly object-typed allOf branches without a root type", async () => {
+		const { inputSchema: listed } = await listTool({ allOf: [
+			{ type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+			{ type: "object", properties: { b: { type: "number" } }, required: ["b"] },
+		] });
+		assert.strictEqual(listed.type, "object");
+		assert.deepStrictEqual(listed.required, ["a", "b"]);
+	});
+
+	for (const schema of [
+		{ type: "array", items: { type: "string" } },
+		{ type: "string", anyOf: readBranches },
+		{ anyOf: [readBranches[0], { type: "string" }] },
+		{ oneOf: [readBranches[0], { type: "null" }] },
+		{ anyOf: [readBranches[0], {}] },
+		{ oneOf: [{ $ref: "#/$defs/missing" }] },
+		{ anyOf: [] },
+		{ allOf: [] },
+		{},
+		null,
+	]) {
+		it(`still rejects non-object or indeterminate parameters: ${JSON.stringify(schema)}`, () => {
+			assert.throws(() => createToolServer("custom-tools", [
+				{ name: "bad_tool", description: "", inputSchema: schema, handler: async () => ({ content: [] }) },
+			]), /bad_tool: MCP tool parameters must be an object schema/);
+		});
 	}
 
 	it("flattens a top-level anyOf into one object schema CC accepts", async () => {

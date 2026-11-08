@@ -52,8 +52,18 @@ interface McpToolDef {
 // "takes no arguments" instead would surface much later as Claude calling the
 // tool with no arguments and pi's own validation rejecting them.
 function assertObjectSchema(tool: McpToolDef): void {
-	const schema = tool.inputSchema as Record<string, unknown> | undefined;
-	if (!schema || schema.type !== "object") {
+	const schema = tool.inputSchema;
+	// TypeBox's Union(Object, Object) has no root `type`. It is still an
+	// object-only input and the flattener below can advertise it safely. Do
+	// not accept a union containing scalars, unresolved refs, or open schemas.
+	const objectBranches = isRecord(schema) && schema.type === undefined && ROOT_COMBINATORS.some((key) => {
+		const branches = schema[key];
+		return Array.isArray(branches) && branches.length > 0 && branches.every((branch) => {
+			const resolved = resolveLocalRef(branch, schema);
+			return isRecord(resolved) && resolved.type === "object";
+		});
+	});
+	if (!isRecord(schema) || (schema.type !== "object" && !objectBranches)) {
 		throw new Error(`${tool.name}: MCP tool parameters must be an object schema, got ${JSON.stringify(schema)}`);
 	}
 }
@@ -67,6 +77,8 @@ function assertObjectSchema(tool: McpToolDef): void {
 // handler waits forever. Advertise a flat object instead, built the way CC's
 // normalizer does: root properties win over branch ones, root `required` stays,
 // and allOf requirements join it (anyOf/oneOf ones hold only for one branch).
+// Unlike first-branch-wins, conflicting anyOf/oneOf property schemas are kept
+// as nested alternatives: e.g. better-edit's `mode` must not become outline-only.
 // Like CC, branch `$ref`s into the root's `$defs`/`definitions` are followed,
 // and the lost constraint is restated as a note for the tool description, so
 // Claude's first call is likely to pass pi's validation against the full schema.
@@ -114,11 +126,17 @@ function flattenRootCombinators(schema: Record<string, unknown>): { schema: Reco
 		const branches = schema[key];
 		return Array.isArray(branches) ? branches.map((branch) => resolveLocalRef(branch, schema)) : [];
 	};
-	const properties: Record<string, unknown> = {};
+	const properties: Record<string, unknown> = Object.create(null);
+	const rootProperties = isRecord(schema.properties) ? schema.properties : {};
 	const required: string[] = [];
-	const addProperties = (source: unknown) => {
+	const addProperties = (source: unknown, alternatives = false) => {
 		if (!isRecord(source) || !isRecord(source.properties)) return;
-		for (const [key, value] of Object.entries(source.properties)) if (!(key in properties)) properties[key] = value;
+		for (const [key, value] of Object.entries(source.properties)) {
+			if (!Object.hasOwn(properties, key)) properties[key] = value;
+			else if (alternatives && !Object.hasOwn(rootProperties, key) && JSON.stringify(properties[key]) !== JSON.stringify(value)) {
+				properties[key] = { anyOf: [properties[key], value] };
+			}
+		}
 	};
 	const addRequired = (source: unknown) => {
 		if (!isRecord(source) || !Array.isArray(source.required)) return;
@@ -126,7 +144,7 @@ function flattenRootCombinators(schema: Record<string, unknown>): { schema: Reco
 	};
 
 	addProperties(schema);
-	for (const key of combinators) for (const branch of branchesOf(key)) addProperties(branch);
+	for (const key of combinators) for (const branch of branchesOf(key)) addProperties(branch, key !== "allOf");
 	addRequired(schema);
 	for (const branch of branchesOf("allOf")) addRequired(branch);
 
