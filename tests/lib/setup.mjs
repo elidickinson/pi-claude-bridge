@@ -18,6 +18,7 @@ process.env.USERPROFILE = root;
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
 process.env.CLAUDE_CONFIG_DIR = join(root, "claude");
+process.env.XDG_STATE_HOME = join(root, "state");
 process.env.CLAUDE_BRIDGE_DEBUG_PATH = join(root, "claude-bridge.log");
 delete process.env.CLAUDE_BRIDGE_RECORD_STREAM;
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));

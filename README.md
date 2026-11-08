@@ -144,6 +144,11 @@ Other extensions can change the system prompt. When the result still contains pi
 
 The bridge does not show plan usage itself. Claude Code sends a `rate_limit_event` when a usage window changes, and the bridge passes it to pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers. Events are not tied to one response: one that arrives after a turn has ended on a tool call is reported on the next provider call, and only the latest is kept. The headers use the names that the Anthropic API uses (for example `anthropic-ratelimit-unified-5h-utilization`). The bridge sends only the headers that it can make from the event: the status, the reset time, the representative claim, the overage status and reset, and the utilization and reset of each window. The status code is always 200. An extension that reads these headers for the built-in `anthropic` provider can also accept `claude-bridge` without other changes.
 
+The bridge also appends each event to the tui-dash usage ledger as a `claude-headless-reading` entry tagged with the session's `CLAUDE_CONFIG_DIR`, so tui-dash shows it in that account's quota block.
+The ledger is `$XDG_STATE_HOME/tui-dash/usage`, or `~/.local/state/tui-dash/usage` when `XDG_STATE_HOME` is not set.
+The bridge writes there only when the `tui-dash` state folder already exists, and writes nothing when `CLAUDE_CONFIG_DIR` is unset.
+A failed write goes to the debug log and never holds up or fails a request.
+
 ### Using claude bridge with @gotgenes/pi-subagents
 
 Requires the following in `~/.pi/agent/subagents.json`:

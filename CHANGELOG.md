@@ -4,6 +4,7 @@
 
 - **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.
 - **Refactor: code simplification and removal of dead/duplicated code** — No change in behavior intended. Tool results are no longer serialized for the debug log when debug is off, and the package no longer depends on `pi-tui`, `typebox` or `change-case`.
+- **Add: plan usage readings in the tui-dash usage ledger** — Each `rate_limit_event` is appended as a `claude-headless-reading` entry tagged with the session's `CLAUDE_CONFIG_DIR`, when tui-dash's state folder exists.
 - **Fix: pi 1.5.0 support** — The prompt guard recognises pi 1.5.0's reworded preamble as well as 1.4.0's, so pi's harness is refused instead of forwarded; AskClaude's `mode` and `thinking` parameters keep their types under pi-ai 1.5.0's `StringEnum`.
 - **Fix: a Claude Code output style no longer reaches bridge turns (#220)** — The provider runs Claude Code with its default output style, so a custom `outputStyle` in `~/.claude/settings.json` no longer competes with pi's system prompt.
 - **Fix: a tool that failed with no output no longer breaks the session (#227)** — A rebuilt session sent the empty error result as-is, which the API rejects on every later turn. Empty results now get the same placeholder text Claude Code uses live. This also applies when AskClaude sends pi's conversation to Claude Code. Thanks @ShyftXero.

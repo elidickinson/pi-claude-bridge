@@ -34,6 +34,7 @@ import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
+import { recordHeadlessReading } from "./usage-ledger.js";
 import { BRIDGE_VERSION, packageVersion, setTraceNotifier, traceAssertReady, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
 import { DEBUG, debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import { CC_CHILD_ENV, ccChildEnv, CLAUDE_MD_EXCLUDES, errorMessage, REASONING_TO_EFFORT, resultErrorText } from "./cc-child.js";
@@ -1414,7 +1415,10 @@ async function consumeQuery(
 		if (message.type === "rate_limit_event") {
 			const info = (message as any).rate_limit_info;
 			debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
-			if (info) queryCtx.heldRateLimit = info;
+			if (info) {
+				queryCtx.heldRateLimit = info;
+				recordHeadlessReading(info, message.session_id, (error) => debug("usage ledger: append failed", error));
+			}
 			await reportHeldRateLimit(queryCtx, model);
 			if (wasAborted() || queryCtx.discarded) break;
 			if (info?.status === "rejected") {
