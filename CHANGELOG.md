@@ -16,6 +16,7 @@
 - **Tests: the config unit tests no longer write the real agent config** — `tests/unit-config.mjs` moved `HOME` to a temp dir, but `getAgentDir()` prefers `PI_CODING_AGENT_DIR`, so with it exported the tests wrote a malformed `claude-bridge.json` into that dir and failed on it. The temp home now unsets it too.
 - **Tests: the gitStatus contract's control ignores the user's Claude Code settings** — CC merges `~/.claude/settings.json`, so `includeGitInstructions: false` there stripped the snapshot from the default-preset arm and failed the control. It now passes the default, `true`, explicitly.
 - **Tests: temp git repos ignore the machine's hooks and identity** — a global `core.hooksPath` refused the probe-identity commit the gitStatus contract makes in its setup. The temp repo now points `core.hooksPath` at an empty dir and carries its own `user.name`/`user.email`.
+- **Tests: CI runs only the unit tests a pull request reaches** — `npm run test:unit:changed -- <base>` runs each unit test whose import or path references reach a changed file, and the whole suite when `package.json`, the lockfile, `tsconfig.json`, CI config or `tests/lib`/`tests/fixtures` change.
 - **Tests: remove redundant tests** — Drop integration and unit tests that repeated other tests or covered cc-session-io rather than the bridge.
 
 ## 0.10.0 — 2026-11-04

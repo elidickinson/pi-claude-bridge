@@ -26,7 +26,9 @@
     "assets"
   ],
   "scripts": {
-    "test:unit": "node --import tsx --import ./tests/lib/setup.mjs --test tests/unit-*.mjs",
+    "test:unit": "npm run test:unit:files -- tests/unit-*.mjs",
+    "test:unit:files": "node --import tsx --import ./tests/lib/setup.mjs --test",
+    "test:unit:changed": "node tests/lib/select-unit-tests.mjs",
     "test": "set -a && [ -f .env.test ] && . ./.env.test; set +a; CLAUDE_BRIDGE_TEST_LOG_DIR=$(mktemp -d); export CLAUDE_BRIDGE_TEST_LOG_DIR; npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs && node tests/lib/check-deadlock-logs.mjs \"$CLAUDE_BRIDGE_TEST_LOG_DIR\"",
     "test:usage": "tests/usage-test.sh",
     "typecheck": "tsc --noEmit"

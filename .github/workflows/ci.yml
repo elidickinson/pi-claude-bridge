@@ -20,13 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npm run test:unit
+      # Without a base (workflow_dispatch) the selector runs every unit test.
+      - run: npm run test:unit:changed -- "$BASE_SHA"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
   commit-title:
     name: Commit title
     if: github.event_name == 'pull_request'
