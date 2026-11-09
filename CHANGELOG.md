@@ -1,7 +1,10 @@
 # Changelog
 
-## 0.11.0 — 2026-11-06
+## UNRELEASED
 
+- **Add: register model ids a gateway or router serves (`models.json`)** — the picker is pi-ai's anthropic catalog, so an endpoint that serves other ids (a proxy behind `ANTHROPIC_BASE_URL`) offered nothing selectable. Add entries under `providers["claude-bridge"].models` in `~/.pi/agent/models.json`; they register after the catalog. Give each entry `api` and `baseUrl` set to `claude-bridge` (at provider or model level). Catalog ids keep the catalog's metadata and 1M policy; additive models keep their declared window and token limit, and the bridge never applies its `[1m]` rewrite to them.
+
+## 0.11.0 — 2026-11-06
 - **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.
 - **Refactor: code simplification and removal of dead/duplicated code** — No change in behavior intended. Tool results are no longer serialized for the debug log when debug is off, and the package no longer depends on `pi-tui`, `typebox` or `change-case`.
 - **Fix: a Claude Code output style no longer reaches bridge turns (#220)** — The provider runs Claude Code with its default output style, so a custom `outputStyle` in `~/.claude/settings.json` no longer competes with pi's system prompt.
@@ -13,7 +16,6 @@
 - **Tests: remove redundant tests** — Drop integration and unit tests that repeated other tests or covered cc-session-io rather than the bridge.
 
 ## 0.10.0 — 2026-11-04
-
 - **Breaking: Claude settings files in the repo and project-level `provider` config are ignored (#198)** — Claude Code's project and local settings (`.claude/settings.json`, `.claude/settings.local.json`) are no longer loaded, so a repo's hooks, `apiKeyHelper` and `env` don't run; `~/.claude/settings.json` still applies. A project `.pi/claude-bridge.json` can no longer set `provider` options, which include the Claude Code executable path; set them at user-level in `~/.pi/agent/claude-bridge.json`. Thanks @superninjv.
 - **Fix: session sync keeps Claude Code history that still matches pi's (#222)** — The bridge now compares message content instead of counting messages, so it catches edits and keeps everything up to the first difference. Rewinds, edits, interruptions and restarts fork or trim the Claude Code session instead of rebuilding it, preserving prompt cache and thinking. History edits made while a query waits on a tool are caught before the result is delivered. Fixes #30, #42, #62, #86, #103, #165, #182, #202, #243; helps #55, #77, #114, #207. Builds on PR #136; thanks @sonSunnoi and @rochecompaan.
 - **Fix: changed instructions reach Claude Code mid-session** — Edited AGENTS.md/CLAUDE.md, skills or extension prompt sections now take effect on the next turn (for example after `/reload`) instead of waiting for a new session. That turn costs one cache miss.

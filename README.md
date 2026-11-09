@@ -58,7 +58,30 @@ Config: `~/.pi/agent/claude-bridge.json`. There is no project config, so a clone
 - `plan` (default `"pro"`) — set to `"max"` on a Max (or Team Premium/Enterprise) plan to run Opus 4.6 with 1M context.
 - `longContextExtraUsage` — set to `true` to run Opus 4.6 (on Pro) and Sonnet 4.6 with 1M context, billed through Extra Usage.
 
-**Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not work correctly with pi-claude-bridge; they only apply to pi-side settings like compaction threshold. Overriding `contextWindow` or other fields requires editing `src/models.ts` directly — to pin a model to 200K, use `provider.forceTwoHundredK` instead.
+**Extension providers and `models.json`:** the model picker is pi-ai's Anthropic catalog. To add ids that a gateway or router behind `ANTHROPIC_BASE_URL` serves, put them under `providers["claude-bridge"].models` in `~/.pi/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "claude-bridge": {
+      "api": "claude-bridge",
+      "baseUrl": "claude-bridge",
+      "models": [
+        {
+          "id": "my-gateway/claude-opus-5",
+          "name": "Opus 5 (gateway)",
+          "contextWindow": 200000,
+          "maxTokens": 32000
+        }
+      ]
+    }
+  }
+}
+```
+
+`api` and `baseUrl` are required by pi's `models.json` validator; the bridge uses `claude-bridge` for both. Entries are added after the catalog, so pi's model ids keep their catalog metadata and the bridge's measured 1M/200K policy. An extra id that matches the catalog, or another extra, is ignored with a warning. Defaults for an extra are 128000 context, 16384 max tokens, text input only, no reasoning, and zero cost. The bridge does not add `[1m]` to an extra id; declare the window the gateway actually serves. Reload pi after editing.
+
+`modelOverrides` still applies to pi-side metadata only (for example compaction thresholds and display). It does not change the model id or the context window the bridge requests from Claude Code; use `provider.forceTwoHundredK` to pin a catalog model to 200K.
 
 **Claude Code's environment:** Claude Code inherits pi's environment. For variables only bridge requests should get (a proxy, a gateway, Bedrock settings), add an `env` object to a `claude-bridge` credential in `~/.pi/agent/auth.json`; its values override pi's, and an empty value removes the variable. Extensions calling a bridge model can pass `env` per request the same way. `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE` can't be set there (the turn fails), since the bridge reads Claude Code's session files through pi's own values.
 

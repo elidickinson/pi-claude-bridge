@@ -1,3 +1,5 @@
+import type { ThinkingLevelMap } from "@earendil-works/pi-ai";
+
 // Model selection + display-order policy for the model picker. The picker is
 // driven by pi-ai's anthropic catalog: models appear (and disappear) with it,
 // no per-model code here. Extracted from index.ts so tests can import without
@@ -16,6 +18,21 @@ function isDatedAlias(id: string): boolean {
 // sink below all known ones.
 const FAMILY_ORDER = ["fable", "opus", "sonnet", "haiku"];
 
+// The registration contract for a bridge model. Catalog entries and models.json
+// additions share it so both are accepted by pi.registerProvider.
+export interface BridgeModel {
+	id: string;
+	name: string;
+	reasoning: boolean;
+	input: ("text" | "image")[];
+	contextWindow: number;
+	maxTokens: number;
+	thinkingLevelMap?: ThinkingLevelMap;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+}
+
+export type CatalogModel = Omit<BridgeModel, "cost">;
+
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
 // newest generation first. Context-dependent display labels are applied after
 // plan/long-context config is known.
@@ -25,7 +42,7 @@ function versionRank(id: string): { family: string; tuple: [number, number] } {
 	return { family, tuple: [Number(major) || 0, Number(minor) || 0] };
 }
 
-export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]) {
+export function buildModels(piAiModels: readonly CatalogModel[]): BridgeModel[] {
 	return piAiModels
 		.filter((m) => typeof m.id === "string" && !isDatedAlias(m.id))
 		.sort((a, b) => {
@@ -49,6 +66,129 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 			thinkingLevelMap,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}));
+}
+
+// pi-ai's catalog is the picker. A gateway or router behind ANTHROPIC_BASE_URL
+// can serve ids outside it, so models.json may add them under
+// providers["claude-bridge"].models. Entries are additive only: catalog ids and
+// their measured [1m]/200K policy stay authoritative, and the bridge never
+// rewrites an extra's declared window. pi validates models.json before this
+// extension registers, so each entry needs api/baseUrl (provider-level or per
+// model) even though the bridge ignores both values.
+const EXTRA_CONTEXT_WINDOW = 128_000;
+const EXTRA_MAX_TOKENS = 16_384;
+
+export type ExtraModelIssue = { id?: string; message: string };
+export type ExtraModelsResult = { models: BridgeModel[]; issues: ExtraModelIssue[] };
+
+function record(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function costNumber(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function modelCost(value: unknown): BridgeModel["cost"] {
+	const cost = record(value);
+	return {
+		input: costNumber(cost?.input),
+		output: costNumber(cost?.output),
+		cacheRead: costNumber(cost?.cacheRead),
+		cacheWrite: costNumber(cost?.cacheWrite),
+	};
+}
+
+function modelInput(value: unknown): BridgeModel["input"] {
+	if (!Array.isArray(value)) return ["text"];
+	const input = value.filter((item): item is "text" | "image" => item === "text" || item === "image");
+	return input.length > 0 ? input : ["text"];
+}
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+function modelThinkingLevelMap(value: unknown): ThinkingLevelMap | undefined {
+	const map = record(value);
+	if (!map) return undefined;
+	const result: ThinkingLevelMap = {};
+	for (const level of THINKING_LEVELS) {
+		const entry = map[level];
+		if (typeof entry === "string") result[level] = entry;
+		else if (entry === null) result[level] = null;
+	}
+	return Object.keys(result).length > 0 ? result : undefined;
+}
+
+// Read only the standard models.json additions for this provider. The bridge
+// provider is registered with its own model list, so pi's applyModelsJson would
+// otherwise add these models and the extension replacement would discard them.
+export function extraModelsFromJson(
+	modelsJson: unknown,
+	knownIds: Iterable<string> = [],
+): ExtraModelsResult {
+	const provider = record(record(record(modelsJson)?.providers)?.["claude-bridge"]);
+	if (!provider) return { models: [], issues: [] };
+	if (provider.models === undefined) return { models: [], issues: [] };
+	if (!Array.isArray(provider.models)) {
+		return { models: [], issues: [{ message: 'providers["claude-bridge"].models must be an array' }] };
+	}
+
+	const providerApi = nonEmptyString(provider.api);
+	const providerBaseUrl = nonEmptyString(provider.baseUrl);
+	const known = new Set(knownIds);
+	const seen = new Set<string>();
+	const models: BridgeModel[] = [];
+	const issues: ExtraModelIssue[] = [];
+	for (const raw of provider.models) {
+		const definition = record(raw);
+		const id = nonEmptyString(definition?.id);
+		if (!definition || !id) {
+			issues.push({ message: 'each providers["claude-bridge"].models entry needs a non-empty "id"' });
+			continue;
+		}
+		const api = nonEmptyString(definition.api) ?? providerApi;
+		const baseUrl = nonEmptyString(definition.baseUrl) ?? providerBaseUrl;
+		if (api !== "claude-bridge" || baseUrl !== "claude-bridge") {
+			issues.push({
+				id,
+				message: `model "${id}" needs "api": "claude-bridge" and "baseUrl": "claude-bridge" at the provider or model level`,
+			});
+			continue;
+		}
+		// An id the catalog already lists keeps the catalog's metadata (and its
+		// [1m]/200K policy); registering it again would list it twice in the picker.
+		if (known.has(id)) {
+			issues.push({ id, message: `model "${id}" is already in pi-ai's catalog; the catalog entry wins` });
+			continue;
+		}
+		if (seen.has(id)) {
+			issues.push({ id, message: `model "${id}" is listed more than once; the first entry wins` });
+			continue;
+		}
+		seen.add(id);
+		const thinkingLevelMap = modelThinkingLevelMap(definition.thinkingLevelMap);
+		models.push({
+			id,
+			name: nonEmptyString(definition.name) ?? id,
+			reasoning: typeof definition.reasoning === "boolean" ? definition.reasoning : false,
+			input: modelInput(definition.input),
+			contextWindow: positiveNumber(definition.contextWindow) ?? EXTRA_CONTEXT_WINDOW,
+			maxTokens: positiveNumber(definition.maxTokens) ?? EXTRA_MAX_TOKENS,
+			cost: modelCost(definition.cost),
+			...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+		});
+	}
+	return { models, issues };
 }
 
 export type LongContextSettings = {

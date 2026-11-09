@@ -11,7 +11,7 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { QueryProcess } from "./query-process.js";
 import { readTranscript, recordedToolResults, resolveRecordingCut, savePrefixSession } from "./session-transcript.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
-import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings } from "./models.js";
+import { applyLongContext, buildModels, claudeCodeModelId, extraModelsFromJson, type LongContextSettings } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -20,7 +20,7 @@ import { compareHistory, copyRecording, importHistory, LiveRecording, type Recor
 import { deleteSessionState, loadSessionState, saveSessionState } from "./session-store.js";
 import { newAssistantOutput, QueryContext, type AssistantStep } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, globalConfigPath, loadConfig, type Config } from "./config.js";
+import { claudeCodeSettings, globalConfigPath, loadConfig, loadModelsJson, modelsJsonPath, type Config } from "./config.js";
 import {
 	projectPromptCapture,
 	sharedPromptCaptures,
@@ -54,8 +54,10 @@ function diagDump(label: string, data: Record<string, unknown>) {
 // see the "--- Provider ---" block in activate() below.
 const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
 
-// MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
-const MODELS = buildModels(getModels("anthropic"));
+// The catalog is the picker. Gateway/router ids outside it are additive entries
+// in models.json under providers["claude-bridge"].models; they are loaded at
+// activation because pi resolves the agent dir per process.
+const CATALOG_MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
 
@@ -2154,8 +2156,14 @@ export default function (pi: ExtensionAPI) {
 		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
 		forceTwoHundredK,
 	};
-	const registeredModels = applyLongContext(MODELS, longContextSettings);
-	if (registeredModels.length === 0) {
+	// Extra ids are not Claude models, so the measured [1m]/200K policy must not
+	// rewrite them: they register with the window and max tokens they declared.
+	const extra = extraModelsFromJson(loadModelsJson(), CATALOG_MODELS.map((m) => m.id));
+	for (const issue of extra.issues) {
+		console.warn(`claude-bridge: ${modelsJsonPath()}: ${issue.message}`);
+	}
+	const registeredModels = [...applyLongContext(CATALOG_MODELS, longContextSettings), ...extra.models];
+	if (CATALOG_MODELS.length === 0) {
 		console.error("claude-bridge: no models available from pi-ai's anthropic catalog — update @earendil-works/pi-ai (requires >=0.86.1)");
 	}
 

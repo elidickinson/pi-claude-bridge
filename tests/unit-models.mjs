@@ -1,12 +1,17 @@
 /**
  * Tests for MODELS construction.
  * Pins: catalog-driven picker excludes pi-ai's dated snapshot aliases, projection strips
- * pi-ai's baseUrl/api/provider/headers, and the runtime policy gates [1m] ids
- * on measurement and plan settings.
+ * pi-ai's baseUrl/api/provider/headers, additive models.json entries register after the
+ * catalog only when declared for the bridge provider, and the runtime policy gates [1m]
+ * ids on measurement and plan settings.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { applyLongContext, buildModels, resolveClaudeCodeRuntimeModel } from "../src/models.js";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { applyLongContext, buildModels, claudeCodeModelId, extraModelsFromJson, resolveClaudeCodeRuntimeModel } from "../src/models.js";
 import { getModels } from "@earendil-works/pi-ai/compat";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
@@ -148,5 +153,128 @@ describe("applyLongContext", () => {
 
 		const extra = applyLongContext(models, EXTRA);
 		assert.equal(find(extra, "claude-sonnet-4-6").name, "Claude Sonnet 4.6 1M");
+	});
+});
+
+it("claude-opus-5-5 requests 1M on Pro", () => {
+	assert.deepEqual(resolveClaudeCodeRuntimeModel({ id: "claude-opus-5-5" }, PRO), { cliModelId: "claude-opus-5-5[1m]", contextWindow: 1000000 });
+});
+
+// The provider list is composed at activation, so a fresh process is the honest
+// probe: the agent dir and models.json are resolved per process before the
+// provider is registered.
+function registeredModelsInChild(modelsJson) {
+	const agentDir = mkdtempSync(join(tmpdir(), "claude-bridge-models-"));
+	if (modelsJson !== undefined) {
+		writeFileSync(join(agentDir, "models.json"), typeof modelsJson === "string" ? modelsJson : JSON.stringify(modelsJson));
+	}
+	const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir };
+	delete env.CLAUDE_BRIDGE_DEBUG;
+	const src = new URL("../src/index.ts", import.meta.url).href;
+	const probe = `
+		const { default: activate } = await import(${JSON.stringify(src)});
+		let models;
+		activate({
+			on: () => {},
+			registerProvider: (_name, config) => { models = config.models; },
+			registerTool: () => {},
+		});
+		console.log(JSON.stringify(models));
+	`;
+	try {
+		const out = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", probe], {
+			env, encoding: "utf8", timeout: 60_000,
+		});
+		return JSON.parse(out);
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+}
+
+const bridgeProvider = (models, extra = {}) => ({
+	providers: {
+		"claude-bridge": {
+			api: "claude-bridge",
+			baseUrl: "claude-bridge",
+			models,
+			...extra,
+		},
+	},
+});
+
+const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+describe("models.json additions", () => {
+	const catalogIds = () => buildModels(getModels("anthropic")).map((m) => m.id);
+
+	it("registers the catalog alone when models.json is absent", () => {
+		const registered = registeredModelsInChild(undefined);
+		const expected = applyLongContext(buildModels(getModels("anthropic")), PRO);
+		assert.deepEqual(registered, JSON.parse(JSON.stringify(expected)));
+	});
+
+	it("registers additive models after the catalog", () => {
+		const registered = registeredModelsInChild(bridgeProvider([{ id: "gateway/opus" }]));
+		const catalogLength = catalogIds().length;
+		assert.deepEqual(registered.slice(0, catalogLength).map((m) => m.id), catalogIds());
+		assert.deepEqual(registered.slice(catalogLength), [{
+			id: "gateway/opus",
+			name: "gateway/opus",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 128000,
+			maxTokens: 16384,
+			cost: zeroCost,
+		}]);
+	});
+
+	it("preserves declared metadata and thinking-level mappings", () => {
+		const { models, issues } = extraModelsFromJson(bridgeProvider([{
+			id: "gateway/sonnet",
+			name: "Gateway Sonnet",
+			reasoning: true,
+			input: ["text", "image"],
+			contextWindow: 200000,
+			maxTokens: 32000,
+			cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+			thinkingLevelMap: { high: "high", max: "max" },
+		}]));
+		assert.deepEqual(issues, []);
+		assert.deepEqual(models, [{
+			id: "gateway/sonnet",
+			name: "Gateway Sonnet",
+			reasoning: true,
+			input: ["text", "image"],
+			contextWindow: 200000,
+			maxTokens: 32000,
+			cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+			thinkingLevelMap: { high: "high", max: "max" },
+		}]);
+	});
+
+	it("ignores catalog collisions and repeated extras with warnings", () => {
+		const collision = extraModelsFromJson(bridgeProvider([{ id: "claude-opus-5" }]), ["claude-opus-5"]);
+		assert.deepEqual(collision.models, []);
+		assert.match(collision.issues[0].message, /catalog/);
+
+		const duplicate = extraModelsFromJson(bridgeProvider([{ id: "gateway/x" }, { id: "gateway/x" }]));
+		assert.deepEqual(duplicate.models.map((m) => m.id), ["gateway/x"]);
+		assert.match(duplicate.issues[0].message, /more than once/);
+	});
+
+	it("reports missing bridge registration fields without failing activation", () => {
+		const missing = extraModelsFromJson({ providers: { "claude-bridge": { models: [{ id: "gateway/x" }] } } });
+		assert.deepEqual(missing.models, []);
+		assert.match(missing.issues[0].message, /api.*baseUrl/);
+
+		const nonArray = extraModelsFromJson({ providers: { "claude-bridge": { models: "gateway/x" } } });
+		assert.deepEqual(nonArray.models, []);
+		assert.match(nonArray.issues[0].message, /must be an array/);
+	});
+
+	it("keeps the catalog when models.json is malformed", () => {
+		const registered = registeredModelsInChild("{ not json");
+		const expected = applyLongContext(buildModels(getModels("anthropic")), PRO);
+		assert.deepEqual(registered, JSON.parse(JSON.stringify(expected)));
 	});
 });

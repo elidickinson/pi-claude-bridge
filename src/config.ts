@@ -48,6 +48,73 @@ export function globalConfigPath(): string {
 	return join(getAgentDir(), "claude-bridge.json");
 }
 
+export function modelsJsonPath(): string {
+	return join(getAgentDir(), "models.json");
+}
+
+// pi accepts JSONC in models.json. Keep the bridge's read consistent without
+// adding a dependency: remove comments outside strings, retaining newlines so
+// parse errors still point at a useful line.
+function stripJsonComments(source: string): string {
+	let output = "";
+	let inString = false;
+	let escaped = false;
+	let lineComment = false;
+	let blockComment = false;
+	for (let i = 0; i < source.length; i++) {
+		const current = source[i];
+		const next = source[i + 1];
+		if (lineComment) {
+			if (current === "\n" || current === "\r") {
+				lineComment = false;
+				output += current;
+			}
+			continue;
+		}
+		if (blockComment) {
+			if (current === "*" && next === "/") {
+				blockComment = false;
+				i++;
+			} else if (current === "\n" || current === "\r") {
+				output += current;
+			}
+			continue;
+		}
+		if (inString) {
+			output += current;
+			if (escaped) escaped = false;
+			else if (current === "\\") escaped = true;
+			else if (current === '"') inString = false;
+			continue;
+		}
+		if (current === '"') {
+			inString = true;
+			output += current;
+		} else if (current === "/" && next === "/") {
+			lineComment = true;
+			i++;
+		} else if (current === "/" && next === "*") {
+			blockComment = true;
+			i++;
+		} else {
+			output += current;
+		}
+	}
+	return output;
+}
+
+export function loadModelsJson(): unknown {
+	const path = modelsJsonPath();
+	if (!existsSync(path)) return {};
+	try {
+		const source = readFileSync(path, "utf-8").replace(/^\uFEFF/, "");
+		return JSON.parse(stripJsonComments(source));
+	} catch (e) {
+		console.error(`claude-bridge: failed to parse ${path}: ${e}`);
+		return {};
+	}
+}
+
 export function loadConfig(): Config {
 	const global = tryParseJson(globalConfigPath());
 	return { askClaude: global.askClaude, provider: { ...global.provider } };
