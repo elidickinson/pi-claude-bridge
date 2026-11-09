@@ -2,6 +2,13 @@
 
 [![npm version](https://img.shields.io/npm/v/pi-claude-bridge)](https://www.npmjs.com/package/pi-claude-bridge)
 
+> [!NOTE]
+> **There's another good option:** the pi maintainers now have their own Claude Code subscription provider, [pi-claude-code](https://github.com/earendil-works/pi-claude-code). The two work differently under the hood:
+>
+> - **pi-claude-bridge (this extension)** runs Claude Code through the Agent SDK and keeps pi's message history in sync with a Claude Code session file on disk. Claude Code builds and sends every request itself, unmodified, with its own system prompt and pi's prompt sections added to it. The cost is complexity: other extensions that change the system prompt mid-session, add messages to requests, or run subagents with their own prompts can fail. It tries to stay true to how Claude Code normally runs. 
+> - **pi-claude-code** runs `claude -p` for each turn and points it at a local proxy that rewrites each request on its way to Anthropic: it swaps in pi's history and system prompt as-is and adjusts cache markers. It keeps no state of its own, so it's simpler and gets along better with other extensions. The tradeoff is that it editing inference requests on the wire is less clearly within the TOS and Claude Code updates may introduce breaking changes without warning.
+
+
 Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). Originally based on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal.
 
 Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI.
