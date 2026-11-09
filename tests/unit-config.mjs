@@ -3,9 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown } from "../src/config.js";
+import { claudeCodeSettings, loadConfig } from "../src/config.js";
 import activate, { __test } from "../src/index.js";
 
 function withTempHome(fn) {
@@ -47,41 +46,11 @@ describe("loadConfig", () => {
 			}));
 			process.chdir(cwd);
 
-			assert.deepEqual(loadConfig(), { startupNoticeShown: undefined, askClaude: undefined, provider: {} });
+			assert.deepEqual(loadConfig(), { askClaude: undefined, provider: {} });
 		} finally {
 			process.chdir(oldCwd);
 			rmSync(cwd, { recursive: true, force: true });
 		}
-	}));
-
-	it("markStartupNoticeShown records today's date without dropping existing settings", () => withTempHome(() => {
-		const globalDir = getAgentDir();
-		mkdirSync(globalDir, { recursive: true });
-		const path = join(globalDir, "claude-bridge.json");
-		writeFileSync(path, JSON.stringify({ provider: { strictMcpConfig: false } }));
-
-		assert.equal(markStartupNoticeShown(), path);
-		const written = JSON.parse(readFileSync(path, "utf-8"));
-		assert.match(written.startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
-		assert.deepEqual(written.provider, { strictMcpConfig: false });
-		assert.equal(loadConfig().startupNoticeShown, written.startupNoticeShown);
-	}));
-
-	it("markStartupNoticeShown leaves an unparseable config untouched", () => withTempHome(() => {
-		const globalDir = getAgentDir();
-		mkdirSync(globalDir, { recursive: true });
-		const path = join(globalDir, "claude-bridge.json");
-		const malformed = '{ "provider": { "plan": "max" }, }';
-		writeFileSync(path, malformed);
-
-		markStartupNoticeShown();
-		assert.equal(readFileSync(path, "utf-8"), malformed, "a typo must not cost the user their config");
-	}));
-
-	it("markStartupNoticeShown creates the config when there is none", () => withTempHome(() => {
-		assert.equal(loadConfig().startupNoticeShown, undefined);
-		markStartupNoticeShown();
-		assert.match(loadConfig().startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
 	}));
 
 	it("resolves global config via PI_CODING_AGENT_DIR override, not hardcoded ~/.pi/agent", () => withTempHome(() => {
@@ -93,7 +62,7 @@ describe("loadConfig", () => {
 				provider: { plan: "max" },
 			}));
 
-			assert.deepEqual(loadConfig(), { startupNoticeShown: undefined, askClaude: undefined, provider: { plan: "max" } });
+			assert.deepEqual(loadConfig(), { askClaude: undefined, provider: { plan: "max" } });
 		} finally {
 			if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = oldEnv;

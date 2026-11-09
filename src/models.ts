@@ -1,3 +1,5 @@
+import type { ThinkingLevelMap } from "@earendil-works/pi-ai";
+
 // Model selection + display-order policy for the model picker. The picker is
 // driven by pi-ai's anthropic catalog: models appear (and disappear) with it,
 // no per-model code here. Extracted from index.ts so tests can import without
@@ -16,6 +18,21 @@ function isDatedAlias(id: string): boolean {
 // sink below all known ones.
 const FAMILY_ORDER = ["fable", "opus", "sonnet", "haiku"];
 
+// The registration contract for a bridge model. Catalog entries and models.json
+// additions share it so both are accepted by pi.registerProvider.
+export interface BridgeModel {
+	id: string;
+	name: string;
+	reasoning: boolean;
+	input: ("text" | "image")[];
+	contextWindow: number;
+	maxTokens: number;
+	thinkingLevelMap?: ThinkingLevelMap;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+}
+
+export type CatalogModel = Omit<BridgeModel, "cost">;
+
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
 // newest generation first. Context-dependent display labels are applied after
 // plan/long-context config is known.
@@ -25,7 +42,7 @@ function versionRank(id: string): { family: string; tuple: [number, number] } {
 	return { family, tuple: [Number(major) || 0, Number(minor) || 0] };
 }
 
-export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]) {
+export function buildModels(piAiModels: readonly CatalogModel[]): BridgeModel[] {
 	return piAiModels
 		.filter((m) => typeof m.id === "string" && !isDatedAlias(m.id))
 		.sort((a, b) => {
@@ -51,73 +68,127 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 		}));
 }
 
-// The picker is the anthropic catalog, so an endpoint that serves ids outside it
-// (a gateway or router behind ANTHROPIC_BASE_URL) offers nothing selectable and a
-// turn cannot target its models. Extras are opt-in, never baked in: the env var
-// holds a comma-separated list of `id[:contextWindow[:maxTokens]]`. The limits are
-// the trailing numeric fields only, so colon-bearing ids survive; an id that
-// itself ends in a number is read as carrying a limit (no escape in the syntax).
-// Empty by default, which leaves the catalog alone.
-const EXTRA_CONTEXT_WINDOW = TWO_HUNDRED_K_CONTEXT;
-const EXTRA_MAX_TOKENS = 32_000;
+// pi-ai's catalog is the picker. A gateway or router behind ANTHROPIC_BASE_URL
+// can serve ids outside it, so models.json may add them under
+// providers["claude-bridge"].models. Entries are additive only: catalog ids and
+// their measured [1m]/200K policy stay authoritative, and the bridge never
+// rewrites an extra's declared window. pi validates models.json before this
+// extension registers, so each entry needs api/baseUrl (provider-level or per
+// model) even though the bridge ignores both values.
+const EXTRA_CONTEXT_WINDOW = 128_000;
+const EXTRA_MAX_TOKENS = 16_384;
 
-// A window that does not parse is a typo, not a request for a zero-token model.
-function positiveInt(raw: string | undefined, fallback: number): number {
-	if (raw === undefined || !/^\d+$/.test(raw)) return fallback;
-	const value = Number(raw);
-	return value > 0 ? value : fallback;
+export type ExtraModelIssue = { id?: string; message: string };
+export type ExtraModelsResult = { models: BridgeModel[]; issues: ExtraModelIssue[] };
+
+function record(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: undefined;
 }
 
-// Split `id[:contextWindow[:maxTokens]]` at its trailing limit fields only. Served
-// ids carry colons of their own (`meta-llama/llama-3.2-3b-instruct:free`,
-// `anthropic/claude-opus-5:nitro`), and splitting on every colon registered `free`
-// as the id with the variant unselectable — so a limit can only start at a numeric
-// last field. The field before that one is the window slot when it is numeric or
-// empty; any other value (a variant suffix such as `free`) stays in the id, which
-// also means a typo like `my-model:200k:0` registers `my-model:200k` rather than
-// silently dropping the field. A trailing colon is an empty limit slot, not part
-// of an id. The flat syntax has no escape, so an id genuinely ending in `:200000`
-// is indistinguishable from a window and is read as one.
-function splitExtraModelSpec(entry: string): { id: string; contextWindow?: string; maxTokens?: string } {
-	const spec = entry.replace(/:+$/, "");
-	const parts = spec.split(":");
-	if (parts.length < 2 || !/^\d+$/.test(parts[parts.length - 1])) return { id: spec };
-	const last = parts[parts.length - 1];
-	const previous = parts[parts.length - 2];
-	if (parts.length > 2 && (previous === "" || /^\d+$/.test(previous))) {
-		return { id: parts.slice(0, -2).join(":"), contextWindow: previous, maxTokens: last };
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function costNumber(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function modelCost(value: unknown): BridgeModel["cost"] {
+	const cost = record(value);
+	return {
+		input: costNumber(cost?.input),
+		output: costNumber(cost?.output),
+		cacheRead: costNumber(cost?.cacheRead),
+		cacheWrite: costNumber(cost?.cacheWrite),
+	};
+}
+
+function modelInput(value: unknown): BridgeModel["input"] {
+	if (!Array.isArray(value)) return ["text"];
+	const input = value.filter((item): item is "text" | "image" => item === "text" || item === "image");
+	return input.length > 0 ? input : ["text"];
+}
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+function modelThinkingLevelMap(value: unknown): ThinkingLevelMap | undefined {
+	const map = record(value);
+	if (!map) return undefined;
+	const result: ThinkingLevelMap = {};
+	for (const level of THINKING_LEVELS) {
+		const entry = map[level];
+		if (typeof entry === "string") result[level] = entry;
+		else if (entry === null) result[level] = null;
 	}
-	return { id: parts.slice(0, -1).join(":"), contextWindow: last };
+	return Object.keys(result).length > 0 ? result : undefined;
 }
 
-// Project the extra ids to the same shape as buildModels' entries. Cost is zero —
-// the endpoint's billing is unknown to us — and input is text-only: an image sent
-// to a model that does not take one fails the turn.
-export function buildExtraModels(spec: string | undefined, knownIds: Iterable<string> = []) {
+// Read only the standard models.json additions for this provider. The bridge
+// provider is registered with its own model list, so pi's applyModelsJson would
+// otherwise add these models and the extension replacement would discard them.
+export function extraModelsFromJson(
+	modelsJson: unknown,
+	knownIds: Iterable<string> = [],
+): ExtraModelsResult {
+	const provider = record(record(record(modelsJson)?.providers)?.["claude-bridge"]);
+	if (!provider) return { models: [], issues: [] };
+	if (provider.models === undefined) return { models: [], issues: [] };
+	if (!Array.isArray(provider.models)) {
+		return { models: [], issues: [{ message: 'providers["claude-bridge"].models must be an array' }] };
+	}
+
+	const providerApi = nonEmptyString(provider.api);
+	const providerBaseUrl = nonEmptyString(provider.baseUrl);
 	const known = new Set(knownIds);
 	const seen = new Set<string>();
-	const models: {
-		id: string; name: string; reasoning: boolean; input: ("text" | "image")[];
-		contextWindow: number; maxTokens: number;
-		cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
-	}[] = [];
-	for (const entry of (spec ?? "").split(",")) {
-		const { id, contextWindow, maxTokens } = splitExtraModelSpec(entry.trim());
+	const models: BridgeModel[] = [];
+	const issues: ExtraModelIssue[] = [];
+	for (const raw of provider.models) {
+		const definition = record(raw);
+		const id = nonEmptyString(definition?.id);
+		if (!definition || !id) {
+			issues.push({ message: 'each providers["claude-bridge"].models entry needs a non-empty "id"' });
+			continue;
+		}
+		const api = nonEmptyString(definition.api) ?? providerApi;
+		const baseUrl = nonEmptyString(definition.baseUrl) ?? providerBaseUrl;
+		if (api !== "claude-bridge" || baseUrl !== "claude-bridge") {
+			issues.push({
+				id,
+				message: `model "${id}" needs "api": "claude-bridge" and "baseUrl": "claude-bridge" at the provider or model level`,
+			});
+			continue;
+		}
 		// An id the catalog already lists keeps the catalog's metadata (and its
 		// [1m]/200K policy); registering it again would list it twice in the picker.
-		if (!id || seen.has(id) || known.has(id)) continue;
+		if (known.has(id)) {
+			issues.push({ id, message: `model "${id}" is already in pi-ai's catalog; the catalog entry wins` });
+			continue;
+		}
+		if (seen.has(id)) {
+			issues.push({ id, message: `model "${id}" is listed more than once; the first entry wins` });
+			continue;
+		}
 		seen.add(id);
+		const thinkingLevelMap = modelThinkingLevelMap(definition.thinkingLevelMap);
 		models.push({
 			id,
-			name: id,
-			reasoning: false,
-			input: ["text"],
-			contextWindow: positiveInt(contextWindow, EXTRA_CONTEXT_WINDOW),
-			maxTokens: positiveInt(maxTokens, EXTRA_MAX_TOKENS),
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			name: nonEmptyString(definition.name) ?? id,
+			reasoning: typeof definition.reasoning === "boolean" ? definition.reasoning : false,
+			input: modelInput(definition.input),
+			contextWindow: positiveNumber(definition.contextWindow) ?? EXTRA_CONTEXT_WINDOW,
+			maxTokens: positiveNumber(definition.maxTokens) ?? EXTRA_MAX_TOKENS,
+			cost: modelCost(definition.cost),
+			...(thinkingLevelMap ? { thinkingLevelMap } : {}),
 		});
 	}
-	return models;
+	return { models, issues };
 }
 
 export type LongContextSettings = {
@@ -134,8 +205,9 @@ type ClaudeCodeRuntimeModel = {
 };
 
 // Measured Claude Agent SDK behavior - see diag/CONTEXT-SIZE.md:
-// - The `[1m]` suffix is the only reliable way to request 1M context through
-//   the SDK; bare ids serve 200K.
+// - The `[1m]` suffix is the reliable way to request 1M context through the
+//   SDK. Bare ids serve 1M for current models on Pro, but older models and some
+//   Max-plan measurements serve 200K.
 // - An unentitled `[1m]` id is rejected outright (400/429), failing every turn
 //   — worse than serving 200K, so the default is bare id at 200K and only
 //   measured-good ids get `[1m]`.
