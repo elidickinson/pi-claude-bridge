@@ -42,6 +42,13 @@ options and auth:
   `overageStatus: "rejected"`, `overageDisabledReason: "org_level_disabled"`
 - Date: 2026-09-28
 
+The Fable 5.2 rows come from a later run, same options and auth:
+
+- Claude Agent SDK 0.3.308 (bundled Claude Code 2.1.308)
+- Pro, Extra Usage off — the run's rate-limit event reports
+  `overageStatus: "rejected"`, `overageDisabledReason: "out_of_credits"`
+- Date: 2026-11-10
+
 ## Served context windows
 
 Four conditions, each run with the probe above. Values are tokens; `1M` =
@@ -63,6 +70,8 @@ the footnote below the table).
 | `claude-opus-4-7[1m]`    | 1M               | 1M              | 1M               | 1M              |
 | `claude-opus-4-6`         | 200K             | 200K            | 200K             | 200K            |
 | `claude-opus-4-6[1m]`    | 429              | 1M              | 1M               | 1M              |
+| `claude-fable-5-2`        | 200K             | —               | —                | —               |
+| `claude-fable-5-2[1m]`   | 1M               | —               | —                | —               |
 | `claude-fable-5`          | 429§             | 1M              | —                | —               |
 | `claude-fable-5[1m]`     | 429§             | 1M              | —                | —               |
 | `claude-sonnet-5`         | 1M§              | 1M              | —                | —               |
@@ -76,7 +85,7 @@ Raw runs: `.test-output/context-size/{pro,max}-2026-06-26T21-*.json`,
 Opus 5.5 `.test-output/context-size/max-2026-09-23T13-50-08-107Z.json`,
 Sonnet 5.5 `.test-output/context-size/max-2026-09-28T18-33-28-340Z.json`
 (Pro credits on) and `.test-output/context-size/pro-2026-09-28T18-56-52-762Z.json`
-(Pro credits off)
+(Pro credits off), Fable 5.2 `.test-output/context-size/pro-2026-11-10T04-20-12-950Z.json`
 
 `—` = not yet tested in that condition. Max-credits-on matched Pro-credits-on
 for every cell tested in both (shown for completeness). Opus 5.5 served 1M from
@@ -94,6 +103,11 @@ off, so the June Pro-credits-off bare cells of 200K for sonnet-5 and opus-4-8
 are stale — a backend change, not an entitlement effect. Two exceptions:
 `fable-5` is now fully credits-gated on Pro (§ below), and the 4-6 models
 keep their `[1m]` credits gate (`PLAN_GATED_ONE_M` still required).
+
+Measured 2026-11-10, Pro without Extra Usage: Fable 5.2 is the exception to
+bare-1M. The bare id serves 200K and `[1m]` serves 1M (32K max output both
+ways), so its `MEASURED_ONE_M` entry is what gives it 1M. Fable 5.1 served 1M
+from both in the same run.
 
 † **Inferred, not directly measured.** The Pro-credits-off run predates
 error-field capture; its three rejected `[1m]` rows have no recorded HTTP status

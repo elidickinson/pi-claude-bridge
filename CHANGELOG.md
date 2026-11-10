@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: Claude Fable 5.2 gets 1M context** — `claude-bridge/claude-fable-5-2` now requests `[1m]`; its bare id serves only 200K (measured on Pro without Extra Usage).
+
 ## 0.11.0 — 2026-11-06
 
 - **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.

@@ -74,13 +74,15 @@ type ClaudeCodeRuntimeModel = {
 // - The registered contextWindow must match the window the bridge actually
 //   requests, or pi's status bar and compaction threshold misreport.
 // [1m] ids verified to serve 1M on every plan (sonnet-5-5 measured on Pro with
-// and without Extra Usage; opus-5-5 on Max per its run notes). A new model
+// and without Extra Usage; opus-5-5 on Max per its run notes; fable-5-2 on Pro
+// without Extra Usage, where its bare id serves only 200K). A new model
 // serves 200K until someone measures it (diag/context-size.mjs) and adds it
 // here. Known exception unrelated to long context: fable-5 is not included
 // with Pro account without Extra Usage.
 const MEASURED_ONE_M = new Set([
 	"claude-fable-5",
 	"claude-fable-5-1",
+	"claude-fable-5-2",
 	"claude-opus-5-5",
 	"claude-opus-5",
 	"claude-opus-4-8",
