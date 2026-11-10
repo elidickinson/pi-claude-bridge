@@ -151,6 +151,8 @@ pi sets `PI_CODING_AGENT=true` for child processes, including the Claude Code ch
 
 Hooks do not fire on isolated summary queries.
 
+You cannot rely on Claude Code's permission rules and PreToolUse hooks to block tools you don't want to run. Permissioning should take place on the Pi side when using the bridge.
+
 ### Compaction and branch summaries
 
 pi runs compaction and branch summaries natively. The bridge routes their `cacheRetention: "none"` calls to isolated Claude Code queries, leaving the live session untouched until pi completes the history rewrite. Other extensions can provide summaries through pi's hooks.
