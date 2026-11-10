@@ -73,8 +73,8 @@ try {
 
 	// Switching providers forces the bridge to write pi's history — image included —
 	// into a Claude Code session for CC to resume from.
-	console.log("Switching to claude-bridge/claude-haiku-4-5...");
-	await send({ type: "set_model", provider: "claude-bridge", modelId: "claude-haiku-4-5" }, TIMEOUT);
+	console.log("Switching to claude-bridge/claude-haiku-5-5...");
+	await send({ type: "set_model", provider: "claude-bridge", modelId: "claude-haiku-5-5" }, TIMEOUT);
 
 	console.log("Turn 2: ask Claude about the image through the rebuilt session...");
 	const answer = await promptAndWait(

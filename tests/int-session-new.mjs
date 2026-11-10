@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TIMEOUT = 180_000;
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
 
 const harness = createRpcHarness({
 	name: "session-new",

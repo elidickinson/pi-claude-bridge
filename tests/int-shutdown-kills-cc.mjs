@@ -19,7 +19,7 @@ import { execFileSync } from "node:child_process";
 import { basename } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
 
 function children(pid) {
 	try {

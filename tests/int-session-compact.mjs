@@ -13,11 +13,11 @@ import { getSessionPath } from "cc-session-io";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TIMEOUT = 180_000;
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
 
 const testAgentDir = mkdtempSync(join(tmpdir(), "session-compact-agent-"));
 writeFileSync(join(testAgentDir, "settings.json"), JSON.stringify({
-	compaction: { keepRecentTokens: 50 },
+	compaction: { keepRecentTokens: 10 },
 }));
 
 const harness = createRpcHarness({

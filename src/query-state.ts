@@ -88,6 +88,8 @@ export class QueryContext {
 	/** Highest 5% utilization bucket we notified for, so repeat rate_limit_event spam is suppressed. */
 	lastRateLimitWarnStep: number | null = null;
 	lastRateLimitWarnThreshold: number | undefined;
+	/** Already warned that this query billed Extra Usage with the plan limit not reached. */
+	warnedUnplannedOverage = false;
 	/** pi session this query serves, from SimpleStreamOptions.sessionId at fresh-query
 	 *  setup. A bridge process serves several pi sessions at once (subagents run their
 	 *  own AgentSessions), and history rewrites must only discard the rewriting

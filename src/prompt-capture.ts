@@ -1,6 +1,5 @@
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { formatProjectContext } from "./agents-md.js";
-import { debugLogPath } from "./log-paths.js";
 import { renderSkillsBlock } from "./skills.js";
 
 // What pi assembled for one agent, kept so the bridge can append only the
@@ -270,19 +269,6 @@ export class PromptCaptures {
 	}
 }
 
-/** Pi's own preamble, the first section of every prompt pi renders for a session
- *  without a custom prompt. Machine-generated, so operator text never carries it;
- *  forwarding it makes Claude Code's subscription path read the request as a
- *  third-party app. */
-export const PI_PREAMBLE = "You are an expert coding assistant operating inside pi";
-
-/** Both doc paths from pi's documentation-routing line. Anthropic's subscription gate
- *  rejects a system prompt carrying both, while either alone passes (issues #883, #88). */
-const ANTHROPIC_THIRD_PARTY_TRIGGERS = ["docs/custom-provider.md", "docs/packages.md"];
-
-/** One piece of the append, named so a refusal can say where it found the text. */
-type PromptPart = { label: string; text: string };
-
 const SHARED_CAPTURES_KEY = Symbol.for("claude-bridge:promptCaptures");
 
 /** Isolated agents re-evaluate this module; a process-wide instance lets the pinned
@@ -337,59 +323,23 @@ function projectCapture(
 		});
 
 		const custom = projectCustom(capture, options, visiting);
-		const parts: PromptPart[] = [];
+		const parts: string[] = [];
 		const context = formatProjectContext(capture.contextFiles);
-		if (context) parts.push({ label: "the project context block", text: context });
+		if (context) parts.push(context);
 		const skills = renderSkillsBlock(ownSkills, options.hasReadTool);
-		if (skills) parts.push({ label: "the skills block", text: skills });
-		if (custom) parts.push({ label: "the custom prompt", text: custom });
-		if (capture.append) parts.push({ label: "the appended instructions", text: capture.append });
+		if (skills) parts.push(skills);
+		if (custom) parts.push(custom);
+		if (capture.append) parts.push(capture.append);
 		// pi's builder renders custom sections last, after `cwd` — the one built-in section
 		// with nothing portable to forward — so they follow the append here.
 		for (const [name, content] of Object.entries(capture.sections ?? {})) {
 			if (!content) continue;
-			parts.push({ label: `the ${name} section`, text: `<${name}>\n${content}\n</${name}>` });
+			parts.push(`<${name}>\n${content}\n</${name}>`);
 		}
-		assertSendablePrompt(parts, capture);
-		return parts.length > 0 ? parts.map((part) => part.text).join("\n\n") : undefined;
+		return parts.length > 0 ? parts.join("\n\n") : undefined;
 	} finally {
 		visiting.delete(capture);
 	}
-}
-
-function assertSendablePrompt(parts: readonly PromptPart[], capture: PromptCapture): void {
-	const findings: string[] = [];
-	for (const { label, text } of parts) {
-		const offset = preambleAtLineStart(text);
-		if (offset !== -1) {
-			findings.push(`pi's preamble ("${PI_PREAMBLE}") in ${label}, at offset ${offset} of ${text.length} chars`);
-		}
-		// The pair has to co-occur in one part; the two phrases split across parts are not detected.
-		if (ANTHROPIC_THIRD_PARTY_TRIGGERS.every((trigger) => text.includes(trigger))) {
-			findings.push(`${ANTHROPIC_THIRD_PARTY_TRIGGERS.join(" and ")} in ${label}`);
-		}
-	}
-	if (findings.length === 0) return;
-
-	throw new Error([
-		"prompt-capture: refusing to send this prompt. Claude Code's Anthropic path reads a request",
-		"  carrying pi's harness, or the phrase pair its subscription gate rejects, as a third-party",
-		"  app: it fails with 400 or is billed as extra usage.",
-		...findings.map((finding) => `  Found: ${finding}.`),
-		`  Capture: ${capture.source ?? "unknown"}, ${capture.inherited.length} inherited capture(s) substituted.`,
-		"  If this came from an inherited pi prompt, see README \"Compatibility with other extensions\".",
-		"  If it is your own text, reword or remove it. CLAUDE_BRIDGE_DEBUG=1 writes the full prompt to",
-		`  ${debugLogPath()}.`,
-	].join("\n"));
-}
-
-/** Offset of pi's preamble at the start of a line, or -1. Mid-line mentions are someone
- *  describing pi's prompt, not pi's prompt. */
-function preambleAtLineStart(text: string): number {
-	for (let offset = text.indexOf(PI_PREAMBLE); offset !== -1; offset = text.indexOf(PI_PREAMBLE, offset + PI_PREAMBLE.length)) {
-		if (offset === 0 || text[offset - 1] === "\n") return offset;
-	}
-	return -1;
 }
 
 function projectCustom(

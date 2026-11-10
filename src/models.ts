@@ -73,14 +73,15 @@ type ClaudeCodeRuntimeModel = {
 //   measured-good ids get `[1m]`.
 // - The registered contextWindow must match the window the bridge actually
 //   requests, or pi's status bar and compaction threshold misreport.
-// [1m] ids verified to serve 1M on every plan (sonnet-5-5 measured on Pro with
-// and without Extra Usage; opus-5-5 on Max per its run notes). A new model
+// [1m] ids that serve 1M on every plan (sonnet-5-5 measured on Pro with and
+// without Extra Usage; opus-5-5 and fable-5-2 on Max). A new model
 // serves 200K until someone measures it (diag/context-size.mjs) and adds it
 // here. Known exception unrelated to long context: fable-5 is not included
 // with Pro account without Extra Usage.
 const MEASURED_ONE_M = new Set([
 	"claude-fable-5",
 	"claude-fable-5-1",
+	"claude-fable-5-2",
 	"claude-opus-5-5",
 	"claude-opus-5",
 	"claude-opus-4-8",
@@ -124,6 +125,14 @@ export function resolveClaudeCodeRuntimeModel(
 
 export function claudeCodeModelId(model: { id: string }, settings: LongContextSettings): string {
 	return resolveClaudeCodeRuntimeModel(model, settings).cliModelId;
+}
+
+/** The model runs at 1M only because the user chose to pay for it through Extra
+ *  Usage, so its requests bill there with the plan limit not reached. */
+export function extraUsageByChoice(model: { id: string }, settings: LongContextSettings): boolean {
+	const planGate = PLAN_GATED_ONE_M[model.id];
+	return !!planGate && settings.longContextExtraUsage && !settings.forceTwoHundredK?.includes(model.id)
+		&& !planGate({ ...settings, longContextExtraUsage: false });
 }
 
 // Produce the model metadata registered with pi. The registered contextWindow must

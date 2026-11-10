@@ -6,7 +6,7 @@
 //
 // Determinism: isSplitTurn requires the cut point to land on an assistant
 // message, which needs accumulated recent tokens to exceed keepRecentTokens.
-// The default 20000 never triggers on a small seed. We lower it to 50 via a
+// The default 20000 never triggers on a small seed. We lower it to 10 via a
 // temp agent dir (PI_CODING_AGENT_DIR) whose settings.json holds the override
 // as global settings — no project-trust gate, isolated from the user's real
 // ~/.pi/agent. The bridge registers its own models and CC auth lives in
@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
 const COMPACT_TIMEOUT = 90_000; // compact should finish in ~10s; hang = timeout
 const TEST_TIMEOUT = 180_000;
 
@@ -28,7 +28,7 @@ const TEST_TIMEOUT = 180_000;
 // keepRecentTokens. Any modest assistant turn then straddles the boundary.
 const testAgentDir = mkdtempSync(join(tmpdir(), "compact-splitturn-agent-"));
 writeFileSync(join(testAgentDir, "settings.json"), JSON.stringify({
-	compaction: { keepRecentTokens: 50 },
+	compaction: { keepRecentTokens: 10 },
 }));
 
 const harness = createRpcHarness({

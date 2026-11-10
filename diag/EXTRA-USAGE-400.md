@@ -45,7 +45,7 @@ The [August 5 report on PR #21](https://github.com/elidickinson/pi-claude-bridge
 
 ### SDK versus print mode: October 31, 2026
 
-One request per arm, same login, Extra Usage disabled (`org_level_disabled`), Haiku 4.5 unless noted. Every arm but the control sent pi 1.4.0's default system prompt unchanged (16.4K characters, including `PI_PREAMBLE` and both `docs/custom-provider.md` and `docs/packages.md`):
+One request per arm, same login, Extra Usage disabled (`org_level_disabled`), Haiku 4.5 unless noted. Every arm but the control sent pi 1.4.0's default system prompt unchanged (16.4K characters, including pi's preamble and both `docs/custom-provider.md` and `docs/packages.md`):
 
 | route | CC | result |
 | --- | --- | --- |
@@ -60,6 +60,26 @@ One request per arm, same login, Extra Usage disabled (`org_level_disabled`), Ha
 The content trigger still applies, and it follows the route rather than the CC version. The SDK sets `CLAUDE_CODE_ENTRYPOINT=sdk-ts` when unset; pi-claude-code runs `claude -p` with stream-json input, and its captured request carried `cc_entrypoint=sdk-cli` and `user-agent: claude-cli/2.1.316 (external, sdk-cli)`, with pi's prompt verbatim in `system[2]` after CC's billing header and "You are a Claude agent, built on Anthropic's Claude Agent SDK." Its loopback relay rewrites messages and cache markers, not system prompt text. Attribution was not varied to isolate the cause further, per the rule above. Print mode passing today is an observation about current gating, not a reason to route around the SDK.
 
 The SDK sets `process.env.CLAUDE_AGENT_SDK_VERSION` in the host process, so probes launched from a pi session running the bridge inherit it; these arms unset it.
+
+### pi 1.5 wording: November 10, 2026
+
+`diag/probe-third-party-gate.mjs`, interleaved: Agent SDK 0.3.321 (CC 2.1.321), bridge-shaped query (no tools, `claude_code` preset with the arm's prompt as `append`), Haiku 4.5, Max plan at 15-16% of its 5-hour window. The pi arms are the default prompts in `diag/third-party-gate/`, as each version renders them with no context files or skills; only pi's wording differs.
+
+| append | Extra Usage on ($0.04 cap) | Extra Usage off |
+| --- | --- | --- |
+| none (control) | 4/4 plan: `five_hour`, `overageInUse` unset | 4/4 plan |
+| pi 1.4.0 default prompt | 3/3 billed to Extra Usage: `rateLimitType: "overage"`, `overageInUse: true`, `isUsingOverage: false`, no `unifiedWindows` | 2/2 400 "You're out of extra usage", no `rate_limit_event` |
+| pi 1.5.1 default prompt | 3/3 plan, same as control | 1/1 plan |
+| pi 1.4.0, real setup | — | 2/2 400, as above |
+| pi 1.5.1, real setup | — | 2/2 plan |
+
+"Real setup" is the prompt each version renders for the maintainer's own context files (global and project AGENTS.md, ancestor CLAUDE.md) and a skill, about 24K characters; not committed. Raw runs: `.test-output/third-party-gate/2026-11-10-first-runs.jsonl` (the Extra Usage on column) and `.test-output/third-party-gate/results.jsonl`.
+
+pi 1.5.0 reworded its prompt ("expert coding assistant operating inside pi" became "coding assistant running inside pi", "pi packages (docs/packages.md)" became "packages (docs/packages.md)", "pi itself" became "the harness itself"), and that is enough to stay on the plan. Both `docs/custom-provider.md` and `docs/packages.md` are still in the 1.5.1 prompt, so that pair is not the trigger. Which rewording mattered was not bisected.
+
+CC's `isUsingOverage` misses this case. CC sets it only when the plan window is `rejected` and overage is allowed; `overageInUse` comes from the `anthropic-ratelimit-unified-overage-in-use` response header (2.1.308 `ve()` in `chunk-n6np73ay.js`). The bridge warns on `overageInUse` without `isUsingOverage`, and adds the same note to an "out of extra usage" error that no plan rejection preceded, except for a model the user runs at 1M through `longContextExtraUsage`, which bills Extra Usage by design.
+
+The bridge's own debug log has 6 events of the billed shape (`rateLimitType: "overage"`, `status: "allowed"`, `isUsingOverage: false`) from 2026-07-29 to 2026-08-06, and none after. Their prompts weren't logged, so the cause is not known.
 
 ## Reproduction
 
@@ -78,4 +98,4 @@ curl -X POST 'https://api.anthropic.com/v1/messages?beta=true' \
      --data-binary @req-NNNN.json
 ```
 
-Interleave known-good controls to rule out account-state changes. Record rate-limit events, especially `isUsingOverage` and overage availability; SDK list-price cost estimates are not evidence of charges. Captures contain sensitive conversations and credentials and must not be shared unredacted.
+Interleave known-good controls to rule out account-state changes. Record rate-limit events, especially `overageInUse`, `isUsingOverage` and overage availability; SDK list-price cost estimates are not evidence of charges. Captures contain sensitive conversations and credentials and must not be shared unredacted.

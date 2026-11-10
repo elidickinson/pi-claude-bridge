@@ -29,7 +29,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { collectCarriedAttachments, placeCarriedAttachments } from "../src/attachments.js";
 
 const CWD = process.cwd();
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 // Nothing can infer this from the filename, the prompt, or the file on disk —
 // it exists only in the attachment payload the rebuild has to carry.
 const TOKEN = "ZORBLAT-4417-QUUX";

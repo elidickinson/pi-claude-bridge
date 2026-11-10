@@ -39,8 +39,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
-const CONTEXT_WINDOW = 200_000; // what pi registers for the model above
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
+const CONTEXT_WINDOW = 1_000_000; // what pi registers for the model above
 const TEST_TIMEOUT = 300_000;
 const PROBE_TIMEOUT = 120_000;
 

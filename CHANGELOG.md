@@ -2,7 +2,11 @@
 
 ## UNRELEASED
 
+- **Add: Claude Fable 5.2 with 1M context** — Agent SDK bumped to 0.3.321 (Claude Code 2.1.321), which knows Fable 5.2; AskClaude's too.
+- **Bump: require pi ≥1.5.1** — Also for AskClaude.
+- **Remove: the system prompt guard** — pi 1.5's prompt no longer trips Anthropic's third-party billing check.
 - **Add: warn when an extension's per-request message keeps rewriting the prompt cache (#246)** — A message added to every request but never saved (for example from a `context` hook, as pi-todo-rail does) makes each request rewrite the whole cache; the bridge now says so once, quoting the message.
+- **Add: warn when Extra Usage is billed with plan limits left** — Claude Code's `overageInUse` without a reached plan limit, or an "out of extra usage" error with none, now points at the system prompt.
 
 ## 0.11.0 — 2026-11-06
 

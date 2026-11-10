@@ -8,8 +8,7 @@
  * prompt, while the prompt the provider actually queries with (and that pi-subagents
  * embeds verbatim into a child via ctx.getSystemPrompt() at dispatch) is the widened
  * one. If only the pre-widen prompt is a capture key, a subagent's turn resolves
- * against nothing, falls to a verbatim side request, and ships pi's harness — which
- * trips the server's third-party plan-eligibility check ("out of extra usage").
+ * against nothing and fails.
  *
  * These pin that agent_start records ctx.getSystemPrompt(), so the widened prompt
  * resolves directly and a child embedding it resolves by inheritance.
@@ -17,7 +16,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { PI_PREAMBLE, projectPromptCapture } from "../src/prompt-capture.js";
+import { projectPromptCapture } from "../src/prompt-capture.js";
 import { activateWithMockPi } from "./lib/mock-pi.mjs";
 
 const { __test } = await import("../src/index.js");
@@ -104,12 +103,13 @@ describe("subagent captures", () => {
 	});
 
 	// Tail-stripped inheritance (#88) is unsupported: a child embedding its parent prompt
-	// minus pi's per-session tail (skills catalogue, cwd footer) matches no full-prompt key.
+	// minus pi's per-session tail (skills catalogue, cwd footer) matches no full-prompt key,
+	// so the embedded parent, pi's harness included, goes out as the child's own prompt.
 	// gotgenes/pi-subagents strips the tail; elidickinson/pi-subagents embeds verbatim.
-	it("fails loudly when a recorded tail-stripped child has no inheritance edge (#88)", () => {
+	it("forwards a recorded tail-stripped child as-is, with no inheritance edge (#88)", () => {
 		const section = (name, content) => `<${name}>\n${content}\n</${name}>`;
 		const parentSections = [
-			`${PI_PREAMBLE}, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.`,
+			`You are a coding assistant running inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.`,
 			section("tools", "- read: Read a file\n- bash: Run commands\n\nIn addition to the tools above, you may have access to other custom tools depending on the project."),
 			section("rules", "- Use bash for file operations like ls, rg, find\n- Be concise in your responses"),
 			section("docs", "Pi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md"),
@@ -135,10 +135,6 @@ describe("subagent captures", () => {
 		const capture = __test.promptCaptures.resolve(strippedChild);
 		assert.ok(capture, "the tail-stripped child must be recorded before projection");
 		assert.equal(capture.inherited.length, 0, "the unsupported embedding must not invent an inheritance edge");
-		assert.throws(
-			() => projectPromptCapture(capture, { hasReadTool: false }),
-			/prompt-capture: refusing to send this prompt/,
-			"an unmatched recorded child must fail before its harness reaches Claude Code",
-		);
+		assert.equal(projectPromptCapture(capture, { hasReadTool: false }), strippedChild);
 	});
 });

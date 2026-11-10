@@ -64,10 +64,10 @@ run "provider: print mode responds" \
 # test passes or fails on whichever model that happens to be. Assert the model that
 # actually answered, not merely that something did.
 run "provider: --provider + --model resolve to the bridge" \
-  bash -c "pi --no-session -ne -e '$DIR' --provider claude-bridge --model claude-haiku-4-5 --mode json \
+  bash -c "pi --no-session -ne -e '$DIR' --provider claude-bridge --model claude-haiku-5-5 --mode json \
     -p \"Reply with just the word 'yes'\" 2>/dev/null \
     | jq -r 'select(.message.role==\"assistant\") | .message.provider + \"/\" + .message.model' \
-    | sort -u | grep -x 'claude-bridge/claude-haiku-4-5'"
+    | sort -u | grep -x 'claude-bridge/claude-haiku-5-5'"
 
 run "provider: model list includes provider" \
   bash -c "pi --no-session -ne -e '$DIR' --list-models 2>&1 | grep claude-bridge"
@@ -75,12 +75,12 @@ run "provider: model list includes provider" \
 # The bridge sends Claude Code's own preset system prompt, so the user's prompt
 # customisation has to be forwarded explicitly or it silently does nothing.
 run "system prompt: --append-system-prompt reaches Claude" \
-  bash -c "pi --no-session -ne -e '$DIR' --model 'claude-bridge/claude-haiku-4-5' \
+  bash -c "pi --no-session -ne -e '$DIR' --model 'claude-bridge/claude-haiku-5-5' \
     --append-system-prompt 'You must end every response with the exact word BANANA.' \
     -p 'What is 2+2? Answer in one short sentence.' 2>&1 | grep -q BANANA && echo ok"
 
 run "system prompt: --system-prompt reaches Claude" \
-  bash -c "pi --no-session -ne -e '$DIR' --model 'claude-bridge/claude-haiku-4-5' \
+  bash -c "pi --no-session -ne -e '$DIR' --model 'claude-bridge/claude-haiku-5-5' \
     --system-prompt 'You are a pirate. You must end every response with the exact word ARRR.' \
     -p 'What is 2+2? Answer in one short sentence.' 2>&1 | grep -q ARRR && echo ok"
 

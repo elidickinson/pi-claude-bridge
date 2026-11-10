@@ -88,6 +88,27 @@ describe("consumeQuery forwarding rate_limit_event", () => {
 		assert.ok(responses.every((r) => r.served === fixtureModel));
 	});
 
+	// Recorded 2026-11-10 (diag/EXTRA-USAGE-400.md), Extra Usage on, plan at 15%:
+	// pi 1.4.0's prompt appended, then CC's prompt alone.
+	it("warns once when a request is billed to Extra Usage with the plan limit not reached", async () => {
+		const event = (rate_limit_info) => ({ type: "rate_limit_event", rate_limit_info });
+		const billed = event({ status: "allowed", resetsAt: 1796083200, rateLimitType: "overage", overageStatus: "allowed", overageResetsAt: 1796083200, isUsingOverage: false, overageInUse: true });
+		const plan = event({ status: "allowed", resetsAt: 1794298800, rateLimitType: "five_hour", overageStatus: "allowed", overageResetsAt: 1796083200, isUsingOverage: false });
+		// Plan window exhausted and served from Extra Usage: the existing rejection notice covers it.
+		const exhausted = event({ status: "rejected", resetsAt: 1791580200, rateLimitType: "five_hour", overageStatus: "allowed", isUsingOverage: true, overageInUse: true });
+		const notices = [];
+		__test.setPiUI({ notify: (message) => notices.push(message) });
+		try {
+			await replay([plan, billed, billed, exhausted], () => {});
+		} finally {
+			__test.setPiUI(null);
+		}
+
+		const warnings = notices.filter((n) => n.includes("third-party app"));
+		assert.equal(warnings.length, 1, notices.join("\n"));
+		assert.match(warnings[0], /billed to Extra Usage/);
+	});
+
 	it("finishes the turn when onResponse throws", async () => {
 		const c = await replay(fixture("text"), () => { throw new Error("consumer bug"); });
 

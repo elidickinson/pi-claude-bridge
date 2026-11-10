@@ -3,7 +3,7 @@
 // helpers it shares with the provider are copies, in claude-code.ts.
 
 import { StringEnum, type Message } from "@earendil-works/pi-ai";
-import { buildSessionContext, convertToLlm, formatSkillsForPrompt, keyHint, type ExtensionAPI, type Skill } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, convertToLlm, formatSkillsForPrompt, type ExtensionAPI, type Skill } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { query, type SDKMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { createSession, deleteSession } from "cc-session-io";
@@ -257,7 +257,7 @@ export default function (pi: ExtensionAPI) {
 			if (truncated) text += theme.fg("dim", " …");
 			return new Text(text, 0, 0);
 		},
-		renderResult(result, { expanded, isPartial }, theme) {
+		renderResult(result, { expanded, isPartial }, theme, context) {
 			if (isPartial) {
 				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
 				return new Text(theme.fg("mdLink", "◉ Claude Code ") + theme.fg("muted", status), 0, 0);
@@ -280,7 +280,7 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				const { lines, truncated } = preview(body);
 				if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
-				if (truncated) text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
+				if (truncated) text += `\n${theme.fg("dim", `… (${context.keyHint("app.tools.expand", "to expand")})`)}`;
 			}
 
 			return new Text(text, 0, 0);

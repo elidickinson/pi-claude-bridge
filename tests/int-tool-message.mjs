@@ -13,7 +13,7 @@ const TEST_TIMEOUT = 40_000;
 
 const harness = createRpcHarness({
 	name: "tool-message",
-	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-4-5"],
+	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-5-5"],
 	defaultTimeout: TEST_TIMEOUT,
 });
 
@@ -214,9 +214,11 @@ describe("tool-message integration", () => {
 		// prompt with no attachment at all.
 		const mark = logMark();
 		const steerText = "STOP. Do not call SlowTool again. Reply with only the word BANANA.";
+		// Few enough calls to fit the timeout when the model ignores the steer,
+		// as Haiku 5.5 does (see the note at the end).
 		await send({
 			type: "prompt",
-			message: "Call SlowTool with seconds=1 exactly 12 times, strictly one at a time — wait for each result before starting the next. Do not call it twice in the same message.",
+			message: "Call SlowTool with seconds=1 exactly 4 times, strictly one at a time — wait for each result before starting the next. Do not call it twice in the same message.",
 		});
 		await waitForEvent("tool_execution_start");
 		await send({ type: "prompt", message: steerText, streamingBehavior: "steer" });

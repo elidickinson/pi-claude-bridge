@@ -14,7 +14,7 @@ const harness = createRpcHarness({
 	name: "branch-summary",
 	args: [
 		"-e", "./tests/fixtures/tree-nav-extension.ts",
-		"--model", "claude-bridge/claude-haiku-4-5",
+		"--model", "claude-bridge/claude-haiku-5-5",
 	],
 	defaultTimeout: TEST_TIMEOUT,
 });

@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { applyLongContext, buildModels, resolveClaudeCodeRuntimeModel } from "../src/models.js";
+import { applyLongContext, buildModels, extraUsageByChoice, resolveClaudeCodeRuntimeModel } from "../src/models.js";
 import { getModels } from "@earendil-works/pi-ai/compat";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
@@ -38,6 +38,8 @@ describe("MODELS projection", () => {
 			assert.equal(m.provider, undefined);
 			assert.equal(m.headers, undefined);
 			assert.deepEqual(m.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+			// With a cache lifetime, pi's cache warmer would replay requests through the bridge.
+			assert.equal(m.promptCache, undefined);
 		}
 		// Spot-check coverage of every current family.
 		assert.ok(find(models, "claude-opus-5"), "opus-5 present");
@@ -73,7 +75,7 @@ describe("MODELS projection", () => {
 
 describe("Claude Code runtime policy", () => {
 	it("measured-1M ids send [1m] on every plan", () => {
-		for (const id of ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"]) {
+		for (const id of ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"]) {
 			assert.deepEqual(resolveClaudeCodeRuntimeModel(oneM(id), PRO), { cliModelId: `${id}[1m]`, contextWindow: 1000000 });
 		}
 	});
@@ -95,6 +97,15 @@ describe("Claude Code runtime policy", () => {
 	it("measured exception: sonnet-4-6 1M requires extra usage", () => {
 		assert.deepEqual(resolveClaudeCodeRuntimeModel(oneM("claude-sonnet-4-6"), PRO), { cliModelId: "claude-sonnet-4-6", contextWindow: 200000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel(oneM("claude-sonnet-4-6"), EXTRA), { cliModelId: "claude-sonnet-4-6[1m]", contextWindow: 1000000 });
+	});
+
+	it("extraUsageByChoice: only 1M that longContextExtraUsage turned on", () => {
+		assert.equal(extraUsageByChoice({ id: "claude-sonnet-4-6" }, EXTRA), true);
+		assert.equal(extraUsageByChoice({ id: "claude-opus-4-6" }, EXTRA), true);
+		assert.equal(extraUsageByChoice({ id: "claude-opus-4-6" }, { ...MAX, longContextExtraUsage: true }), false, "Max serves it from the plan");
+		assert.equal(extraUsageByChoice({ id: "claude-sonnet-4-6" }, PRO), false);
+		assert.equal(extraUsageByChoice({ id: "claude-sonnet-4-6" }, { ...EXTRA, forceTwoHundredK: ["claude-sonnet-4-6"] }), false);
+		assert.equal(extraUsageByChoice({ id: "claude-opus-5" }, EXTRA), false);
 	});
 
 	it("forceTwoHundredK overrides an optimistic 1M declaration", () => {

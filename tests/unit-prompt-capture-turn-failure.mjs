@@ -1,8 +1,7 @@
 /**
- * A system prompt the bridge refuses to forward fails the turn through the returned
- * stream instead of throwing out of streamSimple: both the unresolvable prompt
- * (resolveOrDerive) and the sendability guard (projectPromptCapture). No query starts
- * and no stream is left claimed, so the next turn is unaffected.
+ * A system prompt the bridge can't resolve (resolveOrDerive) fails the turn through the
+ * returned stream instead of throwing out of streamSimple. No query starts and no
+ * stream is left claimed, so the next turn is unaffected.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -22,7 +21,6 @@ delete process.env.CLAUDE_BRIDGE_DEBUG;
 process.on("exit", () => rmSync(tmpRoot, { recursive: true, force: true }));
 
 const { default: activate, __test } = await import("../src/index.js");
-const { PI_PREAMBLE } = await import("../src/prompt-capture.js");
 
 let providerConfig;
 activate({
@@ -51,14 +49,5 @@ describe("a prompt the bridge refuses", () => {
 		assert.equal(queries, 0);
 		assert.equal(__test.activeQueryContexts.size, 0);
 		assert.ok(existsSync(join(agentDir, "claude-bridge-diag.log")));
-	});
-
-	it("fails the turn on the stream when the sendability guard refuses the capture", async () => {
-		const prompt = `${PI_PREAMBLE}, recorded with pi's harness in its custom prompt.`;
-		__test.promptCaptures.record(prompt, { custom: prompt, contextFiles: [], skills: [] });
-		const result = await turn(prompt).result();
-		assert.equal(result.stopReason, "error");
-		assert.match(result.errorMessage, /prompt-capture: refusing to send this prompt/);
-		assert.equal(queries, 0);
 	});
 });

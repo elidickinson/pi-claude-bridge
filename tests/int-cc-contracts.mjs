@@ -11,8 +11,7 @@
 // as soon as the message they care about arrives. Run the whole file on every
 // @anthropic-ai/claude-agent-sdk or Claude Code bump.
 //
-// Verified against: SDK 0.3.308 / Claude Code 2.1.308. package.json declares
-// ^0.3.308 and package-lock.json resolves 0.3.308.
+// Verified against: SDK 0.3.321 / Claude Code 2.1.321. package.json pins 0.3.321.
 //
 // Assumptions that are NOT covered here, and why:
 //   - DISABLE_AUTO_COMPACT=1 stops CC-side autocompaction. Provoking it needs a
@@ -40,7 +39,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { createSession, deleteSession, getProjectDir, openSession, repairToolPairing } from "cc-session-io";
 
 const CWD = process.cwd();
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 // Claude Code's own extension to the MCP tools/call params, not part of the MCP
 // spec. Set in claude-code-rip src/services/mcp/client.ts. src/mcp-server.ts
 // throws when it is absent, so this key is load-bearing for every tool call.
@@ -200,7 +199,7 @@ test("is_error can be true on a result whose subtype is still success", { timeou
 	const streamEventTypes = [];
 	try {
 		for await (const message of query({
-			prompt: `Summarize this in one word:\n${"banana ".repeat(220_000)}`,
+			prompt: `Summarize this in one word:\n${"banana ".repeat(1_100_000)}`,
 			options: providerOptions({ maxTurns: 1, persistSession: false, includePartialMessages: true }),
 		})) {
 			if (message.type === "stream_event") streamEventTypes.push(message.event?.type);
@@ -282,7 +281,8 @@ test("message_delta usage carries thinking tokens nested under output_tokens_det
 	// fails here instead of going quiet again.
 	const deltaUsages = [];
 	for await (const message of query({
-		prompt: "Think briefly about what 17 * 23 is, then state just the number.",
+		// Hard enough that adaptive thinking doesn't skip it; 17 * 23 gets no thinking.
+		prompt: "How many positive integers below 1000 are divisible by 3 or 5 but not by 7? Reply with just the number.",
 		options: providerOptions({ includePartialMessages: true, effort: "medium", maxTurns: 1, persistSession: false }),
 	})) {
 		if (message.type === "stream_event" && message.event?.type === "message_delta" && message.event.usage) {
@@ -721,10 +721,10 @@ test("a steer replayed after a completed turn has its own user record after that
 	}
 });
 
-test("a turn's opening input containing <task-notification> is recorded under its UUID but never replayed", { timeout: 120_000 }, async () => {
-	// Both the query's prompt and a late steer CC runs as a later turn. The bridge
-	// acknowledges each at its turn's first output instead (tapRecording), or the
-	// pending steer would hold stdin open forever.
+test("a turn's opening input containing <task-notification> is recorded under its UUID and replayed", { timeout: 120_000 }, async () => {
+	// Both the query's prompt and a late steer CC runs as a later turn. CC 2.1.308
+	// replayed neither, so tapRecording also acknowledges each at its turn's first
+	// output, or the pending steer would hold stdin open forever.
 	const requests = [];
 	const api = await stubApi(requests);
 	const cwd = mkdtempSync(join(tmpdir(), "cc-tag-input-"));
@@ -753,7 +753,7 @@ test("a turn's opening input containing <task-notification> is recorded under it
 			if (message.type === "result" && ++results === 1) release();
 		}
 		assert.equal(results, 2, "both turns must complete");
-		assert.ok(!messages.some((m) => m.type === "user" && m.isReplay && uuids.includes(m.uuid)), "CC replayed input holding <task-notification>; the first-output acknowledgement is no longer needed");
+		assert.ok(uuids.every((uuid) => messages.some((m) => m.type === "user" && m.isReplay && m.uuid === uuid)), "CC stopped replaying input holding <task-notification>; keep tapRecording's first-output fallback");
 		const session = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
 		const at = (uuid) => session.records.findIndex((r) => r.uuid === uuid);
 		const split = messages.findIndex((m) => m.type === "result");

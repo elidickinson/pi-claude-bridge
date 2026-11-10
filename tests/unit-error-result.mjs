@@ -102,6 +102,22 @@ describe("a rate-limited failure", () => {
 	});
 });
 
+// Recorded 2026-11-10 (diag/EXTRA-USAGE-400.md): Extra Usage off, pi 1.4.0's prompt
+// appended, plan at 16%. No rate_limit_event precedes it.
+describe("an extra-usage refusal with no plan window rejected", () => {
+	it("says the system prompt may have been read as a third-party app", async () => {
+		const refusal = {
+			type: "result", subtype: "success", is_error: true, api_error_status: 400,
+			result: "API Error: 400 You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+		};
+		const c = makeCtx();
+		await consume(c, [refusal]);
+
+		assert.ok(c.turnOutput.errorMessage.startsWith(refusal.result), "keeps Claude Code's own wording first");
+		assert.match(c.turnOutput.errorMessage, /third-party app/);
+	});
+});
+
 describe("error results", () => {
 	it("marks the turn errored and finalizes with an error event", async () => {
 		const c = makeCtx();

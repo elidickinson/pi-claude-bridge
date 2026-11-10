@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
 const TEST_TIMEOUT = 240_000;
 // Load pi-subagents straight from npm via pi's `-e npm:` source, pinned to a
 // version that passes modelRuntime to createAgentSession (pi 0.80.8 dropped the

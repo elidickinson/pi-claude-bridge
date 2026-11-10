@@ -4,11 +4,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { PI_PREAMBLE, projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
+import { projectPromptCapture, PromptCaptures } from "../src/prompt-capture.js";
 
 const PI_SYSTEM_PROMPT = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js", import.meta.url));
 
-const PI_HARNESS = "You are an expert coding assistant operating inside pi. Pi documentation: pi packages (docs/packages.md).";
+const PI_HARNESS = "You are a coding assistant running inside pi. Pi documentation: packages (docs/packages.md).";
 const PARENT_KEY = `${PI_HARNESS}\n\n<project_context>raw parent context</project_context>\nCurrent working directory: /parent`;
 const CHILD_SUFFIX = `\n\n<sub_agent_context>child rules</sub_agent_context>\n\n<active_agent name="Plan"/>\n\n# Environment\nWorking directory: /child\n\n<agent_instructions>plan carefully</agent_instructions>`;
 const CHILD_KEY = `${PARENT_KEY}${CHILD_SUFFIX}\nCurrent working directory: /child`;
@@ -166,7 +166,7 @@ describe("PromptCaptures", () => {
 		const parent = project(captures, PARENT_KEY);
 		const child = project(captures, CHILD_KEY);
 		assert.ok(child.startsWith(parent), "child should retain the parent's projected cache prefix");
-		assert.doesNotMatch(child, /operating inside pi|pi packages/);
+		assert.doesNotMatch(child, /running inside pi|docs\/packages\.md/);
 		assert.match(child, /parent rules/);
 		assert.match(child, /<sub_agent_context>child rules<\/sub_agent_context>/);
 		assert.match(child, /<active_agent name="Plan"\/>/);
@@ -192,7 +192,7 @@ describe("PromptCaptures", () => {
 		captures.record(grandKey, capture({ custom: `${CHILD_KEY}${grandSuffix}` }));
 
 		const grandchild = project(captures, grandKey);
-		assert.doesNotMatch(grandchild, /operating inside pi|Current working directory: \/parent|Current working directory: \/child/);
+		assert.doesNotMatch(grandchild, /running inside pi|Current working directory: \/parent|Current working directory: \/child/);
 		assert.equal(occurrences(grandchild, "parent rules"), 1);
 		assert.match(grandchild, /child rules/);
 		assert.match(grandchild, /grandchild rules/);
@@ -208,7 +208,7 @@ describe("PromptCaptures", () => {
 		captures.record(changedKey, capture({ custom: `${PARENT_KEY}\n\nchanged child rules` }));
 
 		const changed = project(captures, changedKey);
-		assert.doesNotMatch(changed, /operating inside pi/);
+		assert.doesNotMatch(changed, /running inside pi/);
 		assert.match(changed, /reachable ancestor/);
 		assert.match(changed, /changed child rules/);
 	});
@@ -221,7 +221,7 @@ describe("PromptCaptures", () => {
 		captures.record(CHILD_KEY, capture({ custom: `${PARENT_KEY}${CHILD_SUFFIX}`, append: "child append" }));
 
 		const child = project(captures, CHILD_KEY);
-		assert.doesNotMatch(child, /rules v1|operating inside pi/);
+		assert.doesNotMatch(child, /rules v1|running inside pi/);
 		assert.match(child, /rules v2/);
 		assert.match(child, /child append$/);
 	});
@@ -233,7 +233,7 @@ describe("PromptCaptures", () => {
 		captures.record("repeated child", capture({ custom: repeatedCustom }));
 
 		const result = project(captures, "repeated child");
-		assert.doesNotMatch(result, /operating inside pi/);
+		assert.doesNotMatch(result, /running inside pi/);
 		assert.equal(occurrences(result, "repeated rules"), 2);
 	});
 
@@ -330,23 +330,6 @@ describe("prompt sections", () => {
 
 		const child = project(captures, CHILD_KEY);
 		assert.equal(occurrences(child, MCP_SECTION), 1);
-		assert.doesNotMatch(child, /operating inside pi/);
-	});
-
-	it("refuses a section carrying pi's preamble or Anthropic's trigger pair", () => {
-		const offending = {
-			leaked_harness: `${PI_PREAMBLE}, a coding agent harness.`,
-			triggers: "see docs/custom-provider.md and docs/packages.md",
-		};
-		for (const [name, content] of Object.entries(offending)) {
-			const captures = new PromptCaptures();
-			captures.record("guarded prompt", capture({ sections: { [name]: content } }), "before_agent_start");
-
-			assert.throws(
-				() => projectPromptCapture(captures.resolve("guarded prompt"), { hasReadTool: false }),
-				(error) => error.message.includes(`in the ${name} section`),
-				`the ${name} section must be checked on its own`,
-			);
-		}
+		assert.doesNotMatch(child, /running inside pi/);
 	});
 });

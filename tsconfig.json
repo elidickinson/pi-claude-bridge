@@ -13,6 +13,11 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noImplicitReturns": true
+    "noImplicitReturns": true,
+    // pi loads extensions with `@earendil-works/pi-ai` aliased to this view (pi-ai's compat
+    // entry plus TypeBox's Type/Static and a TypeBox StringEnum); check against the same.
+    "paths": {
+      "@earendil-works/pi-ai": ["./node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/pi-ai-extension-view.d.ts"]
+    }
   }
 }

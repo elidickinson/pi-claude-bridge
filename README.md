@@ -23,7 +23,7 @@
 
 ## Install
 
-The bridge needs pi 1.2.0 or newer for all models, but should mostly work back to pi 0.86.1.
+The bridge needs pi 1.5.1 or newer.
 
 1. Install the extension:
    ```sh
@@ -155,14 +155,9 @@ Hooks do not fire on isolated summary queries.
 
 pi runs compaction and branch summaries natively. The bridge routes their `cacheRetention: "none"` calls to isolated Claude Code queries, leaving the live session untouched until pi completes the history rewrite. Other extensions can provide summaries through pi's hooks.
 
-### System prompt rejections
+### Extra Usage with plan limits left
 
-The bridge stops a turn instead of sending it if another extension changes the system prompt and the result still contains either:
-
-- pi's built-in system prompt text, or
-- the two documentation paths Anthropic looks for: `docs/custom-provider.md` together with `docs/packages.md`.
-
-Anthropic may otherwise bill these requests as Extra Usage. Fix the source extension before retrying. `CLAUDE_BRIDGE_DEBUG=1` writes the full prompt to the bridge log when this happens.
+Anthropic reads some system prompts as a third-party app's and bills those requests to Extra Usage even when your plan has room, or refuses them with "You're out of extra usage" when Extra Usage is off. pi's own prompt before pi 1.5 was one. The bridge warns when Claude Code reports a request billed to Extra Usage with no plan limit reached, and adds the same note to an "out of extra usage" error. Models you run at 1M through `longContextExtraUsage` are left out, since they bill Extra Usage by design. If you see it, look for an extension that adds text to the system prompt.
 
 ### Plan usage for footers and quota extensions
 

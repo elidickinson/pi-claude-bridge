@@ -42,6 +42,13 @@ options and auth:
   `overageStatus: "rejected"`, `overageDisabledReason: "org_level_disabled"`
 - Date: 2026-09-28
 
+The Fable 5.2 rows come from a later run, same options and auth:
+
+- Claude Agent SDK 0.3.321 (bundled Claude Code 2.1.321)
+- Plan: Max, Extra Usage off (`hasExtraUsageEnabled: false`,
+  `cachedExtraUsageDisabledReason: "org_level_disabled"` in `~/.claude.json`)
+- Date: 2026-11-09
+
 ## Served context windows
 
 Four conditions, each run with the probe above. Values are tokens; `1M` =
@@ -51,6 +58,8 @@ the footnote below the table).
 
 | requested id              | Pro, credits off | Pro, credits on | Max, credits off | Max, credits on |
 |---------------------------|------------------|-----------------|------------------|-----------------|
+| `claude-fable-5-2`        | —                | —               | 1M               | —               |
+| `claude-fable-5-2[1m]`   | —                | —               | 1M               | —               |
 | `claude-sonnet-5-5`       | 1M               | 1M              | —                | —               |
 | `claude-sonnet-5-5[1m]`  | 1M               | 1M              | —                | —               |
 | `claude-opus-5-5`         | 1M               | 1M              | 1M               | —               |

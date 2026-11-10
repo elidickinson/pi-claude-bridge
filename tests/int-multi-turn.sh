@@ -59,7 +59,7 @@ run_json "multi-turn: tool use, context, history" \
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("'"$EXPECTED_VERSION"'")) and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("banana"))' \
   pi --no-session -ne -e "$DIR" \
-  --model "claude-bridge/claude-haiku-4-5" \
+  --model "claude-bridge/claude-haiku-5-5" \
   --mode json \
   -p "The secret word is 'banana'. Read package.json and tell me the version. Be brief." \
      "Now read README.md and tell me the first heading. Be brief." \
@@ -74,7 +74,7 @@ run_json "single-turn: multiple sequential tool calls" \
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("pi-claude-bridge")) and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end")] | length) > 0' \
   pi --no-session -ne -e "$DIR" \
-  --model "claude-bridge/claude-haiku-4-5" \
+  --model "claude-bridge/claude-haiku-5-5" \
   --mode json \
   -p "Read both package.json and README.md, then tell me the package name and the full first heading of the README."
 
@@ -88,7 +88,7 @@ run_json "single-turn: 3+ parallel tool calls" \
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("pi-claude-bridge")) and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("ES2022"))' \
   pi --no-session -ne -e "$DIR" \
-  --model "claude-bridge/claude-haiku-4-5" \
+  --model "claude-bridge/claude-haiku-5-5" \
   --mode json \
   -p "Read package.json, README.md, and tsconfig.json at the same time, then tell me the package name, the first heading in the README, and the TypeScript target."
 
@@ -101,7 +101,7 @@ run_json "regression: turn 2 tool results not stale from turn 1" \
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "toolcall_end")] | length) >= 2 and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("[Mm][Ii][Tt]"))' \
   pi --no-session -ne -e "$DIR" \
-  --model "claude-bridge/claude-haiku-4-5" \
+  --model "claude-bridge/claude-haiku-5-5" \
   --mode json \
   -p "Read package.json and tell me the package name. Be brief, just the name." \
      "Now read LICENSE and tell me what type of license it is. Be brief, just the license type."
