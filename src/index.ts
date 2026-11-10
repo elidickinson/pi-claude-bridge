@@ -20,7 +20,7 @@ import { compareHistory, copyRecording, importHistory, LiveRecording, type Recor
 import { deleteSessionState, loadSessionState, saveSessionState } from "./session-store.js";
 import { newAssistantOutput, QueryContext, type AssistantStep } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, globalConfigPath, loadConfig, type Config } from "./config.js";
+import { claudeCodeSettings, globalConfigPath, loadConfig, settingSources, type Config } from "./config.js";
 import {
 	projectPromptCapture,
 	sharedPromptCaptures,
@@ -1985,8 +1985,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// User settings only. A repo's .claude/settings.json and settings.local.json can
 			// carry hooks, apiKeyHelper, env and plugins, and Claude Code trusts the workspace
 			// when it isn't interactive, so they would run with no prompt. ~/.claude/settings.json
-			// still loads: Bedrock/Vertex users keep env and apiKeyHelper there.
-			settingSources: ["user"] as SettingSource[],
+			// still loads by default: Bedrock/Vertex users keep env and apiKeyHelper there.
+			// `provider.userSettings: false` opts out (no hooks or plugins from it either).
+			settingSources: settingSources(providerSettings) as SettingSource[],
 			// includeGitInstructions:false drops the gitStatus block from the preset.
 			// That block is the trailing suffix of the cached system block, and a
 			// git-state transition (new file, staging, commit) rewrites it — busting

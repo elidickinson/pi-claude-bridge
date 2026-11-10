@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: `provider.userSettings: false` skips `~/.claude/settings.json` (#252)** — Claude Code then runs bridge turns without the user's hooks, plugins, `env` and `apiKeyHelper`; default unchanged.
+
 ## 0.12.0 — 2026-11-10
 
 - **Add: Claude Fable 5.2 with 1M context** — Agent SDK bumped to 0.3.321 (Claude Code 2.1.321), which knows Fable 5.2; AskClaude's too.
