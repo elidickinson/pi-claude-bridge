@@ -16,6 +16,10 @@ export interface Config {
 	provider?: {
 		strictMcpConfig?: boolean;
 		autoMemoryEnabled?: boolean;
+		// Set to false to keep Claude Code from reading ~/.claude/settings.json on provider
+		// turns: no hooks, plugins, env or apiKeyHelper from it. Default true. Subscription
+		// (OAuth) logins are unaffected; Bedrock/Vertex users need the file's env/apiKeyHelper.
+		userSettings?: boolean;
 		pathToClaudeCodeExecutable?: string;
 		// Subscription plan tier. Setting to "max" enables Opus 4.6 at 1M context;
 		// newer models get 1M on every plan.
@@ -42,6 +46,12 @@ function tryParseJson(path: string): Partial<Config> {
 
 export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMemoryEnabled: boolean } {
 	return { autoMemoryEnabled: provider.autoMemoryEnabled ?? false };
+}
+
+/** Claude Code setting sources the provider query loads. Only the user's own settings, and
+ *  only unless `provider.userSettings` is false. Project settings are never loaded. */
+export function settingSources(provider: Config["provider"] = {}): "user"[] {
+	return provider.userSettings === false ? [] : ["user"];
 }
 
 export function globalConfigPath(): string {

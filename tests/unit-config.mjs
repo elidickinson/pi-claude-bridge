@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig } from "../src/config.js";
+import { claudeCodeSettings, loadConfig, settingSources } from "../src/config.js";
 import activate, { __test } from "../src/index.js";
 
 function withTempHome(fn) {
@@ -31,6 +31,22 @@ describe("claudeCodeSettings", () => {
 
 	it("allows auto-memory to be enabled", () => {
 		assert.deepEqual(claudeCodeSettings({ autoMemoryEnabled: true }), { autoMemoryEnabled: true });
+	});
+});
+
+describe("settingSources", () => {
+	it("loads the user's settings by default", () => {
+		assert.deepEqual(settingSources(), ["user"]);
+		assert.deepEqual(settingSources({}), ["user"]);
+		assert.deepEqual(settingSources({ userSettings: true }), ["user"]);
+	});
+
+	it("loads nothing when userSettings is false, and never the project's", () => {
+		assert.deepEqual(settingSources({ userSettings: false }), []);
+		for (const provider of [undefined, {}, { userSettings: true }, { userSettings: false }]) {
+			assert.ok(!settingSources(provider).includes("project"));
+			assert.ok(!settingSources(provider).includes("local"));
+		}
 	});
 });
 
