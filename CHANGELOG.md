@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## 0.12.0 — 2026-11-10
 
 - **Add: Claude Fable 5.2 with 1M context** — Agent SDK bumped to 0.3.321 (Claude Code 2.1.321), which knows Fable 5.2; AskClaude's too.
 - **Bump: require pi ≥1.5.1** — Also for AskClaude.
