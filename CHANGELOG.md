@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: Claude Mythos 5.2 and 5.1 with 1M context** — pi-ai doesn't list these access-gated models, so the bridge now adds them, cloned from the Fable releases they shipped beside. Measured at 1M on Max. Requests fail on accounts without Mythos access.
+
 ## 0.12.0 — 2026-11-10
 
 - **Add: Claude Fable 5.2 with 1M context** — Agent SDK bumped to 0.3.321 (Claude Code 2.1.321), which knows Fable 5.2; AskClaude's too.
