@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: warn when an extension's per-request message keeps rewriting the prompt cache (#246)** — A message added to every request but never saved (for example from a `context` hook, as pi-todo-rail does) makes each request rewrite the whole cache; the bridge now says so once, quoting the message.
+
 ## 0.11.0 — 2026-11-06
 
 - **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.

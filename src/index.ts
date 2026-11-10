@@ -227,6 +227,47 @@ function turnStart(messages: Context["messages"]): number {
 	return i;
 }
 
+/** The user messages each pi session's last request ended with, to notice when pi
+ *  never keeps them: an extension's `context` hook appending a message to every
+ *  request (issue #246). Claude Code records each copy and puts its cache marker
+ *  on it, so cutting the copy out on the next request leaves nothing cached past
+ *  the system prompt. pi hands the provider a plain user message, so the warning
+ *  can only quote it, not name the extension. */
+const sentTurns = new Map<string, { index: number; digests: string[]; texts: string[]; dropped: number }>();
+const DROPPED_TURNS_BEFORE_WARNING = 3;
+
+function noticeDroppedTurn(piSessionId: string, messages: Context["messages"]): void {
+	const start = turnStart(messages);
+	const previous = sentTurns.get(piSessionId);
+	const rewritten = historyRewrittenBySession.has(piSessionId);
+	// A retry neither adds to nor breaks the streak; a rewrite (compaction, /tree) resets it.
+	let dropped = previous && start === previous.index && !rewritten ? previous.dropped : 0;
+	if (previous && start > previous.index && !rewritten) {
+		const missing = previous.digests.findIndex((digest, i) => {
+			const now = messages[previous.index + i];
+			return now?.role !== "user" || digestMessage(now) !== digest;
+		});
+		if (missing !== -1) {
+			dropped = previous.dropped + 1;
+			const text = previous.texts[missing].replace(/\s+/g, " ").trim();
+			debug(`provider: pi did not keep a message the previous request sent (${dropped} in a row): ${text.slice(0, 80)} ${sessionTag(piSessionId)}`);
+			if (dropped === DROPPED_TURNS_BEFORE_WARNING) {
+				const quote = text.length > 60 ? `${text.slice(0, 60)}...` : text;
+				piUI?.notify(`Claude bridge: an extension adds a message to every request without saving it ("${quote}"), so every request rewrites the whole prompt cache. `
+					+ "Disable that extension, or ask its author to save the message with pi.sendMessage instead of adding it in a context hook. "
+					+ "See \"Extensions that add a message to every request\" in the pi-claude-bridge README.", "warning");
+			}
+		}
+	}
+	const turn = messages.slice(start) as UserMessage[];
+	sentTurns.set(piSessionId, {
+		index: start,
+		digests: turn.map(digestMessage),
+		texts: turn.map((m) => (typeof m.content === "string" ? m.content : messageContentToText(m.content))),
+		dropped,
+	});
+}
+
 /** Extract the current user turn as a prompt string. Returns null if the last message is not a user message. */
 function extractUserPrompt(messages: Context["messages"]): string | null {
 	const turn = messages.slice(turnStart(messages)) as UserMessage[];
@@ -622,7 +663,9 @@ export const __test = {
 			deleteSessionState(piSessionId);
 		}
 		historyRewrittenBySession.clear();
+		sentTurns.clear();
 	},
+	noticeDroppedTurn,
 	/** A restart: drop memory, keep every persisted pointer. */
 	forgetSessionMemory() {
 		sharedSessions.clear();
@@ -1645,6 +1688,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		traceEvent("route", { callId: traceCallId, route: "isolated-summary" });
 		return isolatedStreamFn(model, context, options, traceCallId);
 	}
+
+	if (options?.sessionId) noticeDroppedTurn(options.sessionId, context.messages);
 
 	const stream = createAssistantMessageEventStream();
 	// Report a failure before any query exists on the stream, as pi-ai's provider

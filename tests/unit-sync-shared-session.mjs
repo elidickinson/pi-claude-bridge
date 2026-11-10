@@ -252,3 +252,45 @@ describe("actual import recording", () => {
 		assert.deepEqual(copyRecording(), { digests: [], uuids: [], cuttable: [] });
 	});
 });
+
+describe("messages pi never keeps (#246)", () => {
+	// Each request ends with the trailing user messages it sends; the next request's history says whether pi kept them.
+	function notices(requests) {
+		const seen = [];
+		__test.setPiUI({ notify: (message) => seen.push(message) });
+		for (const messages of requests) __test.noticeDroppedTurn("pi", messages);
+		return seen;
+	}
+	it("warns once when a message appended to every request never stays in history", () => {
+		const todo = user("Current todo: #1 read files (0/3 done).");
+		const history = [user("go")];
+		const requests = [];
+		for (const id of ["a", "b", "c", "d", "e"]) {
+			requests.push([...history, todo]);
+			history.push(calls(id), result(id));
+		}
+		const seen = notices(requests);
+		assert.equal(seen.length, 1);
+		assert.match(seen[0], /"Current todo: #1 read files \(0\/3 done\)\."/);
+	});
+	it("retries neither reset the dropped-message streak nor repeat its warning", () => {
+		const seen = [];
+		__test.setPiUI({ notify: (message) => seen.push(message) });
+		const history = [user("go")];
+		for (const [i, id] of ["a", "b", "c", "d", "e"].entries()) {
+			const request = [...history, user("Current todo: read files")];
+			for (const attempt of ["initial", "retry"]) {
+				__test.noticeDroppedTurn("pi", request);
+				assert.equal(seen.length, i < 3 ? 0 : 1, `request ${id}, ${attempt}`);
+			}
+			history.push(calls(id), result(id));
+		}
+	});
+	it("stays quiet when pi keeps prompts and steers, and on retries", () => {
+		const turn1 = [user("go")];
+		const turn2 = [...turn1, calls("a"), result("a"), user("steer")];
+		const turn3 = [...turn2, calls("b"), result("b")];
+		const turn4 = [...turn3, say("done"), user("next")];
+		assert.deepEqual(notices([turn1, turn2, turn2, turn3, turn4, turn4]), []);
+	});
+});
