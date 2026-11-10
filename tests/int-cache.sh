@@ -18,8 +18,11 @@ LOGFILE="$LOGDIR/cache-test.ndjson"
 
 trap kill_descendants EXIT
 
-TMPFILE="$LOGDIR/cache-test-scratch.txt"
-rm -f "$TMPFILE" "$CLAUDE_BRIDGE_DEBUG_PATH"
+# An empty folder of its own, so a model that lists it before writing adds little
+# to the next turn's cache write.
+SCRATCH_DIR=$(mktemp -d)
+TMPFILE="$SCRATCH_DIR/cache-test-scratch.txt"
+rm -f "$CLAUDE_BRIDGE_DEBUG_PATH"
 
 echo "Running 5-turn conversation (text + tool use)..."
 timeout 180 pi --no-session -ne -e "$DIR" \
@@ -33,7 +36,7 @@ timeout 180 pi --no-session -ne -e "$DIR" \
   > "$LOGFILE" 2>"$LOGFILE.err" || PI_EXIT=$?
 PI_EXIT=${PI_EXIT:-0}
 
-rm -f "$TMPFILE"
+rm -rf "$SCRATCH_DIR"
 
 if [ -s "$LOGFILE.err" ]; then
   echo ""
