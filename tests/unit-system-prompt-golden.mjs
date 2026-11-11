@@ -47,8 +47,15 @@ describe("system prompt golden: toBridgeContext forwards pi's prompt whole", () 
 	});
 
 	it("a context_with_system handler that replaces the prompt", () => {
-		const opts = { cwd, forceSystemPrompt: "Replaced by a context_with_system handler." };
-		assertForwardsPiPrompt(opts, [head(opts)]);
+		// A handler replaces messages[0] with its own content; a later resume patch still
+		// applies. The bridge forwards pi-ai's collapse of the two, not the builder's prompt.
+		const replaced = { role: "system", content: "Replaced by a context_with_system handler.", timestamp: 0 };
+		const patch = { role: "system", content: "", sections: { cwd: buildSystemPromptSections({ cwd }).cwd }, timestamp: 1 };
+		const messages = [replaced, patch, user];
+		const result = toBridgeContext({ messages });
+		assert.equal(result.systemPrompt, getSystemMessageText(getCurrentSystemMessage(messages)));
+		assert.ok(result.systemPrompt.startsWith("Replaced by a context_with_system handler."), "the handler's replacement leads");
+		assert.ok(result.systemPrompt.includes(buildSystemPromptSections({ cwd }).cwd), "the later section patch survives");
 	});
 
 	it("a child embedding its parent's prompt keeps the wrapper", () => {

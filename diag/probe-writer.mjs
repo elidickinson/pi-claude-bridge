@@ -194,7 +194,8 @@ function liveEvidence(sessionMessages) {
 		effort: last.effort,
 		servedToolNames: last.servedToolNames,
 		tools: effective.tools.filter((t) => served.has(t.name)),
-		append: appendArtifact ? trace.artifact(appendArtifact) : undefined,
+		systemPrompt: promptArtifact ? trace.artifact(promptArtifact) : undefined,
+		systemPromptPreset: last.systemPromptPreset ?? null,
 		history,
 		tail: piHistory.length - inputHistory.length,
 	};
@@ -275,7 +276,9 @@ async function resumeArm(name, sessionId, live, proxyUrl) {
 			permissionMode: "bypassPermissions",
 			includePartialMessages: true,
 			settings: { ...claudeCodeSettings({}), claudeMdExcludes: CLAUDE_MD_EXCLUDES, includeGitInstructions: false },
-			systemPrompt: { type: "preset", preset: "claude_code", append: live.append ? live.append : undefined },
+			systemPrompt: live.systemPromptPreset
+				? { type: "preset", preset: live.systemPromptPreset, append: live.systemPrompt ?? undefined }
+				: live.systemPrompt ?? undefined,
 			extraArgs: { model: live.model, "strict-mcp-config": null, ...(live.effort ? { "thinking-display": "summarized" } : {}) },
 			...(live.effort ? { effort: live.effort } : {}),
 			mcpServers: { [MCP_SERVER_NAME]: createToolServer(MCP_SERVER_NAME, tools) },

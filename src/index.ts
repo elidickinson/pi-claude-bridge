@@ -1988,7 +1988,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		const childEnv = traceQueryStart(traceQueryId, {
 			kind: "provider", callId: traceCallId, piSessionId, reentrant: isReentrant, resume: resumeSessionId ?? null,
 			model: cliModel, effort: effort ?? null, servedToolNames: Object.fromEntries(customToolNameToSdk), mcpTools: mcpTools.map((t) => t.name),
-			signal: traceSignalId(options?.signal), digests: { systemPrompt: systemPromptText },
+			signal: traceSignalId(options?.signal), digests: { systemPrompt: systemPromptText }, systemPromptPreset: providerSettings.systemPromptPreset ?? null,
 		}, ccChildEnv(options?.env));
 		const cliDebug = makeCliDebugOptions("provider");
 		const childProcess = new QueryProcess(cliDebug.stderr);

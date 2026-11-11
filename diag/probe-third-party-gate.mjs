@@ -5,9 +5,9 @@
 // or refuses them with "You're out of extra usage" when Extra Usage is off
 // (diag/EXTRA-USAGE-400.md). Each arm is one Agent SDK query shaped like a bridge
 // turn (src/index.ts provider path: no tools, user settings, auto memory off). A
-// file arm sends the prompt as the `claude_code` preset's append, the way the
-// bridge forwards pi's prompt parts today; a `plain:` arm sends it as a plain
-// string, the planned default. Default Haiku 5.5 (--model to change), "Reply with just: OK".
+// file arm sends the prompt as the `claude_code` preset's append (the opt-in
+// systemPromptPreset form); a `plain:` arm sends it as a plain string, the
+// bridge's default. Default Haiku 5.5 (--model to change), "Reply with just: OK".
 //
 //   node --import tsx diag/probe-third-party-gate.mjs [--model <id>] control diag/third-party-gate/pi-1.5.1.txt ...
 //   node --import tsx diag/probe-third-party-gate.mjs --render <pi-bin> <out.txt>

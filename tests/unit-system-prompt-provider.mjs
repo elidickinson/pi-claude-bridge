@@ -27,8 +27,9 @@ const head = (opts) => { const state = buildSystemPromptState(opts); return { ro
 const user = (text) => ({ role: "user", content: [{ type: "text", text }], timestamp: 1 });
 const say = (text) => ({ role: "assistant", content: [{ type: "text", text }], provider: model().provider, timestamp: 1 });
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+const sentSystemText = () => (requestSystems.at(-1) ?? []).map((b) => b.text ?? "").join("\n");
 
-const launches = [], env = {};
+const launches = [], requestSystems = [], env = {};
 const server = createServer(async (request, response) => {
 	const chunks = [];
 	for await (const chunk of request) chunks.push(chunk);
@@ -37,6 +38,7 @@ const server = createServer(async (request, response) => {
 		return;
 	}
 	const body = JSON.parse(Buffer.concat(chunks).toString());
+	requestSystems.push(body.system);
 	const event = (type, fields) => `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
 	response.writeHead(200, { "content-type": "text/event-stream" });
 	response.end([
@@ -86,6 +88,9 @@ it("default sends pi's whole prompt as a plain string", { timeout: 120_000 }, as
 	const systemPrompt = launches.at(-1).systemPrompt;
 	assert.equal(typeof systemPrompt, "string", "default is a plain string, not a preset");
 	assert.equal(systemPrompt, buildSystemPrompt({ cwd }));
+	const sent = sentSystemText();
+	assert.ok(sent.includes(buildSystemPrompt({ cwd })), "CC sends pi's prompt verbatim");
+	assert.ok(!sent.includes("You are Claude Code"), "no CC preset in the default form");
 });
 
 it("systemPromptPreset puts CC's preset in front with pi's prompt appended", { timeout: 120_000 }, async () => {
@@ -94,6 +99,9 @@ it("systemPromptPreset puts CC's preset in front with pi's prompt appended", { t
 	__test.resetSharedSession();
 	await startTurn("sp-preset", [head({ cwd }), user("hello")]);
 	assert.deepEqual(launches.at(-1).systemPrompt, { type: "preset", preset: "claude_code", append: buildSystemPrompt({ cwd }) });
+	const sent = sentSystemText();
+	assert.ok(sent.includes(buildSystemPrompt({ cwd })), "CC sends pi's prompt as the preset's append");
+	assert.ok(sent.includes("You are Claude Code"), "the CC preset is present");
 });
 
 it("switching the preset changes the digest and re-imports the session", { timeout: 120_000 }, async () => {
@@ -114,4 +122,6 @@ it("switching the preset changes the digest and re-imports the session", { timeo
 	const switched = __test.getSharedSession("sp-switch");
 	assert.notEqual(switched.promptDigest, first.promptDigest, "the preset setting is part of the digest");
 	assert.notEqual(switched.ccSessionId, first.ccSessionId, "a changed prompt takes a full import into a new CC session");
+	assert.equal(launches.at(-1).forkSession, undefined, "a prompt change is a full import, not a fork");
+	assert.equal(launches.at(-1).resume, switched.ccSessionId, "the full import resumes the new CC session");
 });

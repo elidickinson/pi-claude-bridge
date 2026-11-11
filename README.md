@@ -118,7 +118,7 @@ Session pointers, content digests and record IDs are saved under `claude-bridge/
 
 ### Which injection routes reach Claude Code?
 
-The bridge forwards pi's whole system prompt as pi renders it -- preamble, tools, rules, docs, context files, skills and custom sections included. By default that is pi's prompt alone; `provider.systemPromptPreset: "claude_code"` puts Claude Code's preset in front with pi's prompt appended. Measured against the request body (`diag/capture-proxy.mjs`):
+The bridge forwards pi's whole system prompt as pi renders it -- preamble, tools, rules, docs, context files, skills and custom sections included. By default Claude Code sends pi's prompt as the system prompt, prepending only its own billing header and Agent-SDK identity line; `provider.systemPromptPreset: "claude_code"` puts Claude Code's full preset in front with pi's prompt appended. Measured against the request body (`diag/capture-proxy.mjs`):
 
 | Route | Reaches Claude Code |
 |---|---|
@@ -187,7 +187,7 @@ Native records before the matching point keep their attachments. A rewritten suf
 
 ### Changed instructions cost a cache miss
 
-When project context (AGENTS.md/CLAUDE.md), skills, or extension-written instructions change (for example, after an edit and `/reload`), the next turn imports the conversation into a new Claude Code session so the model sees them. That turn re-sends the conversation uncached and drops earlier thinking. An extension that rewrites its system prompt section every turn pays this on every turn.
+When project context (AGENTS.md/CLAUDE.md), skills, or extension-written instructions change (for example, after an edit and `/reload`), the next turn imports the conversation into a new Claude Code session so the model sees them. That turn re-sends the conversation uncached and drops earlier thinking. An extension that rewrites its system prompt section every turn pays this on every turn. Because the bridge digests pi's whole prompt, a tool-set or rules change that pi renders into it (such as toggling plan mode) triggers the same full import.
 
 ### Exported Anthropic environment variables override the Claude Code child (issue #107)
 

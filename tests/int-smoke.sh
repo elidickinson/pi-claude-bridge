@@ -72,8 +72,8 @@ run "provider: --provider + --model resolve to the bridge" \
 run "provider: model list includes provider" \
   bash -c "pi --no-session -ne -e '$DIR' --list-models 2>&1 | grep claude-bridge"
 
-# The bridge sends Claude Code's own preset system prompt, so the user's prompt
-# customisation has to be forwarded explicitly or it silently does nothing.
+# The bridge forwards pi's whole system prompt, so --append-system-prompt reaches
+# Claude as pi's addendum section. Verify it isn't dropped.
 run "system prompt: --append-system-prompt reaches Claude" \
   bash -c "pi --no-session -ne -e '$DIR' --model 'claude-bridge/claude-haiku-5-5' \
     --append-system-prompt 'You must end every response with the exact word BANANA.' \
