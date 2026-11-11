@@ -116,20 +116,11 @@ Session pointers, content digests and record IDs are saved under `claude-bridge/
 
 ## Compatibility with other extensions
 
-### Which injection routes reach Claude Code?
+### System prompt and message injection
 
-The bridge forwards pi's whole system prompt as pi renders it -- preamble, tools, rules, docs, context files, skills and custom sections included. By default Claude Code sends pi's prompt as the system prompt, prepending only its own billing header and Agent-SDK identity line; `provider.systemPromptPreset: "claude_code"` puts Claude Code's full preset in front with pi's prompt appended. Measured against the request body (`diag/capture-proxy.mjs`):
+The bridge forwards pi's system prompt and messages whole, as pi renders them, so any injection route pi honors reaches Claude Code -- `before_agent_start` (`message`, `systemPrompt`, `systemPromptOptions.sections`), `context` / `context_with_system` edits, and `--append-system-prompt` alike.
 
-| Route | Reaches Claude Code |
-|---|---|
-| `before_agent_start` -> `message` | Yes, as literal prompt text in the user turn |
-| `context` editing the last user message | Yes, as literal prompt text |
-| `--append-system-prompt` | Yes, in pi's prompt (the addendum section) |
-| `context_with_system` editing the system message | Yes, whether it wraps or replaces pi's prompt |
-| `before_agent_start` -> `systemPromptOptions.sections` | Yes, one `<name>` block per section |
-| `before_agent_start` -> `systemPrompt` | Yes, pi replaces the whole prompt and the bridge forwards it |
-
-The bridge sends pi's system message whole, so an extension that replaces the prompt works -- the model reads exactly what pi renders. Returning `systemPrompt` from `before_agent_start` still makes pi replace the whole prompt, discarding any `context_with_system` edit in the same run; only one reaches the request.
+One pi-level caveat: returning `systemPrompt` from `before_agent_start` makes pi replace the whole prompt, discarding any `context_with_system` edit in the same run; only one reaches the request.
 
 ### Extensions that add a message to every request
 
