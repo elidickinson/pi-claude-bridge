@@ -20,7 +20,10 @@ writeFileSync(join(projectDir, ".pi", "skills", "sentinel-skill", "SKILL.md"),
 
 const harness = createRpcHarness({
 	name: "skill-loading",
-	args: ["--model", BRIDGE_MODEL],
+	// --approve so pi trusts the project-local skill and lists it in the prompt; without it
+	// pi skips .pi/skills and the model could find SKILL.md by searching instead of reading
+	// the skill the prompt names.
+	args: ["--approve", "--model", BRIDGE_MODEL],
 	cwd: projectDir,
 	env: { PI_CODING_AGENT_DIR: agentDir },
 	defaultTimeout: TIMEOUT,
