@@ -17,8 +17,9 @@ export function sanitizeToolId(id: string, cache: Map<string, string>): string {
 
 /** A pi tool name as the name a rebuilt transcript has to call it by.
  *
- *  On the provider path the query runs `tools: []`, so every tool Claude can
- *  call is a pi tool served over MCP, and its name is `mcp__custom-tools__<pi name>`
+ *  On the provider path the query runs without Claude Code's builtins (bar
+ *  provider.builtinTools, whose calls never enter pi's history), so every tool
+ *  call pi holds is a pi tool served over MCP, and its name is `mcp__custom-tools__<pi name>`
  *  by construction (resolveMcpTools). The map is consulted first only because it
  *  carries the served tool's exact casing. A name it lacks is a tool pi ran that
  *  we do not serve now (an extension since disabled), and naming that after a

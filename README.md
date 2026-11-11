@@ -71,6 +71,7 @@ Create `~/.pi/agent/claude-bridge.json`
 - `forceTwoHundredK` - array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
 - `plan` - set to `"max"` on a Max (or Team Premium/Enterprise) plan to run Opus 4.6 with 1M context (default `"pro"`).
 - `longContextExtraUsage` - set to `true` to run Opus 4.6 (on Pro) and Sonnet 4.6 with 1M context, billed through Extra Usage.
+- `builtinTools` - array of Claude Code builtin tools Claude Code may run itself, beside pi's tools (default `[]`). For example `["WebSearch", "WebFetch"]` gives the model web search and page fetching, which pi has no tool for. These run inside Claude Code, so pi does not see or permission them.
 
 ### Model overrides
 

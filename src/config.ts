@@ -27,6 +27,9 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Claude Code builtin tools (e.g. "WebSearch", "WebFetch") Claude Code may
+		// run itself on the provider path, beside pi's tools. Default none.
+		builtinTools?: string[];
 	};
 }
 
