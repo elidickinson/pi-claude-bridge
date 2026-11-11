@@ -40,6 +40,8 @@ To let other providers delegate tasks or questions to Claude Code, install the A
 
 The model list comes from pi-ai's Anthropic catalog automatically. When pi-ai adds a new Claude model, it appears in `/model` after you update the package; no bridge update is needed. Dated snapshot ids (e.g. `claude-opus-4-5-20251101`) are not shown.
 
+Claude Mythos 5.2 and 5.1 are listed too (at the bottom), though pi-ai leaves them out. Anthropic serves Mythos only to approved programs, so on accounts without access requests fail with a 404 "There's an issue with the selected model".
+
 All current models run with 1M context. Opus 4.6 and Sonnet 4.6 need extra settings for 1M (see [Configuration](#configuration)).
 
 pi's tools are bridged to Claude Code, but you continue to use pi as usual:
@@ -150,6 +152,8 @@ pi sets `PI_CODING_AGENT=true` for child processes, including the Claude Code ch
 ```
 
 Hooks do not fire on isolated summary queries.
+
+You cannot rely on Claude Code's permission rules and PreToolUse hooks to block tools you don't want to run. Permissioning should take place on the Pi side when using the bridge.
 
 ### Compaction and branch summaries
 

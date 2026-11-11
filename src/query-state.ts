@@ -57,19 +57,23 @@ export class QueryContext {
 	/** Synchronous progress capture before killing/discarding this query. */
 	commitRecording: ((dirty: boolean) => void) | null = null;
 	stopProcess: (() => void) | null = null;
-	/** pi's history moved out from under this query. Its completion must not touch
-	 *  the session state or the pi stream: the query that took over the turn has
-	 *  already rebuilt both from the new history, and this one's session id names the
-	 *  conversation pi just discarded. A context runs at most one SDK query (every
-	 *  fresh query gets a new one), so this marks that query abandoned too. */
+	/** Abandoned after a history rewrite or fatal tool rejection. Its completion
+	 *  must not touch the session state or pi stream. A rewrite's replacement query
+	 *  has rebuilt both from the new history; a rejection has already committed its
+	 *  final recording. A context runs at most one SDK query (every fresh query gets
+	 *  a new one), so this marks that query abandoned too. */
 	discarded = false;
 	sawResult = false;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();
-	/** tool_use ids emitted this turn. Sole purpose is routing a delivered result
-	 *  to the owning query when several queries are in flight — pairing a result
-	 *  to its call is done by id from Claude's tools/call _meta, not from here. */
+	/** tool_use ids emitted this turn. Routes a delivered result to the owning
+	 *  query when several queries are in flight, and tells which of CC's tool_results
+	 *  answer calls pi got — pairing a result to its call is done by id from
+	 *  Claude's tools/call _meta, not from here. */
 	turnToolCallIds: string[] = [];
+	/** tool_use ids Claude Code called our MCP handler for. A result for a call pi
+	 *  got that is not in here is one Claude Code rejected itself. */
+	dispatchedToolCalls = new Set<string>();
 	/** Streaming-input handle for the active query — how steers reach CC mid-turn. */
 	promptStream: PromptStream | null = null;
 	/** Steers written or awaiting a write, not yet incorporated into a turn. */

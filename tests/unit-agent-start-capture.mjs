@@ -21,6 +21,7 @@ import { activateWithMockPi } from "./lib/mock-pi.mjs";
 
 const { __test } = await import("../src/index.js");
 
+const sessionManager = { getSessionId: () => "prompt-capture" };
 const PRE_WIDEN = "You are pi.\n# Tools\n- read: Read a file\n\npi packages (docs/packages.md)";
 // Same prefix, then the MCP tool descriptions that only appear post-connect.
 const WIDENED = "You are pi.\n# Tools\n- read: Read a file\n- Agent: Launch a subagent with a very long description ... \n\npi packages (docs/packages.md)";
@@ -38,7 +39,7 @@ describe("agent_start widened-prompt capture", () => {
 			"the widened prompt must not resolve off the pre-widen record alone",
 		);
 
-		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
+		handlers.get("agent_start")({}, { sessionManager, getSystemPrompt: () => WIDENED });
 		const capture = __test.promptCaptures.resolveOrDerive(WIDENED);
 		assert.ok(capture, "after agent_start the widened prompt resolves exactly");
 		assert.deepEqual(capture.contextFiles, contextFiles, "carrying the before_agent_start context files");
@@ -47,7 +48,7 @@ describe("agent_start widened-prompt capture", () => {
 	it("lets a child embedding the widened parent resolve by inheritance", () => {
 		const handlers = activateWithMockPi();
 		handlers.get("before_agent_start")({ systemPrompt: PRE_WIDEN, systemPromptOptions: {} });
-		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
+		handlers.get("agent_start")({}, { sessionManager, getSystemPrompt: () => WIDENED });
 
 		// pi-subagents embeds the widened parent prompt verbatim as the child's prefix.
 		const child = `${WIDENED}\n\n<sub_agent_context>be concise</sub_agent_context>\n\n<active_agent name="worker"/>`;
@@ -68,7 +69,7 @@ describe("turn_start prompt capture", () => {
 			systemPrompt: PRE_WIDEN,
 			systemPromptOptions: { contextFiles, skills: [], selectedTools: ["read"] },
 		});
-		handlers.get("agent_start")({}, { getSystemPrompt: () => WIDENED });
+		handlers.get("agent_start")({}, { sessionManager, getSystemPrompt: () => WIDENED });
 
 		// A later in-run turn renders a new prompt (mid-run tool-loadout change,
 		// section re-render). turn_start re-keys it.
@@ -92,7 +93,7 @@ describe("subagent captures", () => {
 
 		const isolatedPrompt = "You are an isolated smoke-test agent. Respond with ZZ_ISO_OK.";
 		child.get("before_agent_start")({ systemPrompt: isolatedPrompt, systemPromptOptions: {} });
-		child.get("agent_start")({}, { getSystemPrompt: () => isolatedPrompt });
+		child.get("agent_start")({}, { sessionManager, getSystemPrompt: () => isolatedPrompt });
 
 		assert.ok(freshTest.promptCaptures.resolve(isolatedPrompt), "the child instance recorded its own prompt");
 		assert.ok(
@@ -122,7 +123,7 @@ describe("subagent captures", () => {
 
 		const handlers = activateWithMockPi();
 		handlers.get("before_agent_start")({ systemPrompt: parentPrompt, systemPromptOptions: {} });
-		handlers.get("agent_start")({}, { getSystemPrompt: () => parentPrompt });
+		handlers.get("agent_start")({}, { sessionManager, getSystemPrompt: () => parentPrompt });
 
 		// The child is recorded at both production capture boundaries, but its custom
 		// prompt contains only the tail-stripped parent shape, so no edge is matched.
@@ -130,7 +131,7 @@ describe("subagent captures", () => {
 			systemPrompt: strippedChild,
 			systemPromptOptions: { customPrompt: strippedChild },
 		});
-		handlers.get("agent_start")({}, { getSystemPrompt: () => strippedChild });
+		handlers.get("agent_start")({}, { sessionManager, getSystemPrompt: () => strippedChild });
 
 		const capture = __test.promptCaptures.resolve(strippedChild);
 		assert.ok(capture, "the tail-stripped child must be recorded before projection");

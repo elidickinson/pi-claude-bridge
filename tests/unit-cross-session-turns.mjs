@@ -59,6 +59,8 @@ beforeEach(() => {
 			if (script.tool) yield sdkAssistant([{ type: "tool_use", id: script.tool, name: "mcp__custom-tools__read", input: { path: "a" } }], `msg_${script.tool}`);
 			if (script.wait) await script.wait;
 			if (script.result) {
+				// Claude Code calls the MCP handler before writing an accepted call's result.
+				for (const c of __test.activeQueryContexts) c.dispatchedToolCalls.add(script.result);
 				const value = record("user", [{ type: "tool_result", tool_use_id: script.result, content: "file" }]);
 				yield { type: "user", parent_tool_use_id: null, uuid: value.uuid, message: value.message };
 			}
