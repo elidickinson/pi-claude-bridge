@@ -3,6 +3,7 @@
 ## UNRELEASED
 
 - **Fix: tool calls rejected by Claude Code no longer hang the turn (#218)** — We now fail the turn if a tool call is rejected (e.g. because Claude Code permission hook blocked). Running tools are not canceled or undone. Unknown and wrong-case tool names are intentionally ignored so CC can retry itself. If CC sends invalid arguments it can now require a new user prompt to continue. Thanks @sonSunnoi.
+- **Add: `provider.builtinTools` lets Claude Code run its own tools such as WebSearch and WebFetch** — Default `[]`, as before; Claude Code runs a listed tool inside the same turn, outside pi.
 - **Add: Claude Mythos 5.2 and 5.1 with 1M context (#259)** — pi-ai doesn't list these access-gated models, so the bridge now adds them, cloned from the Fable releases they shipped beside. Measured at 1M on Max. Listed last in `/model`; requests fail on accounts without Mythos access. Thanks @borski.
 
 ## 0.12.0 — 2026-11-10

@@ -58,6 +58,8 @@ const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
+/** provider.builtinTools: Claude Code builtins the provider path lets CC run itself. */
+let builtinTools: string[] = [];
 
 // --- Session persistence ---
 
@@ -716,9 +718,11 @@ export const __test = {
 
 // --- Provider helpers: tool name mapping ---
 
-// Provider path: the query runs with `tools: []`, so the only tools CC can
-// legitimately call are the pi tools we serve over MCP. Any other name is the
-// model hallucinating a builtin (`bash`, `Bash`, `Edit`, an MCP server we don't
+// Provider path: the query runs with `tools` set to provider.builtinTools (none
+// by default), so the only tools CC can legitimately call for pi are the pi
+// tools we serve over MCP. A configured builtin (WebSearch) CC runs itself, and
+// the next message continues the same turn. Any other name is the model
+// hallucinating a builtin (`bash`, `Bash`, `Edit`, an MCP server we don't
 // serve). CC answers those itself with "No such tool available" and retries
 // inside the same query, never dispatching them to our MCP server — so a tool
 // call under such a name must not reach pi. Forwarding one ran a tool CC never
@@ -729,6 +733,11 @@ export const __test = {
 // in the wrong case is one of these too.
 function piToolNameFor(name: string, customToolNameToPi: Map<string, string>): string | undefined {
 	return customToolNameToPi.get(name);
+}
+
+/** What Claude Code does with a tool_use we skip, for the debug log. */
+function unservedToolFate(name: string): string {
+	return builtinTools.includes(name) ? "CC runs this builtin itself" : "CC rejects it and retries";
 }
 
 // Renames for Claude Code SDK param names that differ from pi's native names.
@@ -1169,7 +1178,7 @@ function processStreamEvent(
 		} else if (event.content_block?.type === "tool_use") {
 			const piName = piToolNameFor(event.content_block.name, customToolNameToPi);
 			if (!piName) {
-				debug(`processStreamEvent: skipping tool_use for unserved tool ${event.content_block.name} [${event.content_block.id}] — CC rejects it and retries`);
+				debug(`processStreamEvent: skipping tool_use for unserved tool ${event.content_block.name} [${event.content_block.id}] — ${unservedToolFate(event.content_block.name)}`);
 				return;
 			}
 			c.turnToolCallIds.push(event.content_block.id);
@@ -1371,7 +1380,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 		} else if (block.type === "tool_use") {
 			const piName = piToolNameFor(block.name, customToolNameToPi);
 			if (!piName) {
-				debug(`processAssistantMessage: skipping tool_use for unserved tool ${block.name} [${block.id}] — CC rejects it and retries`);
+				debug(`processAssistantMessage: skipping tool_use for unserved tool ${block.name} [${block.id}] — ${unservedToolFate(block.name)}`);
 				continue;
 			}
 			ensureTurnStarted(c);
@@ -2038,7 +2047,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 			cwd,
 			env: childEnv,
-			tools: [],
+			tools: builtinTools,
 			permissionMode: "bypassPermissions",
 			includePartialMessages: true,
 			// User settings only. A repo's .claude/settings.json and settings.local.json can
@@ -2053,7 +2062,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// diag/probe-git-cache.mjs). The bridge re-invokes CC per turn, so this
 			// hit on every transition. Cost here is nil: the setting also strips
 			// CC's git-workflow guidance from its Bash tool prompt, but the provider
-			// path runs CC with `tools: []`, so those definitions never ship.
+			// path runs CC without its builtins (bar provider.builtinTools), so
+			// those definitions don't ship.
 			settings: {
 				...claudeCodeSettings(providerSettings),
 				claudeMdExcludes: CLAUDE_MD_EXCLUDES,
@@ -2276,6 +2286,9 @@ export default function (pi: ExtensionAPI) {
 	const forceTwoHundredK = Array.isArray(providerSettings.forceTwoHundredK)
 		? providerSettings.forceTwoHundredK.filter((id): id is string => typeof id === "string")
 		: undefined;
+	builtinTools = Array.isArray(providerSettings.builtinTools)
+		? providerSettings.builtinTools.filter((name): name is string => typeof name === "string")
+		: [];
 	longContextSettings = {
 		plan: providerSettings.plan ?? "pro",
 		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
