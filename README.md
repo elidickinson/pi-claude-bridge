@@ -67,6 +67,7 @@ Create `~/.pi/agent/claude-bridge.json`
 
 - `strictMcpConfig` - block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` - enable Claude Code's auto-memory system (default `false`).
+- `systemPromptPreset` - set to `"claude_code"` to put Claude Code's own system prompt in front, with pi's whole prompt appended. Off by default: pi's prompt is the whole system prompt. Any other value is a startup error.
 - `pathToClaudeCodeExecutable` - path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to `"/home/you/.nix-profile/bin/claude"`.
 - `forceTwoHundredK` - array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
 - `plan` - set to `"max"` on a Max (or Team Premium/Enterprise) plan to run Opus 4.6 with 1M context (default `"pro"`).
@@ -117,23 +118,18 @@ Session pointers, content digests and record IDs are saved under `claude-bridge/
 
 ### Which injection routes reach Claude Code?
 
-The bridge forwards pi's structured parts: project context files, skills, custom prompt, appended instructions, and custom prompt sections (`systemPromptOptions.sections`). It drops the rest. Measured against the request body (`diag/capture-proxy.mjs`):
+The bridge forwards pi's whole system prompt as pi renders it -- preamble, tools, rules, docs, context files, skills and custom sections included. By default that is pi's prompt alone; `provider.systemPromptPreset: "claude_code"` puts Claude Code's preset in front with pi's prompt appended. Measured against the request body (`diag/capture-proxy.mjs`):
 
 | Route | Reaches Claude Code |
 |---|---|
 | `before_agent_start` -> `message` | Yes, as literal prompt text in the user turn |
 | `context` editing the last user message | Yes, as literal prompt text |
-| `--append-system-prompt` | Yes, with pi's appended instructions |
-| `context_with_system` editing the system message | Yes when it wraps pi's prompt; the turn fails when it replaces it |
+| `--append-system-prompt` | Yes, in pi's prompt (the addendum section) |
+| `context_with_system` editing the system message | Yes, whether it wraps or replaces pi's prompt |
 | `before_agent_start` -> `systemPromptOptions.sections` | Yes, one `<name>` block per section |
-| `before_agent_start` -> `systemPrompt` | No, dropped |
+| `before_agent_start` -> `systemPrompt` | Yes, pi replaces the whole prompt and the bridge forwards it |
 
-Two things to watch for:
-
-- Returning `systemPrompt` from `before_agent_start` makes pi replace the whole system prompt, discarding any `context_with_system` edit in the same run. Only one reaches the request.
-- System-prompt edits work by *wrapping*. Replacing pi's prompt leaves the bridge with nothing to match, so it refuses the turn rather than send Claude Code a request missing your context files, skills and custom instructions. The error names the closest known prompt and where it diverged.
-
-To add instructions, use `message`, `context`, or a system-message edit that keeps pi's prompt intact.
+The bridge sends pi's system message whole, so an extension that replaces the prompt works -- the model reads exactly what pi renders. Returning `systemPrompt` from `before_agent_start` still makes pi replace the whole prompt, discarding any `context_with_system` edit in the same run; only one reaches the request.
 
 ### Extensions that add a message to every request
 

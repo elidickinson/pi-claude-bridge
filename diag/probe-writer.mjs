@@ -172,11 +172,11 @@ function liveEvidence(sessionMessages) {
 	const decisions = trace.events.filter((e) => e.type === "decision").map((e) => `${e.path}/${e.reason}`);
 	if (ccSessions.size !== 1) throw new Error(`live turns ran on ${ccSessions.size} Claude Code sessions, expected one`);
 	if (decisions.some((d) => d.startsWith("rebuild"))) throw new Error(`live turns rebuilt: ${decisions.join(", ")}`);
-	const appends = new Set(starts.map((s) => s.digests?.systemPromptAppend));
-	if (appends.size !== 1) throw new Error(`the system-prompt append changed between live queries`);
+	const prompts = new Set(starts.map((s) => s.digests?.systemPrompt ?? s.digests?.systemPromptAppend));
+	if (prompts.size !== 1) throw new Error(`the system prompt changed between live queries`);
 	const last = starts.at(-1);
-	const appendArtifact = last.artifacts?.systemPromptAppend?.artifact;
-	if (last.digests.systemPromptAppend && !appendArtifact) throw new Error("the trace did not keep the system-prompt append (bridge without the recorder change?)");
+	const promptArtifact = last.artifacts?.systemPrompt?.artifact ?? last.artifacts?.systemPromptAppend?.artifact;
+	if ((last.digests.systemPrompt ?? last.digests.systemPromptAppend) && !promptArtifact) throw new Error("the trace did not keep the system prompt (bridge without the recorder change?)");
 	const input = trace.events.filter((e) => e.type === "input").at(-1);
 	const effective = trace.artifact(input.effective === "source" ? input.source.artifact : input.effective.artifact);
 	// The final reply is in no provider input; pi's own history has it. The input must be

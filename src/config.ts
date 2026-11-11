@@ -27,6 +27,10 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Put Claude Code's own preset in front of pi's prompt, with pi's whole prompt
+		// as its append. Off by default: pi's prompt is the whole system prompt. Only
+		// "claude_code" is valid; any other value is a startup error.
+		systemPromptPreset?: "claude_code";
 	};
 }
 
@@ -50,5 +54,9 @@ export function globalConfigPath(): string {
 
 export function loadConfig(): Config {
 	const global = tryParseJson(globalConfigPath());
+	const preset = global.provider?.systemPromptPreset;
+	if (preset !== undefined && preset !== "claude_code") {
+		throw new Error(`claude-bridge: provider.systemPromptPreset must be "claude_code" or unset, got ${JSON.stringify(preset)}`);
+	}
 	return { askClaude: global.askClaude, provider: { ...global.provider } };
 }

@@ -69,6 +69,18 @@ describe("loadConfig", () => {
 			rmSync(agentDir, { recursive: true, force: true });
 		}
 	}));
+
+	it("rejects an invalid systemPromptPreset", () => withTempHome(() => {
+		mkdirSync(getAgentDir(), { recursive: true });
+		writeFileSync(join(getAgentDir(), "claude-bridge.json"), JSON.stringify({ provider: { systemPromptPreset: "other" } }));
+		assert.throws(() => loadConfig(), /systemPromptPreset must be "claude_code"/);
+	}));
+
+	it("accepts systemPromptPreset claude_code", () => withTempHome(() => {
+		mkdirSync(getAgentDir(), { recursive: true });
+		writeFileSync(join(getAgentDir(), "claude-bridge.json"), JSON.stringify({ provider: { systemPromptPreset: "claude_code" } }));
+		assert.deepEqual(loadConfig(), { askClaude: undefined, provider: { systemPromptPreset: "claude_code" } });
+	}));
 });
 
 describe("the old askClaude setting", () => {
