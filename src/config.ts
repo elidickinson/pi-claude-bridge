@@ -27,11 +27,11 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
-		// Put Claude Code's own preset in front of pi's prompt, with pi's whole prompt
-		// as its append. Off by default: pi's prompt is the whole system prompt. Set to
-		// "claude_code" to enable; false, null or unset turns it off. Any other value is
-		// a startup error.
-		systemPromptPreset?: "claude_code";
+		// Claude Code's own preset goes in front of pi's prompt, with pi's whole prompt
+		// as its append. On by default (unset or "claude_code"); false or null turns it
+		// off, making pi's prompt the whole system prompt. Any other value is a startup
+		// error. Loaded config holds "claude_code" when on and omits the key when off.
+		systemPromptPreset?: "claude_code" | false | null;
 	};
 }
 
@@ -57,11 +57,11 @@ export function loadConfig(): Config {
 	const global = tryParseJson(globalConfigPath());
 	const preset = global.provider?.systemPromptPreset as unknown;
 	if (preset !== undefined && preset !== null && preset !== false && preset !== "claude_code") {
-		throw new Error(`claude-bridge: provider.systemPromptPreset must be "claude_code", false/null (off), or unset, got ${JSON.stringify(preset)}`);
+		throw new Error(`claude-bridge: provider.systemPromptPreset must be "claude_code" or unset (on), or false/null (off), got ${JSON.stringify(preset)}`);
 	}
-	// Normalize false/null/unset to absent so they all mean off and hash the same.
+	// Normalize unset to "claude_code" and false/null to absent so each state hashes one way.
 	const provider = { ...global.provider };
-	if (preset === "claude_code") provider.systemPromptPreset = "claude_code";
+	if (preset === undefined || preset === "claude_code") provider.systemPromptPreset = "claude_code";
 	else delete provider.systemPromptPreset;
 	return { askClaude: global.askClaude, provider };
 }

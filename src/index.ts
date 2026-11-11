@@ -1869,8 +1869,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// the shared context that nobody will ever end.
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
 	// pi's own prompt, whole: toBridgeContext joined pi's sections via pi-ai. No
-	// capture lookup -- the prompt is forwarded as-is, as a plain string by default
-	// or as the preset's append when provider.systemPromptPreset is set.
+	// capture lookup -- the prompt is forwarded as-is, as the preset's append by
+	// default or as a plain string when provider.systemPromptPreset is off.
 	try {
 		traceAssertReady();
 	} catch (err) {

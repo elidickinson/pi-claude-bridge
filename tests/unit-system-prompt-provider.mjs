@@ -1,6 +1,6 @@
-// Provider-level: the system prompt actually handed to Claude Code. By default it is pi's
-// whole prompt as a plain string; provider.systemPromptPreset puts CC's preset in front with
-// pi's prompt appended. Runs real Claude Code against a local API stub (offline, no network).
+// Provider-level: the system prompt actually handed to Claude Code. By default CC's preset
+// goes in front with pi's whole prompt appended; provider.systemPromptPreset: false sends
+// pi's prompt alone as a plain string. Runs real Claude Code against a local API stub (offline, no network).
 import { it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -80,28 +80,28 @@ async function startTurn(sessionId, messages) {
 	return output;
 }
 
-it("default sends pi's whole prompt as a plain string", { timeout: 120_000 }, async () => {
+it("default puts CC's preset in front with pi's prompt appended", { timeout: 120_000 }, async () => {
 	writeConfig({});
 	activate();
 	__test.resetSharedSession();
 	await startTurn("sp-default", [head({ cwd }), user("hello")]);
-	const systemPrompt = launches.at(-1).systemPrompt;
-	assert.equal(typeof systemPrompt, "string", "default is a plain string, not a preset");
-	assert.equal(systemPrompt, buildSystemPrompt({ cwd }));
-	const sent = sentSystemText();
-	assert.ok(sent.includes(buildSystemPrompt({ cwd })), "CC sends pi's prompt verbatim");
-	assert.ok(!sent.includes("You are Claude Code"), "no CC preset in the default form");
-});
-
-it("systemPromptPreset puts CC's preset in front with pi's prompt appended", { timeout: 120_000 }, async () => {
-	writeConfig({ systemPromptPreset: "claude_code" });
-	activate();
-	__test.resetSharedSession();
-	await startTurn("sp-preset", [head({ cwd }), user("hello")]);
 	assert.deepEqual(launches.at(-1).systemPrompt, { type: "preset", preset: "claude_code", append: buildSystemPrompt({ cwd }) });
 	const sent = sentSystemText();
 	assert.ok(sent.includes(buildSystemPrompt({ cwd })), "CC sends pi's prompt as the preset's append");
 	assert.ok(sent.includes("You are Claude Code"), "the CC preset is present");
+});
+
+it("systemPromptPreset false sends pi's whole prompt as a plain string", { timeout: 120_000 }, async () => {
+	writeConfig({ systemPromptPreset: false });
+	activate();
+	__test.resetSharedSession();
+	await startTurn("sp-plain", [head({ cwd }), user("hello")]);
+	const systemPrompt = launches.at(-1).systemPrompt;
+	assert.equal(typeof systemPrompt, "string", "off is a plain string, not a preset");
+	assert.equal(systemPrompt, buildSystemPrompt({ cwd }));
+	const sent = sentSystemText();
+	assert.ok(sent.includes(buildSystemPrompt({ cwd })), "CC sends pi's prompt verbatim");
+	assert.ok(!sent.includes("You are Claude Code"), "no CC preset when off");
 });
 
 it("switching the preset changes the digest and re-imports the session", { timeout: 120_000 }, async () => {
@@ -116,7 +116,7 @@ it("switching the preset changes the digest and re-imports the session", { timeo
 	const reused = __test.getSharedSession("sp-switch");
 	assert.equal(reused.ccSessionId, first.ccSessionId, "an unchanged prompt reuses the CC session");
 	// Switching the preset changes the digest and full-imports into a new session.
-	writeConfig({ systemPromptPreset: "claude_code" });
+	writeConfig({ systemPromptPreset: false });
 	activate();
 	await startTurn("sp-switch", [...history, say("ACK"), user("two"), say("ACK"), user("three")]);
 	const switched = __test.getSharedSession("sp-switch");

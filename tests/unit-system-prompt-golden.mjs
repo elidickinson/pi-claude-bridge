@@ -1,7 +1,7 @@
 // Golden contract: the bridge forwards pi's system prompt whole, byte for byte as pi
 // renders it. Replaces the prompt-capture tests -- there is no capture table or projection
 // anymore. toBridgeContext joins pi's sections via pi-ai (getSystemMessageText) and the
-// provider sends that string as a plain string (or the preset's append). Each case pins the
+// provider sends that string as the preset's append (or a plain string when off). Each case pins the
 // forwarded text against pi's real buildSystemPrompt across the prompt shapes pi produces.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
