@@ -1,25 +1,24 @@
 # pi-claude-bridge
 
-[![npm version](https://img.shields.io/npm/v/pi-claude-bridge)](https://www.npmjs.com/package/pi-claude-bridge)
+[![npm version](https://img.shields.io/npm/v/pi-claude-bridge)](https://www.npmjs.com/package/pi-claude-bridge) [![npm downloads](https://img.shields.io/npm/dm/pi-claude-bridge)](https://www.npmjs.com/package/pi-claude-bridge)
 
 **Use Claude models in pi with your Claude subscription.**
 
 **Is this allowed?** Yes, as far as I can tell. Anthropic at one point [announced and then unannounced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) a billing change for Agent SDK tools like this one. Things could change again, but right now the bridge uses your regular subscription quota just like Claude Code.
 
+
+> [!NOTE]
+> **There's another good option:** the pi maintainers have another Claude Code provider:[pi-claude-code](https://github.com/earendil-works/pi-claude-code).
+>
+> - **pi-claude-bridge (this extension)** runs Claude Code through the official [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) and spends a lot of effort keeping pi's message history in sync with CC's session on disk. 
+>   - **Tradeoff:** More complex and doesn't always play nicely with extensions that change pi's system prompt mid-session or alter message history.
+> - **pi-claude-code** runs `claude -p` for each turn and puts a local proxy in front of CC to rewrite requests before they get to Anthropic. Simpler and more compatible design.
+>   - **Tradeoff:** manipulating API requests on the wire is less clearly within Anthropic's TOS. CC updates may also introduce breaking changes without warning.
+
 <p>
 <a href="assets/claude-bridge1.png"><img src="assets/claude-bridge1.png" width="49%" alt="Claude Opus running in pi with access to pi's tools"></a>&nbsp;
 <a href="assets/claude-bridge2.png"><img src="assets/claude-bridge2.png" width="49%" alt="Another pi model delegating a question to Claude with AskClaude"></a>
 </p>
-
-
-> [!NOTE]
-> **There's another good option:** the pi maintainers now have their own Claude Code subscription provider, [pi-claude-code](https://github.com/earendil-works/pi-claude-code). The two work differently under the hood:
->
-> - **pi-claude-bridge (this extension)** runs Claude Code through the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) and keeps pi's message history in sync with a Claude Code session file on disk. Claude Code builds and sends every request itself, unmodified, with its own system prompt and pi's prompt sections added to it. It tries to stay true to how Claude Code normally runs.
->   - **Tradeoff:** complexity. Other extensions that change the system prompt mid-session, add messages to requests, or run subagents with their own prompts can fail.
-> - **[pi-claude-code](https://github.com/earendil-works/pi-claude-code)** runs `claude -p` for each turn and points it at a local proxy that rewrites each request on its way to Anthropic: it swaps in pi's history and system prompt as-is and adjusts cache markers. It keeps no state of its own, so it's simpler and gets along better with other extensions.
->   - **Tradeoff:** editing inference requests on the wire is less clearly within the TOS, and Claude Code updates may introduce breaking changes without warning.
-
 
 ## Install
 
@@ -114,19 +113,15 @@ The bridge compares conversation content before each fresh query:
 
 Session pointers, content digests and record IDs are saved under `claude-bridge/sessions/` in pi's agent directory (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`). They let the bridge recover its matching prefix after a restart. Running the same pi session simultaneously in multiple bridge processes is unsupported.
 
-## Behavior in use
+## Bridge Behavior
 
-What you may notice when using the bridge: how Claude Code's own hooks interact with pi, a caching cost some extensions cause, and how compaction works.
+What you may notice when using the bridge: how Claude Code's own hooks interact with pi and how compaction works.
 
 ### Hooks written for Claude Code
 
 `~/.claude/settings.json` hooks fire inside bridge turns, so a hook injecting Claude-specific guidance duplicates what pi's extensions already provide. A project's `.claude/settings.json` and `.claude/settings.local.json` are not loaded, so a repo's hooks, `apiKeyHelper` and `env` never run.
 
-pi sets `PI_CODING_AGENT=true` for child processes, including the Claude Code child. A hook can skip itself on that:
-
-```sh
-[ -n "$PI_CODING_AGENT" ] && exit 0
-```
+pi sets `PI_CODING_AGENT=true` for child processes, including the Claude Code child. A hook can skip itself on that: `[ -n "$PI_CODING_AGENT" ] && exit 0`
 
 Hooks do not fire on isolated summary queries.
 
@@ -135,12 +130,6 @@ You cannot rely on Claude Code's permission rules and PreToolUse hooks to block 
 ### Compaction and branch summaries
 
 pi runs compaction and branch summaries natively. The bridge routes their `cacheRetention: "none"` calls to isolated Claude Code queries, leaving the live session untouched until pi completes the history rewrite. Other extensions can provide summaries through pi's hooks.
-
-### Extensions that add a message to every request
-
-Some extensions add a message from their `context` hook on every request without saving it to pi's history (pi-todo-rail does this with its todo list). Claude Code keeps each copy and puts its cache marker on it, but the next request no longer has that copy. Nothing cached after the system prompt can be reused: every request rewrites the whole prompt cache, and Claude Code restarts after every tool call. The bridge warns after three such requests in a row and quotes the message.
-
-To fix it, disable the extension, or have it save the message with `pi.sendMessage` when its content changes so it stays in pi's history.
 
 ## Compatibility with other extensions
 
@@ -160,11 +149,7 @@ An extension that reads these headers for the built-in `anthropic` provider can 
 
 ### Using with @gotgenes/pi-subagents
 
-Requires the following in `~/.pi/agent/subagents.json`:
-
-```json
-{"promptInheritance": {"claude-bridge": "portable"}}
-```
+Requires the following in `~/.pi/agent/subagents.json`: `{"promptInheritance": {"claude-bridge": "portable"}}`
 
 ## Known issues
 
@@ -180,6 +165,12 @@ Native records before the matching point keep their attachments. A rewritten suf
 
 When project context (AGENTS.md/CLAUDE.md), skills, or extension-written instructions change (for example, after an edit and `/reload`), the next turn imports the conversation into a new Claude Code session so the model sees them. That turn re-sends the conversation uncached and drops earlier thinking. An extension that rewrites its system prompt section every turn pays this on every turn. Because the bridge digests pi's whole prompt, a tool-set or rules change that pi renders into it (such as toggling plan mode) triggers the same full import.
 
+### Extensions that add a message to every request
+
+Some extensions add a message from their `context` hook on every request without saving it to pi's history (pi-todo-rail does this with its todo list). Claude Code keeps each copy and puts its cache marker on it, but the next request no longer has that copy. Nothing cached after the system prompt can be reused: every request rewrites the whole prompt cache, and Claude Code restarts after every tool call. The bridge warns after three such requests in a row and quotes the message.
+
+To fix it, disable the extension, or have it save the message with `pi.sendMessage` when its content changes so it stays in pi's history.
+
 ### Exported Anthropic environment variables override the Claude Code child (issue #107)
 
 An exported `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` applies to bridge calls too. Unset them for the pi process, or blank them in a `claude-bridge` credential's `env` (see [Configuration](#configuration)), if you don't want that.
@@ -193,11 +184,9 @@ Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 When filing a bug about a session-resume failure (e.g. "No conversation found"), the most useful attachments are the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file for the failing query.
 
-## Development
+## Test Suite
 
-### Tests
-
-`npm run test:unit` for offline tests. `npm test` adds integration tests that hit APIs; set `CLAUDE_BRIDGE_TESTING_ALT_MODEL` in `.env.test` for the alt-provider smoke test.
+`npm run test:unit` for offline tests. `npm test` adds integration tests that hit APIs; set `CLAUDE_BRIDGE_TESTING_ALT_MODEL` in `.env.test` for smoke tests that require another model.
 
 Integration tests spawn real `pi` and Claude Code subprocesses and need write access to `~/.claude` -- a sandbox that blocks it makes `--resume` fail with `No conversation found with session ID`.
 
