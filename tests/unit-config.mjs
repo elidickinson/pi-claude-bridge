@@ -81,6 +81,20 @@ describe("loadConfig", () => {
 		writeFileSync(join(getAgentDir(), "claude-bridge.json"), JSON.stringify({ provider: { systemPromptPreset: "claude_code" } }));
 		assert.deepEqual(loadConfig(), { askClaude: undefined, provider: { systemPromptPreset: "claude_code" } });
 	}));
+
+	it("treats systemPromptPreset false/null as off", () => withTempHome(() => {
+		mkdirSync(getAgentDir(), { recursive: true });
+		for (const off of [false, null]) {
+			writeFileSync(join(getAgentDir(), "claude-bridge.json"), JSON.stringify({ provider: { systemPromptPreset: off } }));
+			assert.deepEqual(loadConfig(), { askClaude: undefined, provider: {} }, `${JSON.stringify(off)} means off`);
+		}
+	}));
+
+	it("rejects systemPromptPreset true", () => withTempHome(() => {
+		mkdirSync(getAgentDir(), { recursive: true });
+		writeFileSync(join(getAgentDir(), "claude-bridge.json"), JSON.stringify({ provider: { systemPromptPreset: true } }));
+		assert.throws(() => loadConfig(), /systemPromptPreset must be "claude_code"/);
+	}));
 });
 
 describe("the old askClaude setting", () => {
