@@ -114,33 +114,9 @@ The bridge compares conversation content before each fresh query:
 
 Session pointers, content digests and record IDs are saved under `claude-bridge/sessions/` in pi's agent directory (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`). They let the bridge recover its matching prefix after a restart. Running the same pi session simultaneously in multiple bridge processes is unsupported.
 
-## Compatibility with other extensions
+## Behavior in use
 
-For extension authors, how the bridge forwards pi's prompt, reports plan usage, and works with pi-subagents.
-
-### System prompt and message injection
-
-The bridge forwards pi's system prompt and messages whole, as pi renders them, so any injection route pi honors reaches Claude Code -- `before_agent_start` (`message`, `systemPrompt`, `systemPromptOptions.sections`), `context` / `context_with_system` edits, and `--append-system-prompt` alike.
-
-### Plan usage for footers and quota extensions
-
-The bridge does not show plan usage itself. Claude Code sends a `rate_limit_event` when a usage window changes, and the bridge passes it to pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers, using the Anthropic API's names (for example `anthropic-ratelimit-unified-5h-utilization`).
-
-Events are not tied to one response. One that arrives after a turn has ended on a tool call is reported on the next provider call, and only the latest is kept. The bridge includes the headers it can make from the event: status, reset time, representative claim, overage status and reset, and utilization and reset for each window. The status code is always 200.
-
-An extension that reads these headers for the built-in `anthropic` provider can also accept `claude-bridge` without other changes.
-
-### Using with @gotgenes/pi-subagents
-
-Requires the following in `~/.pi/agent/subagents.json`:
-
-```json
-{"promptInheritance": {"claude-bridge": "portable"}}
-```
-
-## Running the bridge
-
-Behavior you may notice when using the bridge: how Claude Code's own hooks interact with pi, a caching cost some extensions cause, and how compaction works.
+What you may notice when using the bridge: how Claude Code's own hooks interact with pi, a caching cost some extensions cause, and how compaction works.
 
 ### Hooks written for Claude Code
 
@@ -165,6 +141,30 @@ pi runs compaction and branch summaries natively. The bridge routes their `cache
 Some extensions add a message from their `context` hook on every request without saving it to pi's history (pi-todo-rail does this with its todo list). Claude Code keeps each copy and puts its cache marker on it, but the next request no longer has that copy. Nothing cached after the system prompt can be reused: every request rewrites the whole prompt cache, and Claude Code restarts after every tool call. The bridge warns after three such requests in a row and quotes the message.
 
 To fix it, disable the extension, or have it save the message with `pi.sendMessage` when its content changes so it stays in pi's history.
+
+## Compatibility with other extensions
+
+For extension authors, how the bridge forwards pi's prompt, reports plan usage, and works with pi-subagents.
+
+### System prompt and message injection
+
+The bridge forwards pi's system prompt and messages whole, as pi renders them, so any injection route pi honors reaches Claude Code -- `before_agent_start` (`message`, `systemPrompt`, `systemPromptOptions.sections`), `context` / `context_with_system` edits, and `--append-system-prompt` alike.
+
+### Plan usage for footers and quota extensions
+
+The bridge does not show plan usage itself. Claude Code sends a `rate_limit_event` when a usage window changes, and the bridge passes it to pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers, using the Anthropic API's names (for example `anthropic-ratelimit-unified-5h-utilization`).
+
+Events are not tied to one response. One that arrives after a turn has ended on a tool call is reported on the next provider call, and only the latest is kept. The bridge includes the headers it can make from the event: status, reset time, representative claim, overage status and reset, and utilization and reset for each window. The status code is always 200.
+
+An extension that reads these headers for the built-in `anthropic` provider can also accept `claude-bridge` without other changes.
+
+### Using with @gotgenes/pi-subagents
+
+Requires the following in `~/.pi/agent/subagents.json`:
+
+```json
+{"promptInheritance": {"claude-bridge": "portable"}}
+```
 
 ## Known issues
 
