@@ -854,6 +854,27 @@ test("a path prefix on ANTHROPIC_BASE_URL is kept on every request, retries incl
 	}
 });
 
+/** diag/capture-proxy.mjs on a free port, recording into its own temp dir.
+ *  `bodies(route)` reads the /v1/messages requests one route sent, in order. */
+async function captureProxy() {
+	const out = mkdtempSync(join(tmpdir(), "cc-capture-"));
+	const proxy = spawn(process.execPath, ["diag/capture-proxy.mjs", "--port", "0", "--out", out], { stdio: ["ignore", "ignore", "pipe"] });
+	let log = "";
+	const url = await new Promise((resolve) => proxy.stderr.on("data", (d) => { log += d; const m = log.match(/capture proxy on (http:\S+)/); if (m) resolve(m[1]); }));
+	return {
+		url, out,
+		bodies: (route) => readFileSync(join(out, "index.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+			.filter((row) => row.route === route && row.path.includes("/v1/messages") && row.status === 200)
+			.map((row) => JSON.parse(readFileSync(join(out, `req-${String(row.n).padStart(4, "0")}.json`), "utf8"))),
+		stop: async () => {
+			const exited = once(proxy, "exit");
+			proxy.kill("SIGTERM");
+			await exited; // it writes its end manifest first
+			rmSync(out, { recursive: true, force: true });
+		},
+	};
+}
+
 test("routing through the capture proxy does not change what CC sends", { timeout: 180_000 }, async () => {
 	// The cache trace points ANTHROPIC_BASE_URL at diag/capture-proxy.mjs, and
 	// Claude Code gates some behavior on the API host (CC source: tool search,
@@ -863,10 +884,7 @@ test("routing through the capture proxy does not change what CC sends", { timeou
 	// request (input + cache read + cache write) must match, or traced runs do not
 	// stand for untraced ones. Reads the size off message_start, which the SDK
 	// streams either way.
-	const out = mkdtempSync(join(tmpdir(), "cc-proxy-neutral-"));
-	const proxy = spawn(process.execPath, ["diag/capture-proxy.mjs", "--port", "0", "--out", out], { stdio: ["ignore", "ignore", "pipe"] });
-	let log = "";
-	const url = await new Promise((resolve) => proxy.stderr.on("data", (d) => { log += d; const m = log.match(/capture proxy on (http:\S+)/); if (m) resolve(m[1]); }));
+	const proxy = await captureProxy();
 	const run = async (extraEnv) => {
 		let tools = null;
 		let usage = null;
@@ -888,16 +906,162 @@ test("routing through the capture proxy does not change what CC sends", { timeou
 	};
 	try {
 		const direct = await run({});
-		const proxied = await run({ _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1", ANTHROPIC_BASE_URL: `${url}/q/neutral` });
+		const proxied = await run({ _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1", ANTHROPIC_BASE_URL: `${proxy.url}/q/neutral` });
 		assert.ok(direct.size > 0 && proxied.size > 0, "no usage on message_start");
-		assert.ok(readFileSync(join(out, "index.jsonl"), "utf8").includes("/v1/messages"), "the proxied run did not go through the proxy");
+		assert.ok(readFileSync(join(proxy.out, "index.jsonl"), "utf8").includes("/v1/messages"), "the proxied run did not go through the proxy");
 		assert.deepEqual(proxied.tools, direct.tools, "CC loaded different tools behind the proxy");
 		assert.equal(proxied.size, direct.size, "CC's first request is a different size behind the proxy");
 	} finally {
-		const exited = once(proxy, "exit");
-		proxy.kill("SIGTERM");
-		await exited; // it writes its end manifest first
-		rmSync(out, { recursive: true, force: true });
+		await proxy.stop();
+	}
+});
+
+// --- Tool search (provider.toolSearch) ---
+//
+// The default `tools: []` also removes ToolSearch, so CC sends every MCP tool in
+// full. With ToolSearch among its tools CC defers every MCP tool except those
+// marked `_meta["anthropic/alwaysLoad"]` (sdk.d.ts: "Equivalent to
+// `defer_loading: false` on the API"). diag/probe-tool-search.mjs measures the
+// request sizes; these pin the behavior src/tool-search.ts is built on.
+
+const alwaysLoaded = (tool) => ({ ...tool, _meta: { "anthropic/alwaysLoad": true } });
+const describedTool = (name, description) => ({ ...noArgTool(name), description });
+/** A tool-search query's environment, as the bridge sets it. CC turns tool search
+ *  off for any base URL but Anthropic's, so a local one needs the override. */
+const toolSearchEnv = (baseUrl) => ({
+	...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+	ENABLE_TOOL_SEARCH: "true", _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1", ANTHROPIC_BASE_URL: baseUrl,
+});
+/** The MCP tools and ToolSearch in a request's `tools`, with whether each is deferred. */
+const sentTools = (body) => Object.fromEntries(body.tools
+	.filter((tool) => tool.name === "ToolSearch" || tool.name.startsWith("mcp__custom-tools__"))
+	.map((tool) => [tool.name.replace("mcp__custom-tools__", ""), tool.defer_loading === true ? "deferred" : "loaded"]));
+
+/** One stubbed turn; returns the request CC built for `marker`. */
+async function stubbedRequest(marker, options, env = {}) {
+	const requests = [];
+	const api = await stubApi(requests);
+	try {
+		const { result } = await collect(query({ prompt: `Reply OK to ${marker}.`, options: providerOptions({ maxTurns: 1, ...options, env: { ...toolSearchEnv(api.url), ...env } }) }));
+		assert.equal(result?.subtype, "success", JSON.stringify(result));
+	} finally {
+		api.close();
+	}
+	const body = requests.find((request) => JSON.stringify(request.messages).includes(marker));
+	assert.ok(body, `CC sent no request for ${marker}`);
+	return body;
+}
+
+test("with ToolSearch among its tools, CC sends only the MCP tools marked _meta[anthropic/alwaysLoad]", { timeout: 120_000 }, async () => {
+	const served = () => toolServer([alwaysLoaded(noArgTool("alpha")), noArgTool("beta")], []);
+	const without = await stubbedRequest("NO-TOOL-SEARCH", { persistSession: false, mcpServers: served() });
+	assert.deepEqual(sentTools(without), { alpha: "loaded", beta: "loaded" }, "tools: [] must send every MCP tool, marked or not");
+
+	const withSearch = await stubbedRequest("WITH-TOOL-SEARCH", { tools: ["ToolSearch"], persistSession: false, mcpServers: served() });
+	assert.deepEqual(sentTools(withSearch), { ToolSearch: "loaded", alpha: "loaded" }, "CC did not defer the unmarked tool");
+	assert.match(JSON.stringify(withSearch.messages), /mcp__custom-tools__beta/, "the deferred tool must still be announced by name, or the model cannot ask for it");
+});
+
+test("an inherited ENABLE_TOOL_SEARCH=false or =auto undoes the deferral", { timeout: 120_000 }, async () => {
+	// Why the bridge sets ENABLE_TOOL_SEARCH=true beside provider.toolSearch: `auto`
+	// defers only once the tools pass a share of the context window.
+	for (const value of ["false", "auto"]) {
+		const body = await stubbedRequest(`TOOL-SEARCH-${value.toUpperCase()}`, {
+			tools: ["ToolSearch"], persistSession: false, mcpServers: toolServer([alwaysLoaded(noArgTool("alpha")), noArgTool("beta")], []),
+		}, { ENABLE_TOOL_SEARCH: value });
+		assert.equal(sentTools(body).beta, "loaded", `ENABLE_TOOL_SEARCH=${value} still deferred the unmarked tool; the bridge's override may no longer be needed`);
+	}
+});
+
+test("CC decides tool search when a conversation starts: a session begun without ToolSearch stays without, an imported transcript defers at once", { timeout: 120_000 }, async () => {
+	// Why turning provider.toolSearch on or off takes a full import (toolSearchDigest):
+	// resuming CC's own session with ToolSearch added changes nothing, while a
+	// transcript the bridge wrote has no such memory.
+	const cwd = mkdtempSync(join(tmpdir(), "cc-tool-search-start-"));
+	const served = () => toolServer([alwaysLoaded(noArgTool("alpha")), noArgTool("beta")], []);
+	const liveId = randomUUID();
+	const imported = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
+	try {
+		await stubbedRequest("STARTED-WITHOUT", { cwd, sessionId: liveId, mcpServers: served() });
+		const resumed = await stubbedRequest("RESUMED-WITH", { cwd, resume: liveId, tools: ["ToolSearch"], mcpServers: served() });
+		assert.equal(sentTools(resumed).beta, "loaded", "CC now defers on a session that started without ToolSearch; the full import on toggling may no longer be needed");
+
+		imported.addUserMessage("Remember the word FERN.");
+		imported.addAssistantMessage([{ type: "text", text: "Remembered FERN." }]);
+		imported.save();
+		const fresh = await stubbedRequest("IMPORTED-WITH", { cwd, resume: imported.sessionId, tools: ["ToolSearch"], mcpServers: served() });
+		assert.deepEqual(sentTools(fresh), { ToolSearch: "loaded", alpha: "loaded" }, "CC did not defer on a transcript it never ran");
+	} finally {
+		deleteSession(liveId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		deleteSession(imported.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("a tool that joins the served set marked alwaysLoad reaches a resumed session's next request", { timeout: 120_000 }, async () => {
+	// pi can activate a tool mid-session. The bridge marks it always-loaded, so the
+	// model can call it at once instead of searching for a tool pi just announced.
+	const cwd = mkdtempSync(join(tmpdir(), "cc-tool-search-added-"));
+	const sessionId = randomUUID();
+	try {
+		await stubbedRequest("BEFORE-ADDITION", { cwd, sessionId, tools: ["ToolSearch"], mcpServers: toolServer([alwaysLoaded(noArgTool("alpha")), noArgTool("beta")], []) });
+		const after = await stubbedRequest("AFTER-ADDITION", {
+			cwd, resume: sessionId, tools: ["ToolSearch"],
+			mcpServers: toolServer([alwaysLoaded(noArgTool("alpha")), noArgTool("beta"), alwaysLoaded(noArgTool("gamma"))], []),
+		});
+		const sent = sentTools(after);
+		// On a resumed session CC sends it as a mid-conversation addition (deferred in
+		// `tools`, expanded by a tool_addition block); either form makes it callable.
+		assert.ok(sent.gamma, `the added tool is missing from the request: ${JSON.stringify(sent)}`);
+		assert.equal(sent.beta, undefined, "the unmarked tool must stay deferred");
+	} finally {
+		deleteSession(sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("a deferred tool is loaded by a ToolSearch call CC answers itself, dispatched in the same query, and stays loaded across resume and fork", { timeout: 300_000 }, async () => {
+	// The bridge keeps a session's always-load marks fixed for as long as CC's own
+	// records are kept, because the tool_reference CC wrote keeps the tool loaded;
+	// marking it later would only change the tool list and miss the cache.
+	const proxy = await captureProxy();
+	const cwd = mkdtempSync(join(tmpdir(), "cc-tool-search-live-"));
+	const forkId = randomUUID();
+	let sessionId;
+	const turn = async (route, prompt, extra = {}) => {
+		const calls = [];
+		const run = await collect(query({ prompt, options: providerOptions({
+			cwd, tools: ["ToolSearch"], env: toolSearchEnv(`${proxy.url}/q/${route}`), ...extra,
+			mcpServers: toolServer([alwaysLoaded(noArgTool("alpha")), noArgTool("beta"), describedTool("gamma", "Returns the berth code the harbor registry assigned to the vessel Aurora.")], calls),
+		}) }));
+		assert.equal(run.result?.subtype, "success", JSON.stringify(run.result));
+		return { ...run, calls, bodies: proxy.bodies(route) };
+	};
+	try {
+		const first = await turn("search", "Use your tools to find the berth code the harbor registry assigned to the vessel Aurora, then report it.");
+		sessionId = first.init.session_id;
+		assert.deepEqual(sentTools(first.bodies[0]), { ToolSearch: "loaded", alpha: "loaded" });
+		const names = first.toolUses.map((use) => use.name);
+		assert.ok(names.includes("ToolSearch"), `the model reached the deferred tool without ToolSearch, so this proved nothing: ${JSON.stringify(names)}`);
+		assert.ok(names.indexOf("ToolSearch") < names.indexOf("mcp__custom-tools__gamma"), `the deferred tool was not called after the search: ${JSON.stringify(names)}`);
+		const dispatched = first.calls.map((call) => call.name);
+		assert.ok(dispatched.includes("gamma") && !dispatched.includes("ToolSearch"), `the loaded tool reaches our MCP server and ToolSearch never does: ${JSON.stringify(dispatched)}`);
+		assert.match(JSON.stringify(first.bodies.at(-1).messages), /"type":"tool_reference","tool_name":"mcp__custom-tools__gamma"/);
+		assert.equal(sentTools(first.bodies.at(-1)).gamma, "deferred", "a loaded tool is sent with defer_loading and expanded by its tool_reference");
+
+		// Only the first request of each follow-up matters: what CC rebuilt from its records.
+		const follow = "Reply with exactly: OK. Do not call a tool.";
+		const resumed = await turn("resume", follow, { resume: sessionId });
+		assert.equal(sentTools(resumed.bodies[0]).gamma, "deferred", "resume dropped the tool the search loaded");
+		assert.match(JSON.stringify(resumed.bodies[0].messages), /"type":"tool_reference"/);
+
+		const forked = await turn("fork", follow, { resume: sessionId, forkSession: true, resumeSessionAt: first.assistantUuids.at(-1), sessionId: forkId });
+		assert.equal(sentTools(forked.bodies[0]).gamma, "deferred", "a fork dropped the tool the search loaded");
+	} finally {
+		await proxy.stop();
+		if (sessionId) deleteSession(sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		deleteSession(forkId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		rmSync(cwd, { recursive: true, force: true });
 	}
 });
 

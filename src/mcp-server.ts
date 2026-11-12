@@ -39,10 +39,17 @@ import type { McpResult } from "./extract-tool-results.js";
 // silently pairing results to the wrong call, which is the intended tradeoff.
 const TOOL_USE_ID_META = "claudecode/toolUseId";
 
+// With ToolSearch among its tools, Claude Code defers every MCP tool but the ones
+// marked with this (sdk.d.ts: "Equivalent to `defer_loading: false` on the API").
+// Without ToolSearch nothing is deferred and the key has no effect.
+const ALWAYS_LOAD_META = "anthropic/alwaysLoad";
+
 interface McpToolDef {
 	name: string;
 	description: string;
 	inputSchema: unknown;
+	/** Never defer this tool behind Claude Code's tool search. */
+	alwaysLoad?: boolean;
 	handler: (toolCallId: string) => Promise<McpResult>;
 }
 
@@ -148,6 +155,7 @@ export function createToolServer(name: string, tools: McpToolDef[]) {
 				name: tool.name,
 				description: [note, tool.description].filter(Boolean).join("\n\n"),
 				inputSchema: schema,
+				...(tool.alwaysLoad ? { _meta: { [ALWAYS_LOAD_META]: true } } : {}),
 			};
 		}),
 	}));

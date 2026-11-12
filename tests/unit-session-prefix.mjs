@@ -47,6 +47,7 @@ it("row6 forks a real history prefix at its attachment run, with a pre-minted fr
 	assert.notEqual(synced.targetSessionId, session.sessionId);
 	assert.equal(synced.forkAt, session.messages[1].uuid);
 	assert.equal(synced.created, true);
+	assert.equal(synced.imported, false);
 	assert.deepEqual(synced.recorded.digests, digestMessages(history.slice(0, 2)));
 	assert.deepEqual(readFileSync(session.jsonlPath), before);
 });
@@ -71,6 +72,7 @@ it("row7 retains parallel siblings in its file and the native SDK request", { ti
 	const rewritten = openSession({ sessionId: synced.targetSessionId, projectPath: root });
 	assert.notEqual(synced.targetSessionId, source.sessionId);
 	assert.equal(synced.forkAt, undefined);
+	assert.equal(synced.imported, false, "a prefix-write keeps Claude Code's records up to the cut");
 	for (const uuid of [uuids[4], uuids[5], snapshot]) assert.ok(rewritten.records.some((r) => r.uuid === uuid));
 	assert.match(JSON.stringify(rewritten.records), /value-X/);
 	assert.match(JSON.stringify(rewritten.records), /value-Y/);

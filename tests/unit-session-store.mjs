@@ -53,6 +53,19 @@ describe("session state persistence", () => {
 		assert.equal(statSync(file).mode & 0o777, 0o600);
 	});
 
+	it("round-trips the deferred tools of a tool-search session, and rejects a malformed list", () => {
+		saveSessionState("tool-search", { ...state, deferredTools: ["deploy", "mem_save"] });
+		assert.deepEqual(loadSessionState("tool-search", assert.fail), { ...state, dirtyTail: true, deferredTools: ["deploy", "mem_save"] });
+		saveSessionState("none-deferred", { ...state, deferredTools: [] });
+		assert.deepEqual(loadSessionState("none-deferred", assert.fail).deferredTools, []);
+
+		const file = sessionFile("malformed");
+		writeFileSync(file, JSON.stringify({ ...validFile(), deferredTools: ["deploy", 1] }));
+		const rejected = [];
+		assert.equal(loadSessionState("malformed", (message) => rejected.push(message)), null);
+		assert.deepEqual(rejected, ["Rejected persisted Claude session state: deferredTools must be an array of strings"]);
+	});
+
 	it("accepts intentional null-uuid omissions and returns null for a missing file", () => {
 		assert.equal(loadSessionState("missing", assert.fail), null);
 		saveSessionState("omission", { ...state, uuids: [null, "u2"], cuttable: [false, true] });

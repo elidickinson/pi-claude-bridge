@@ -71,6 +71,8 @@ Create `~/.pi/agent/claude-bridge.json`
 - `forceTwoHundredK` - array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
 - `plan` - set to `"max"` on a Max (or Team Premium/Enterprise) plan to run Opus 4.6 with 1M context (default `"pro"`).
 - `longContextExtraUsage` - set to `true` to run Opus 4.6 (on Pro) and Sonnet 4.6 with 1M context, billed through Extra Usage.
+- `toolSearch` - set to `true` to have Claude Code load pi's tool definitions on demand instead of sending all of them with every request (default `false`). See [Tool search](#tool-search).
+- `alwaysLoadTools` - with `toolSearch`, an array of tools to always send in full, beside the built-in list. `*` matches any characters, for example `["web_search", "mem_*"]`.
 
 ### Model overrides
 
@@ -103,13 +105,25 @@ This example sends bridge requests through a proxy and keeps an exported gateway
 }
 ```
 
+### Tool search
+
+By default Claude Code sends the full definition of every pi tool with every request. With many extension tools that is a large fixed cost. Set `provider.toolSearch` to `true` and Claude Code sends a core set in full and lists the other tools by name. When the model wants one of those, it calls Claude Code's `ToolSearch` tool to load the definition, then calls the tool in the same turn.
+
+Measured on a synthetic set of 113 tools shaped like a busy pi session (142 KB of definitions), reading the request bodies with `diag/probe-tool-search.mjs` on Claude Code 2.1.321 and Haiku 5.5: the first request went from 53.3k to 6.5k prompt tokens. The first use of a deferred tool costs one extra model request.
+
+- Always sent in full: `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`, `tool_search`, `codemode`, `AskClaude` and anything in `alwaysLoadTools`. So are the tools the conversation had already called when the bridge last wrote the Claude Code session from pi's history, and tools pi adds while a session is running.
+- `ToolSearch` runs inside Claude Code. pi does not see the call and it is not in pi's history.
+- Changing `toolSearch` or `alwaysLoadTools` applies from the next turn and costs one cache miss, because pi's history is imported into a fresh Claude Code session.
+- Claude Code turns tool search off for base URLs other than Anthropic's, so behind a gateway, Bedrock or Vertex this setting probably has no effect. Not measured there.
+- pi's own `tool_search` tool is a different thing: it loads tools pi has not declared yet (MCP servers with `deferred` exposure). `toolSearch` defers the tools pi does declare.
+
 ## Session history
 
 The bridge compares conversation content before each fresh query:
 
 - Unchanged history resumes the Claude Code session.
 - Tree navigation and history edits retain Claude Code's records up to the last safe matching point, then continue in a new session. `/fork` and clone start from the parent session's Claude Code records the same way.
-- Model changes and changed instructions import pi's history into a fresh Claude Code session.
+- Model changes, changed instructions and a changed `toolSearch` or `alwaysLoadTools` setting import pi's history into a fresh Claude Code session.
 
 Session pointers, content digests and record IDs are saved under `claude-bridge/sessions/` in pi's agent directory (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`). They let the bridge recover its matching prefix after a restart. Running the same pi session simultaneously in multiple bridge processes is unsupported.
 

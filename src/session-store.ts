@@ -54,6 +54,9 @@ export function loadSessionState(piSessionId: string, onReject: (message: string
 	if (!Array.isArray(stored.digests) || !Array.isArray(stored.uuids) || !Array.isArray(stored.cuttable)) {
 		return reject(onReject, "digests, uuids, and cuttable must be arrays");
 	}
+	if ("deferredTools" in stored && !(Array.isArray(stored.deferredTools) && stored.deferredTools.every((name) => typeof name === "string"))) {
+		return reject(onReject, "deferredTools must be an array of strings");
+	}
 	try {
 		validateRecording({ digests: stored.digests as string[], uuids: stored.uuids as (string | null)[], cuttable: stored.cuttable as boolean[] });
 	} catch (error) {
@@ -69,6 +72,7 @@ export function loadSessionState(piSessionId: string, onReject: (message: string
 		uuids: stored.uuids as (string | null)[],
 		cuttable: stored.cuttable as boolean[],
 		dirtyTail: true,
+		...(stored.deferredTools ? { deferredTools: stored.deferredTools as string[] } : {}),
 	};
 }
 
@@ -91,6 +95,7 @@ export function saveSessionState(piSessionId: string, state: SessionState): void
 		digests: state.digests,
 		uuids: state.uuids,
 		cuttable: state.cuttable,
+		...(state.deferredTools ? { deferredTools: state.deferredTools } : {}),
 	});
 	writeFileSync(tempPath, contents, { flag: "wx", mode: 0o600 });
 	chmodSync(tempPath, 0o600);
