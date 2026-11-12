@@ -53,6 +53,7 @@ describe("digest session decisions", () => {
 		const before = readFileSync(session.jsonlPath);
 		const synced = sync([user("hi"), { ...priors[1], timestamp: 900, usage: { output: 500 }, stopReason: "length" }, { role: "system", content: "changed tools" }, user("next")]);
 		assert.equal(synced.sessionId, session.sessionId);
+		assert.equal(synced.imported, false);
 		assert.deepEqual(readFileSync(session.jsonlPath), before);
 	});
 	for (const [name, rewrite] of [
@@ -84,6 +85,7 @@ describe("digest session decisions", () => {
 		const changed = withPrompt("p2");
 		assert.notEqual(changed.sessionId, session.sessionId);
 		assert.equal(changed.forkAt, undefined, "a fork would keep CC's recorded prompt");
+		assert.equal(changed.imported, true);
 	});
 	it("unattributed calls import independently and never write provider state", () => {
 		const priors = [user("hi"), say("hello")];

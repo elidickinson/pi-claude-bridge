@@ -27,6 +27,12 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Set to true to let Claude Code defer pi's tool schemas behind its ToolSearch
+		// tool, loading each on first use (see src/tool-search.ts). Default false.
+		toolSearch?: boolean;
+		// With toolSearch: tools that are never deferred, beside the built-in list.
+		// Names, or patterns where `*` matches any characters.
+		alwaysLoadTools?: string[];
 	};
 }
 

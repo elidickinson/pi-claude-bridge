@@ -130,6 +130,24 @@ describe("MCP tool schema advertisement", () => {
 	});
 });
 
+// With ToolSearch among its tools (provider.toolSearch), Claude Code defers every
+// MCP tool but the ones carrying this mark. A tool without it must list exactly as
+// before, so the default tool list does not change.
+describe("MCP tool always-load mark", () => {
+	it("is listed only on tools flagged alwaysLoad", async () => {
+		const define = (name, alwaysLoad) => ({ name, description: "d", inputSchema: { type: "object", properties: {} }, alwaysLoad, handler: async () => ({ content: [] }) });
+		const server = createToolServer("custom-tools", [define("read", true), define("deploy", false), define("search", undefined)]);
+		const { request } = await connectClient(server);
+		const { tools } = (await request("tools/list", {})).result;
+		assert.deepStrictEqual(tools.map((tool) => [tool.name, tool._meta]), [
+			["read", { "anthropic/alwaysLoad": true }],
+			["deploy", undefined],
+			["search", undefined],
+		]);
+		assert.deepStrictEqual(Object.keys(tools[1]).sort(), ["description", "inputSchema", "name"]);
+	});
+});
+
 // Claude Code drops any MCP tool whose input schema has a top-level
 // anyOf/oneOf/allOf ("its input schema uses top-level anyOf, which the Anthropic
 // API does not accept"). The bridge still maps the tool as served, so a call to it

@@ -17,9 +17,13 @@ export interface SessionState extends Recording {
 	cwd: string;
 	model: string;
 	/** Digest of the system prompt append CC recorded for this session, which it
-	 *  replays on every resume until a full import. */
+	 *  replays on every resume until a full import. Covers provider.toolSearch too. */
 	promptDigest: string;
 	dirtyTail: boolean;
+	/** With provider.toolSearch: the pi tools this CC session started with deferred.
+	 *  Fixed until a full import, because the loaded tools are part of the cached
+	 *  prefix; a tool pi adds later is not listed here, so it is loaded. */
+	deferredTools?: string[];
 }
 
 /** A recording that breaks the slot invariants; persisted state rejects only this. */
