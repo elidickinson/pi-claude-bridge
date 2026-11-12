@@ -158,6 +158,53 @@ test("tools: [] exposes no builtin tools — only what we serve over MCP", { tim
 		`CC exposed tools beyond our MCP server: ${JSON.stringify(init.tools)}`);
 });
 
+// --- Tools changed mid-query (syncServedTools) ---
+
+/** Serves `enable`; calling it adds `canary`, sends tools/list_changed and, as
+ *  the bridge does, holds its result until CC re-lists. Returns the tool names on
+ *  CC's next request. */
+async function toolsAfterListChanged() {
+	const requests = [];
+	const api = await stubApi(requests, { toolCallsFirst: ["mcp__custom-tools__enable"] });
+	let listed = [noArgTool("enable")];
+	let relisted = null;
+	const server = new McpServer({ name: "custom-tools", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+	server.server.setRequestHandler(ListToolsRequestSchema, () => {
+		setImmediate(() => relisted?.());
+		return { tools: listed };
+	});
+	server.server.setRequestHandler(CallToolRequestSchema, async () => {
+		listed = [noArgTool("enable"), noArgTool("canary")];
+		await new Promise((resolve) => {
+			relisted = resolve;
+			setTimeout(resolve, 2_000);
+			void server.server.sendToolListChanged();
+		});
+		return { content: [{ type: "text", text: "Enabled: canary." }] };
+	});
+	try {
+		await collect(query({
+			prompt: "Call enable.",
+			options: providerOptions({
+				maxTurns: 2, persistSession: false,
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+				mcpServers: { "custom-tools": { type: "sdk", name: "custom-tools", instance: server } },
+			}),
+		}));
+	} finally {
+		api.close();
+	}
+	const afterEnable = requests.find((body) => JSON.stringify(body.messages ?? []).includes("Enabled: canary."));
+	assert.ok(afterEnable, "CC never sent the request carrying enable's result");
+	return (afterEnable.tools ?? []).map((tool) => tool.name);
+}
+
+test("a tool added mid-query (tools/list_changed) reaches CC's next request", { timeout: 120_000 }, async () => {
+	// The re-list race itself needs real API latency; see diag/probe-mid-turn-tools.mjs.
+	assert.ok((await toolsAfterListChanged()).includes("mcp__custom-tools__canary"),
+		"CC's next request kept the old tool set; tools activated mid-turn cannot reach the model");
+});
+
 test("a tool_use naming an unserved tool is answered by CC, never dispatched to us", { timeout: 120_000 }, async () => {
 	// The premise of the fix in 122914dd. Whether the model takes the bait is up
 	// to the model, so the always-true half (never dispatched) is asserted
@@ -336,9 +383,9 @@ test("a streamed prompt keeps the query open past result until the input generat
 // --- The in-process MCP server ---
 
 test("the SDK treats our McpServer as an opaque endpoint — it only calls connect", { timeout: 120_000 }, async () => {
-	// src/mcp-server.ts serves JSON Schema verbatim and never sends
-	// tools/list_changed, which is only safe while the SDK ignores everything on
-	// the instance except connect(). A new property read here is the early warning.
+	// src/mcp-server.ts serves JSON Schema verbatim through its own request
+	// handlers, which is only safe while the SDK ignores everything on the
+	// instance except connect(). A new property read here is the early warning.
 	const touched = new Set();
 	const calls = [];
 	const servers = toolServer([noArgTool("alpha")], calls);
