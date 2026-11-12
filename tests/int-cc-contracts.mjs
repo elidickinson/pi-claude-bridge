@@ -187,7 +187,7 @@ async function toolsAfterListChanged() {
 			prompt: "Call enable.",
 			options: providerOptions({
 				maxTurns: 2, persistSession: false,
-				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_ELEGANT_MEADOW: "0", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
 				mcpServers: { "custom-tools": { type: "sdk", name: "custom-tools", instance: server } },
 			}),
 		}));
@@ -383,9 +383,9 @@ test("a streamed prompt keeps the query open past result until the input generat
 // --- The in-process MCP server ---
 
 test("the SDK treats our McpServer as an opaque endpoint — it only calls connect", { timeout: 120_000 }, async () => {
-	// src/mcp-server.ts serves JSON Schema verbatim and never sends
-	// tools/list_changed, which is only safe while the SDK ignores everything on
-	// the instance except connect(). A new property read here is the early warning.
+	// src/mcp-server.ts serves JSON Schema verbatim through its own request
+	// handlers, which is only safe while the SDK ignores everything on the
+	// instance except connect(). A new property read here is the early warning.
 	const touched = new Set();
 	const calls = [];
 	const servers = toolServer([noArgTool("alpha")], calls);

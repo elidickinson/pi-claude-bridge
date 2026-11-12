@@ -903,11 +903,19 @@ function syncServedTools(c: QueryContext, context: Context): Promise<void> | und
 	const names = mcpTools.map((tool) => tool.name);
 	if (names.length === c.servedToolNames.length && names.every((name, i) => name === c.servedToolNames[i])) return undefined;
 	debug(`tool sync: served [${c.servedToolNames.join(",")}] → [${names.join(",")}]`);
+	let relist: Promise<boolean>;
+	try { relist = c.toolServer.setTools(toMcpToolDefs(mcpTools, c)); }
+	catch (error) {
+		// The served set is unchanged, so the name map must stay in step with it.
+		debug(`tool sync rejected; still serving the previous tools:`, error);
+		piUI?.notify(`Claude bridge: could not serve the new tool set — ${errorMessage(error)}`, "warning");
+		return undefined;
+	}
 	c.servedToolNames = names;
 	// In place: consumeQuery holds this map. Removed names must drop out too.
 	c.toolNameToPi.clear();
 	for (const [sdkName, piName] of customToolNameToPi) c.toolNameToPi.set(sdkName, piName);
-	return c.toolServer.setTools(toMcpToolDefs(mcpTools, c)).then(
+	return relist.then(
 		(relisted) => { if (!relisted) debug(`tool sync: no re-list from Claude Code within the timeout; delivering anyway`); },
 		(error) => debug(`tool sync failed; delivering anyway:`, error),
 	);

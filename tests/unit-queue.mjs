@@ -313,6 +313,15 @@ describe("tool set changed by a tool call", () => {
 		assert.equal(__test.syncServedTools(c, contextWith("alpha")), undefined);
 	});
 
+	it("leaves the served set and name map alone when the new set is invalid", async () => {
+		const { c, callTool } = await startServedQuery(["alpha"]);
+		const scalar = { ...TOOLS[1], parameters: { type: "string" } };
+		assert.equal(__test.syncServedTools(c, { messages: [], tools: [TOOLS[0], scalar] }), undefined);
+		assert.deepEqual([...c.toolNameToPi.keys()], ["mcp__custom-tools__alpha"]);
+		assert.deepEqual(c.servedToolNames, ["alpha"]);
+		assert.deepEqual(await callTool.listTools(), ["alpha"]);
+	});
+
 	it("serves the new set, remaps names, and holds until Claude Code re-lists", async () => {
 		const { c, callTool } = await startServedQuery(["alpha"]);
 		let synced = false;

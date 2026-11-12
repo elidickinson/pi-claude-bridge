@@ -329,6 +329,15 @@ describe("MCP tool set replaced mid-query", () => {
 		assert.ok(removed.error || removed.result?.isError, "a tool no longer served must not run");
 	});
 
+	it("rejects an invalid tool set synchronously and keeps serving the old one", async () => {
+		const server = createToolServer("custom-tools", [tool("enable")]);
+		const { request, notifications } = await connectClient(server);
+		const scalar = { ...tool("scalar"), inputSchema: { type: "string" } };
+		assert.throws(() => server.setTools([tool("canary"), scalar]), /object schema/);
+		assert.deepStrictEqual(notifications, []);
+		assert.deepStrictEqual((await request("tools/list", {})).result.tools.map((t) => t.name), ["enable"]);
+	});
+
 	it("gives up and resolves false when the client never re-lists", async () => {
 		const server = createToolServer("custom-tools", [tool("enable")]);
 		await connectClient(server);
