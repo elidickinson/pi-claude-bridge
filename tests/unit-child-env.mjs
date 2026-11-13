@@ -15,6 +15,7 @@ describe("Claude Code child environment", () => {
 		assert.deepEqual(__test.CC_CHILD_ENV, {
 			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 			DISABLE_AUTO_COMPACT: "1",
+			CLAUDE_CODE_ENTRYPOINT: "pi-claude-bridge",
 			CLAUDE_CODE_ELEGANT_MEADOW: "0",
 			CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 			CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
