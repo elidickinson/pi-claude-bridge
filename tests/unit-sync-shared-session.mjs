@@ -75,7 +75,7 @@ describe("digest session decisions", () => {
 		assert.notEqual(synced.sessionId, session.sessionId);
 		assert.equal(__test.getSharedSession("pi").model, "sonnet", "the prior state stays until live progress");
 	});
-	it("a changed system prompt append imports pi's history; an unchanged one resumes", () => {
+	it("a changed system prompt imports pi's history; an unchanged one resumes", () => {
 		const priors = [user("hi"), say("hello")];
 		const { session } = seed(priors, { promptDigest: "p1" });
 		const next = [...priors, user("next")];
