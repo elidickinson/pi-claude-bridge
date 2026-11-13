@@ -29,6 +29,7 @@ import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
 import { BRIDGE_VERSION, packageVersion, setTraceNotifier, traceAssertReady, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
 import { DEBUG, debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
+import { queryWithFreshBinary } from "./claude-executable.js";
 import { CC_CHILD_ENV, ccChildEnv, CLAUDE_MD_EXCLUDES, errorMessage, REASONING_TO_EFFORT, resultErrorText } from "./cc-child.js";
 
 /** Unconditional diagnostic dump — for "should never happen" paths. Creates pi's agent
@@ -394,7 +395,7 @@ async function runIsolatedSummary(
 		const thinking = thinkingForReasoning(model, options?.reasoning);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} effort=${effort ?? "default"}${thinking ? " thinking=disabled" : ""} promptLen=${promptText.length}`);
 
-		sdkQuery = queryImpl({
+		sdkQuery = queryWithFreshBinary(queryImpl, {
 			prompt: promptText,
 			options: {
 				cwd,
@@ -2051,7 +2052,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			if (sessionWriters.get(syncResult.targetSessionId) === childProcess.exited) sessionWriters.delete(syncResult.targetSessionId);
 		};
 		let sdkQuery: ReturnType<typeof query>;
-		try { sdkQuery = queryImpl({ prompt: promptStream.stream, options: queryOptions }); }
+		try { sdkQuery = queryWithFreshBinary(queryImpl, { prompt: promptStream.stream, options: queryOptions }); }
 		catch (error) {
 			stopWriting();
 			childProcess.terminate();

@@ -1,4 +1,4 @@
-// Running Claude Code for AskClaude: the child's environment and process, debug
+// Running Claude Code for AskClaude: the child's environment, binary and process, debug
 // logging, the bridge's provider settings, and pi messages in Claude Code's format.
 //
 // Everything here is copied from pi-claude-bridge (the package at this repo's
@@ -9,11 +9,12 @@
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
-import type { EffortLevel, SDKMessage, SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
+import type { EffortLevel, query, SDKMessage, SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { Message as SessionMessage, ToolResultBlock } from "cc-session-io";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
+import { fileURLToPath } from "node:url";
 
 // --- From src/cc-child.ts ---
 
@@ -162,6 +163,53 @@ export function makeCliDebugOptions(tag: string): { debug?: boolean; debugFile?:
 			}
 		},
 	};
+}
+
+// --- From src/claude-executable.ts ---
+
+// The SDK finds Claude Code's binary with require.resolve, which Node caches for the
+// life of the process. When a pi package update moves the SDK under a running pi, that
+// cached path is deleted and every launch throws "Native CLI binary ... not found".
+// Retry once with the binary looked up on disk again.
+
+const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
+const MISSING_BINARY = /^Native CLI binary for \S+ not found\./;
+
+function isMusl(): boolean {
+	if (process.platform !== "linux" || typeof process.report?.getReport !== "function") return false;
+	const report = process.report.getReport() as { header?: { glibcVersionRuntime?: string } };
+	return report.header?.glibcVersionRuntime === undefined;
+}
+
+function binaryCandidates(): string[] {
+	const { platform, arch } = process;
+	const names = platform === "android" ? [`linux-${arch}-android`]
+		: platform !== "linux" ? [`${platform}-${arch}`]
+		: isMusl() ? [`linux-${arch}-musl`, `linux-${arch}`] : [`linux-${arch}`, `linux-${arch}-musl`];
+	return names.map((name) => join(`${SDK_PACKAGE}-${name}`, platform === "win32" ? "claude.exe" : "claude"));
+}
+
+function findClaudeExecutable(from = dirname(fileURLToPath(import.meta.url))): string | undefined {
+	for (const candidate of binaryCandidates()) {
+		for (let dir = from; ; dir = dirname(dir)) {
+			const path = join(dir, "node_modules", candidate);
+			if (basename(dir) !== "node_modules" && existsSync(path)) return path;
+			if (dirname(dir) === dir) break;
+		}
+	}
+	return undefined;
+}
+
+export function queryWithFreshBinary(queryImpl: typeof query, params: Parameters<typeof query>[0]): ReturnType<typeof query> {
+	try {
+		return queryImpl(params);
+	} catch (error) {
+		if (params.options?.pathToClaudeCodeExecutable || !(error instanceof Error) || !MISSING_BINARY.test(error.message)) throw error;
+		const found = findClaudeExecutable();
+		if (!found) throw error;
+		debug(`claude executable: the SDK's lookup failed, retrying with ${found}`);
+		return queryImpl({ ...params, options: { ...params.options, pathToClaudeCodeExecutable: found } });
+	}
 }
 
 // --- From src/config.ts ---
