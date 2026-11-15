@@ -66,6 +66,7 @@ Create `~/.pi/agent/claude-bridge.json`
 
 - `strictMcpConfig` - block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` - enable Claude Code's auto-memory system (default `false`).
+- `disableHooks` - don't run the hooks from your Claude Code settings (`~/.claude/settings.json`) inside bridge queries (default `false`). Without it, hooks written for interactive Claude Code (desktop notifications on Stop, UserPromptSubmit context) run on every pi turn and subagent. Managed hooks still run.
 - `systemPromptPreset` - Claude Code's own system prompt goes in front, with pi's whole prompt appended (default `"claude_code"`). Set to `false` to make pi's prompt the whole system prompt.
 - `pathToClaudeCodeExecutable` - path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to `"/home/you/.nix-profile/bin/claude"`.
 - `forceTwoHundredK` - array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
