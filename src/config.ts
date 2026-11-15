@@ -16,6 +16,10 @@ export interface Config {
 	provider?: {
 		strictMcpConfig?: boolean;
 		autoMemoryEnabled?: boolean;
+		// Skip the hooks in ~/.claude/settings.json (Claude Code's disableAllHooks;
+		// managed hooks still run). They were written for interactive Claude Code
+		// sessions and otherwise fire on every bridge query.
+		disableHooks?: boolean;
 		pathToClaudeCodeExecutable?: string;
 		// Subscription plan tier. Setting to "max" enables Opus 4.6 at 1M context;
 		// newer models get 1M on every plan.
@@ -45,8 +49,11 @@ function tryParseJson(path: string): Partial<Config> {
 	}
 }
 
-export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMemoryEnabled: boolean } {
-	return { autoMemoryEnabled: provider.autoMemoryEnabled ?? false };
+export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMemoryEnabled: boolean; disableAllHooks?: true } {
+	return {
+		autoMemoryEnabled: provider.autoMemoryEnabled ?? false,
+		...(provider.disableHooks ? { disableAllHooks: true as const } : {}),
+	};
 }
 
 export function globalConfigPath(): string {
