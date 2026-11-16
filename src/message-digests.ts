@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
 import { messageContentToText, PROVIDER_ID } from "./convert.js";
+import { NARRATION_KIND, signatureBlockKind } from "./narration.js";
 
 function writeString(hash: ReturnType<typeof createHash>, value: string): void {
 	hash.update(`s${value.length}:`);
@@ -51,6 +52,15 @@ function isReplayableThinking(
 	block: AssistantContent,
 ): block is Extract<AssistantContent, { type: "thinking" }> {
 	return block.type === "thinking" && message.provider === PROVIDER_ID && !!block.thinkingSignature;
+}
+
+/** A progress update the bridge showed as text: conversion sends it back as the signed
+ *  thinking block it arrived as (see narration.ts). */
+function isReplayableNarration(
+	message: Extract<PiMessage, { role: "assistant" }>,
+	block: Extract<AssistantContent, { type: "text" }>,
+): boolean {
+	return message.provider === PROVIDER_ID && signatureBlockKind(block.textSignature) === NARRATION_KIND;
 }
 
 function writeUser(hash: ReturnType<typeof createHash>, message: Extract<PiMessage, { role: "user" }>): void {
@@ -130,8 +140,15 @@ function writeAssistant(hash: ReturnType<typeof createHash>, message: Extract<Pi
 	hash.update("assistant:blocks[");
 	for (const block of content) {
 		if (block.type === "text" && block.text) {
-			hash.update("text:");
-			writeString(hash, block.text);
+			// Hashed as the thinking block it goes back as, so it matches Claude Code's record of the turn.
+			if (isReplayableNarration(message, block)) {
+				hash.update("thinking:");
+				writeString(hash, block.text);
+				writeString(hash, block.textSignature!);
+			} else {
+				hash.update("text:");
+				writeString(hash, block.text);
+			}
 		} else if (isReplayableThinking(message, block)) {
 			hash.update("thinking:");
 			writeString(hash, block.thinking ?? "");
