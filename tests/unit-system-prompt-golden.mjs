@@ -87,3 +87,22 @@ describe("system prompt golden: toBridgeContext forwards pi's prompt whole", () 
 		assert.ok(result.systemPrompt.endsWith(state.sections.addendum), "the re-added section lands at the replay tail, after cwd");
 	});
 });
+
+// omp passes its own Context to pi providers: systemPrompt is string[] and there are no
+// system messages. The SDK needs one string (issue #232, omp.patch).
+describe("omp string[] system prompt", () => {
+	it("joins the parts into one string", () => {
+		const result = toBridgeContext({ systemPrompt: ["base", "context"], messages: [user] });
+		assert.equal(result.systemPrompt, "base\n\ncontext");
+		assert.deepEqual(result.messages, [user]);
+	});
+
+	it("maps an empty array to no prompt", () => {
+		assert.equal(toBridgeContext({ systemPrompt: [], messages: [user] }).systemPrompt, undefined);
+	});
+
+	it("leaves a pi string prompt unchanged", () => {
+		const context = { systemPrompt: "pi", messages: [user] };
+		assert.equal(toBridgeContext(context), context);
+	});
+});

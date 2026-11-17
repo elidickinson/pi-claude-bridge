@@ -20,7 +20,13 @@ import {
  * unchanged because systemless one-off calls already use the bridge-compatible shape.
  */
 export function toBridgeContext(context: Context): Context {
-	if (!context.messages.some((message) => message.role === "system")) return context;
+	if (!context.messages.some((message) => message.role === "system")) {
+		// oh-my-pi (omp) hands legacy pi providers its own Context, whose systemPrompt is
+		// string[]. Join it the way omp joins it, so the SDK gets one string.
+		const prompt = context.systemPrompt as string | readonly string[] | undefined;
+		if (!Array.isArray(prompt)) return context;
+		return { ...context, systemPrompt: prompt.join("\n\n") || undefined };
+	}
 	const head = getCurrentSystemMessage(context.messages);
 	const tools = getCurrentTools(context.messages);
 	return {
