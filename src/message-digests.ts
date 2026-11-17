@@ -149,10 +149,21 @@ function writeAssistant(hash: ReturnType<typeof createHash>, message: Extract<Pi
 /** Hash a pi conversation message's conversion-visible content, ignoring metadata. */
 export function digestMessage(message: PiMessage): string {
 	const hash = createHash("sha256");
-	if (message.role === "user") writeUser(hash, message);
+	// omp keeps `developer`-role <system-reminder> messages in the transcript.
+	// convertPiMessages sends them to Claude Code as user text, so hash them the
+	// same way. Any other unknown role gets a role-tagged generic hash instead of
+	// throwing, which keeps digestMessages index-aligned (issue #253).
+	const role = (message as { role: string }).role;
+	if (message.role === "user" || role === "developer") writeUser(hash, message as Extract<PiMessage, { role: "user" }>);
 	else if (message.role === "assistant") writeAssistant(hash, message);
 	else if (message.role === "toolResult") writeToolResult(hash, message);
-	else throw new TypeError("digestMessage expects a non-system conversation message");
+	else if (role === "system") throw new TypeError("digestMessage expects a non-system conversation message");
+	else {
+		const other = message as unknown as { content?: unknown; sections?: unknown };
+		writeString(hash, `other:${role}`);
+		writeJson(hash, other.content ?? null);
+		writeJson(hash, other.sections ?? null);
+	}
 	return hash.digest("hex");
 }
 
