@@ -1,6 +1,6 @@
 {
-  "name": "pi-claude-bridge",
-  "version": "0.13.0",
+  "name": "omp-claude-bridge",
+  "version": "0.13.0-omp",
   "private": false,
   "description": "Pi extension that uses Claude Code (via Agent SDK) as a model provider.",
   "keywords": [
