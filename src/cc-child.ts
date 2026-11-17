@@ -31,6 +31,9 @@ import type { EffortLevel, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 //   mid-sentence at 4096 chars (16384 for tools loaded through tool search), so long
 //   pi tools lost their tail; pi's own providers send them whole. 16384 is CC's own
 //   larger limit and still stops a runaway description.
+// - CLAUDE_CODE_DISABLE_FILE_MENTIONS=1: a prompt starting with an existing `@path`
+//   makes CC read the file itself and insert a synthetic Read result pi never sees.
+//   pi's other providers pass `@path` through as text; the model uses pi's read tool.
 export const CC_CHILD_ENV = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
@@ -39,6 +42,7 @@ export const CC_CHILD_ENV = {
 	CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
 	CLAUDE_CODE_SILENT_TURN_REMINDER: "0",
 	CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH: "16384",
+	CLAUDE_CODE_DISABLE_FILE_MENTIONS: "1",
 } as const;
 
 // Set by Claude Code on its own child processes (eXe(), its session-env list and

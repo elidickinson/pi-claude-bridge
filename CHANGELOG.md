@@ -3,6 +3,7 @@
 ## UNRELEASED
 
 - **Fix: omp sessions with `developer`-role messages no longer fail every turn (#253)** — omp keeps `<system-reminder>` nudges in the transcript as `developer` messages, and the history digest threw on them. They now go to Claude Code as user text, and any other unknown role is hashed instead of throwing.
+- **Fix: prompts starting with `@path` no longer make Claude Code read the file itself** — The bridge sets `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`, so `@path` passes through as text like on pi's other providers.
 
 ## 0.13.0 — 2026-11-16
 
