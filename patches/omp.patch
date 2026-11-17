@@ -1,0 +1,83 @@
+diff --git a/package.json b/package.json
+index a8f6341..158b03f 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "pi-claude-bridge",
+-  "version": "0.11.0",
++  "version": "local-patched",
+   "private": false,
+   "description": "Pi extension that uses Claude Code (via Agent SDK) as a model provider.",
+   "keywords": [
+diff --git a/src/index.ts b/src/index.ts
+index 54806b4..05ee401 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1774,6 +1774,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
+ 	let systemPromptAppend: string | undefined;
+ 	try {
+ 		traceAssertReady();
++		// omp advisors (provider session id is an opaque UUID, so match omp's advisor system.md) are separate agents with a self-contained prompt that never passed through
++		// before_agent_start; they must not inherit the main agent's context files/skills.
++		const sp = Array.isArray(context.systemPrompt) ? context.systemPrompt.join("\n\n") : context.systemPrompt;
++		if (sp?.includes("peer-shadow main agent") && !promptCaptures.resolve(sp)) {
++			promptCaptures.record(sp, { custom: sp, contextFiles: [], skills: [], sections: {} }, "advisor");
++		}
+ 		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
+ 		systemPromptAppend = promptCapture
+ 			? projectPromptCapture(promptCapture, {
+@@ -2206,7 +2212,7 @@ export default function (pi: ExtensionAPI) {
+ 	// at before_agent_start so the agent_start recording below can reuse them.
+ 	type RecordOptions = Parameters<typeof recordSystemPrompt>[2];
+ 	let lastSystemPromptOptions: RecordOptions | undefined;
+-	function recordSystemPrompt(source: string, systemPrompt: string | undefined, options: {
++	function recordSystemPrompt(source: string, systemPrompt: string | readonly string[] | undefined, options: {
+ 		customPrompt?: string;
+ 		appendSystemPrompt?: string;
+ 		contextFiles?: { path: string; content: string }[];
+diff --git a/src/prompt-capture.ts b/src/prompt-capture.ts
+index 578044f..7df91a1 100644
+--- a/src/prompt-capture.ts
++++ b/src/prompt-capture.ts
+@@ -53,6 +53,10 @@ type PromptCaptureDiagnostic = {
+ 	matches: { key: string; firstDivergent: number; source?: string }[];
+ };
+ 
++/** omp passes the system prompt as string[]; pi as string. Keys are always the joined string. */
++type SystemPromptLike = string | readonly string[] | undefined;
++const joinPrompt = (p: SystemPromptLike): string | undefined => (Array.isArray(p) ? p.join("\n\n") : (p as string | undefined));
++
+ export class PromptCaptures {
+ 	private readonly captures = new Map<string, PromptCapture>();
+ 	/** Invoked with everything that would otherwise be lost when resolution throws,
+@@ -76,7 +80,8 @@ export class PromptCaptures {
+ 		this.onDiagnose = onDiagnose ?? (() => {});
+ 	}
+ 
+-	record(systemPrompt: string, input: PromptCaptureInput, source?: string): void {
++	record(prompt: SystemPromptLike, input: PromptCaptureInput, source?: string): void {
++		const systemPrompt = joinPrompt(prompt) ?? "";
+ 		const existing = this.captures.get(systemPrompt);
+ 		const customChanged = existing?.custom !== input.custom;
+ 		const capture = existing ?? {
+@@ -105,7 +110,8 @@ export class PromptCaptures {
+ 	}
+ 
+ 	/** Exact lookup only. Callers serving a query want `resolveOrDerive`. */
+-	resolve(systemPrompt?: string): PromptCapture | undefined {
++	resolve(prompt?: SystemPromptLike): PromptCapture | undefined {
++		const systemPrompt = joinPrompt(prompt);
+ 		if (!systemPrompt) return undefined;
+ 		const capture = this.captures.get(systemPrompt);
+ 		if (capture) this.touch(systemPrompt, capture);
+@@ -145,7 +151,8 @@ export class PromptCaptures {
+ 	 * silently discarding policy the user wrote down. A failed turn is recoverable;
+ 	 * a turn that quietly ignored its instructions is not.
+ 	 */
+-	resolveOrDerive(systemPrompt?: string): PromptCapture | undefined {
++	resolveOrDerive(prompt?: SystemPromptLike): PromptCapture | undefined {
++		const systemPrompt = joinPrompt(prompt);
+ 		if (!systemPrompt) return undefined;
+ 		const exact = this.captures.get(systemPrompt);
+ 		if (exact) {

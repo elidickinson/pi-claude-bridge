@@ -1,0 +1,76 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a1c62c66..d66d2bc3 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,7 @@
+ 
+ ## UNRELEASED
+ 
++- **Fix: omp sessions with `developer`-role messages no longer fail every turn (#253)** — omp keeps `<system-reminder>` nudges in the transcript as `developer` messages, and the history digest threw on them. They now go to Claude Code as user text, and any other unknown role is hashed instead of throwing.
+ - **Fix: tool calls rejected by Claude Code no longer hang the turn (#218)** — We now fail the turn if a tool call is rejected (e.g. because Claude Code permission hook blocked). Running tools are not canceled or undone. Unknown and wrong-case tool names are intentionally ignored so CC can retry itself. If CC sends invalid arguments it can now require a new user prompt to continue. Thanks @sonSunnoi.
+ - **Add: Claude Mythos 5.2 and 5.1 with 1M context (#259)** — pi-ai doesn't list these access-gated models, so the bridge now adds them, cloned from the Fable releases they shipped beside. Measured at 1M on Max. Listed last in `/model`; requests fail on accounts without Mythos access. Thanks @borski.
+ 
+diff --git a/src/convert.ts b/src/convert.ts
+index ef92b73e..b401aeb6 100644
+--- a/src/convert.ts
++++ b/src/convert.ts
+@@ -111,7 +111,8 @@ export function convertPiMessages(
+ 	let turnAssistantIdx: number | null = null;
+ 
+ 	for (const [piIndex, msg] of messages.entries()) {
+-		if (msg.role === "user") {
++		// omp `developer`-role reminders ride along as user text (issue #253).
++		if (msg.role === "user" || (msg as { role: string }).role === "developer") {
+ 			if (typeof msg.content === "string") {
+ 				append({ role: "user", content: msg.content || "[empty]" }, piIndex);
+ 			} else if (Array.isArray(msg.content)) {
+diff --git a/src/message-digests.ts b/src/message-digests.ts
+index c85459d0..0db0d3ab 100644
+--- a/src/message-digests.ts
++++ b/src/message-digests.ts
+@@ -149,10 +149,21 @@ function writeAssistant(hash: ReturnType<typeof createHash>, message: Extract<Pi
+ /** Hash a pi conversation message's conversion-visible content, ignoring metadata. */
+ export function digestMessage(message: PiMessage): string {
+ 	const hash = createHash("sha256");
+-	if (message.role === "user") writeUser(hash, message);
++	// omp keeps `developer`-role <system-reminder> messages in the transcript.
++	// convertPiMessages sends them to Claude Code as user text, so hash them the
++	// same way. Any other unknown role gets a role-tagged generic hash instead of
++	// throwing, which keeps digestMessages index-aligned (issue #253).
++	const role = (message as { role: string }).role;
++	if (message.role === "user" || role === "developer") writeUser(hash, message as Extract<PiMessage, { role: "user" }>);
+ 	else if (message.role === "assistant") writeAssistant(hash, message);
+ 	else if (message.role === "toolResult") writeToolResult(hash, message);
+-	else throw new TypeError("digestMessage expects a non-system conversation message");
++	else if (role === "system") throw new TypeError("digestMessage expects a non-system conversation message");
++	else {
++		const other = message as unknown as { content?: unknown; sections?: unknown };
++		writeString(hash, `other:${role}`);
++		writeJson(hash, other.content ?? null);
++		writeJson(hash, other.sections ?? null);
++	}
+ 	return hash.digest("hex");
+ }
+ 
+diff --git a/tests/unit-message-digests.mjs b/tests/unit-message-digests.mjs
+index 04049892..0e555f55 100644
+--- a/tests/unit-message-digests.mjs
++++ b/tests/unit-message-digests.mjs
+@@ -82,4 +82,17 @@ describe("pi message digests", () => {
+ 		const right = assistant([toolCall("a", "b\nc", {})]);
+ 		assert.notEqual(digestMessage(left), digestMessage(right));
+ 	});
++
++	it("hashes omp developer reminders like user text and never throws on unknown roles (#253)", () => {
++		const reminder = [{ type: "text", text: "<system-reminder>todo</system-reminder>" }];
++		const developer = { role: "developer", content: reminder, timestamp: 1 };
++		assert.match(digestMessage(developer), /^[0-9a-f]{64}$/);
++		assert.equal(digestMessage(developer), digestMessage(user(reminder)));
++		const odd = { role: "custom", content: "x", timestamp: 1 };
++		assert.match(digestMessage(odd), /^[0-9a-f]{64}$/);
++		assert.notEqual(digestMessage(odd), digestMessage({ ...odd, content: "y" }));
++		assert.notEqual(digestMessage(odd), digestMessage({ ...odd, sections: { note: "z" } }));
++		assert.equal(digestMessages([user("a"), developer, odd]).length, 3);
++		assert.throws(() => digestMessage({ role: "system", content: "s" }));
++	});
+ });
