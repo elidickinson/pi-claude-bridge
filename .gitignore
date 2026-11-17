@@ -1,5 +1,4 @@
 node_modules/
-.claude/
 .test-output/
 eli/.DS_Store
 .DS_Store
