@@ -20,6 +20,7 @@ export type RateLimitInfo = {
 	status?: string;
 	resetsAt?: number;
 	rateLimitType?: string;
+	utilization?: number;
 	overageStatus?: string;
 	overageResetsAt?: number;
 	unifiedWindows?: Record<string, UsageWindow | undefined>;
@@ -42,6 +43,14 @@ export function rateLimitResponse(info: RateLimitInfo): ProviderResponse {
 		const abbreviation = WINDOW_ABBREVIATIONS[name] ?? name;
 		set(`${abbreviation}-utilization`, window?.utilization);
 		set(`${abbreviation}-reset`, window?.resetsAt);
+	}
+
+	// The SDK's SDKRateLimitInfo reports one window per event (rateLimitType + utilization);
+	// it has no unifiedWindows, so without this the headers carry no percentage at all.
+	const single = info.rateLimitType && (WINDOW_ABBREVIATIONS[info.rateLimitType] ?? info.rateLimitType);
+	if (single && info.utilization !== undefined && headers[`${HEADER_PREFIX}-${single}-utilization`] === undefined) {
+		set(`${single}-utilization`, info.utilization);
+		set(`${single}-reset`, info.resetsAt);
 	}
 
 	return { status: HTTP_OK, headers };
