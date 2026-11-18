@@ -201,26 +201,28 @@ describe("cache trace", () => {
 		assert.deepEqual(control.reasons, [`refused ${session.sessionId}/tool-results/link.txt: symlink`, `altered ${session.sessionId}.jsonl`]);
 	});
 
-	it("does not delete the session when its snapshot cannot be written", async () => {
+	it("marks the run incomplete and still answers when a snapshot cannot be written", async () => {
 		process.env.CLAUDE_BRIDGE_TRACE_DIR = traceDir;
 		process.env.CLAUDE_BRIDGE_TRACE_RAW = "1";
 		await streamSimple(model, { messages: [user("warm up")], tools }, { sessionId: "pi-snap-warm" }).result();
 		chmodSync(runDir(), 0o500); // events.jsonl stays appendable; snapshots/ cannot be created
 		const session = plantSession("pi-snap-fail");
+		void session;
 		const before = spawned.length;
+		let reply;
 		try {
-			const reply = await streamSimple(model, { messages: history(), tools }, { sessionId: "pi-snap-fail" }).result();
-			assert.equal(reply.stopReason, "error");
-		} catch (error) {
-			assert.equal(error.code, "EACCES");
+			reply = await streamSimple(model, { messages: history(), tools }, { sessionId: "pi-snap-fail" }).result();
 		} finally {
 			chmodSync(runDir(), 0o700);
 		}
-		assert.match(readFileSync(session.jsonlPath, "utf8"), /BEFORE-REBUILD-MARKER/, "the session was deleted without its snapshot");
-		assert.equal(spawned.length, before, "a query started without its trace");
+		assert.notEqual(reply.stopReason, "error", "a recorder failure failed the provider call");
+		assert.equal(spawned.length, before + 1, "the query did not run");
+		assert.equal(notices.length, 1);
+		assert.match(notices[0], /incomplete/);
+		assert.ok(JSON.parse(readFileSync(join(runDir(), "manifest.json"), "utf8")).incomplete, "the run does not read as incomplete");
 	});
 
-	it("latches a recorder failure mid-query, then refuses to start the next query", async () => {
+	it("latches a recorder failure mid-query and keeps serving queries", async () => {
 		process.env.CLAUDE_BRIDGE_TRACE_DIR = traceDir;
 		const ask = user("read a");
 		const parked = await streamSimple(model, { messages: [ask], tools }, { sessionId: "pi-io" }).result();
@@ -232,8 +234,22 @@ describe("cache trace", () => {
 		assert.match(notices[0], /incomplete/);
 
 		const next = await streamSimple(model, { messages: [user("again")], tools }, { sessionId: "pi-io-2" }).result();
-		assert.equal(next.stopReason, "error");
-		assert.match(next.errorMessage, /cache trace is incomplete/);
-		assert.equal(spawned.length, 1, "a query started without its trace");
+		assert.notEqual(next.stopReason, "error", "the trace failed the next provider call");
+		assert.equal(spawned.length, 2);
+		assert.equal(notices.length, 1, "the failure was reported more than once");
+	});
+
+	it("keeps serving queries after the trace folder is deleted under the process", async () => {
+		process.env.CLAUDE_BRIDGE_TRACE_DIR = traceDir;
+		const first = await streamSimple(model, { messages: [user("one")], tools }, { sessionId: "pi-gone" }).result();
+		assert.notEqual(first.stopReason, "error");
+		rmSync(traceDir, { recursive: true, force: true });
+		for (const id of ["pi-gone-2", "pi-gone-3"]) {
+			const reply = await streamSimple(model, { messages: [user(id)], tools }, { sessionId: id }).result();
+			assert.notEqual(reply.stopReason, "error", `query ${id} failed after the trace folder was deleted`);
+		}
+		assert.equal(spawned.length, 3);
+		assert.equal(notices.length, 1);
+		assert.match(notices[0], /ENOENT/);
 	});
 });
