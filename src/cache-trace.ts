@@ -83,7 +83,11 @@ export function packageVersion(name: string): string | null {
 export const BRIDGE_VERSION: string = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version;
 
 function startRun(root: string): TraceRun {
-	const proxy = process.env.CLAUDE_BRIDGE_TRACE_PROXY?.replace(/\/$/, "") || undefined;
+	const wanted = process.env.CLAUDE_BRIDGE_TRACE_PROXY?.replace(/\/$/, "") || undefined;
+	// Claude Code refuses to be routed twice, and a gateway the user configured is
+	// never overridden: with one set the run records without routing, as incomplete.
+	const gateway = Boolean(wanted && process.env.ANTHROPIC_BASE_URL);
+	const proxy = gateway ? undefined : wanted;
 	const r: TraceRun = {
 		dir: join(root, `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`),
 		raw: process.env.CLAUDE_BRIDGE_TRACE_RAW === "1",
@@ -122,10 +126,8 @@ function startRun(root: string): TraceRun {
 		latch(r, error);
 		return r;
 	}
-	// Claude Code refuses to be routed twice; refusing beats silently overriding
-	// a gateway the user configured.
 	// The configured URL is not repeated: a gateway URL can carry credentials.
-	if (proxy && process.env.ANTHROPIC_BASE_URL) latch(r, new Error("CLAUDE_BRIDGE_TRACE_PROXY set but ANTHROPIC_BASE_URL is already configured"));
+	if (gateway) latch(r, new Error("CLAUDE_BRIDGE_TRACE_PROXY set but ANTHROPIC_BASE_URL is already configured; not routing"));
 	process.on("exit", () => {
 		try {
 			writeFileSync(join(r.dir, "manifest.json"), JSON.stringify({ ...r.manifest, endedAt: new Date().toISOString(), incomplete: r.incomplete, events: r.seq, artifactBytes: r.artifactBytes }, null, 1));
@@ -153,8 +155,8 @@ export function digest(value: unknown): string {
 }
 
 function write(r: TraceRun, type: string, fields: Record<string, unknown>): void {
-	const line = `${JSON.stringify({ seq: r.seq + 1, at: new Date().toISOString(), instance: INSTANCE, type, ...fields })}\n`;
 	if (r.incomplete) return;
+	const line = `${JSON.stringify({ seq: r.seq + 1, at: new Date().toISOString(), instance: INSTANCE, type, ...fields })}\n`;
 	try {
 		appendFileSync(join(r.dir, "events.jsonl"), line, { mode: 0o600 });
 		r.seq++;

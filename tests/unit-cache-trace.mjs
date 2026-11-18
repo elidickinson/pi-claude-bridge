@@ -2,8 +2,8 @@
  * The opt-in cache trace (src/cache-trace.ts), driven through the real provider
  * entry with a fake SDK query: records must link a provider call's input to the
  * session decision and the query it started, a continuation from a later run to
- * that same query, and a recorder failure must stop a query from starting but
- * never break one already running.
+ * that same query, and a recorder failure must mark the run incomplete and stop
+ * recording, never fail a query, and never route past a gateway the user set.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -143,6 +143,26 @@ describe("cache trace", () => {
 		assert.deepEqual(all.filter((e) => e.type === "api-message").map((e) => [e.queryId, e.apiMessageId]),
 			[[start.queryId, "msg_toolu_1"], [start.queryId, "msg_text"]]);
 		assert.equal(all.find((e) => e.type === "query-end").outcome, "complete");
+	});
+
+	it("never routes past a gateway the user configured, and still answers", async () => {
+		process.env.CLAUDE_BRIDGE_TRACE_DIR = traceDir;
+		process.env.CLAUDE_BRIDGE_TRACE_PROXY = "http://127.0.0.1:9";
+		const before = process.env.ANTHROPIC_BASE_URL;
+		process.env.ANTHROPIC_BASE_URL = "http://gateway.invalid";
+		try {
+			const reply = await parkThenContinue("pi-gateway");
+			assert.equal(reply.stopReason, "stop");
+			assert.equal(spawned.length, 1);
+			assert.equal(spawned[0].env.ANTHROPIC_BASE_URL, "http://gateway.invalid");
+			assert.equal(spawned[0].env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL, undefined);
+			const manifest = JSON.parse(readFileSync(join(runDir(), "manifest.json"), "utf8"));
+			assert.equal(manifest.routing, null);
+			assert.match(manifest.incomplete, /ANTHROPIC_BASE_URL is already configured/);
+		} finally {
+			if (before === undefined) delete process.env.ANTHROPIC_BASE_URL;
+			else process.env.ANTHROPIC_BASE_URL = before;
+		}
 	});
 
 	it("keeps each pi session's decisions and queries apart", async () => {
