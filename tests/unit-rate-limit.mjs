@@ -47,6 +47,24 @@ describe("rateLimitResponse", () => {
 		});
 	});
 
+	it("reports the event's own window when the SDK sends utilization without unifiedWindows", () => {
+		const { headers } = rateLimitResponse({
+			status: "allowed_warning", resetsAt: 1789770600, rateLimitType: "five_hour", utilization: 0.92,
+		});
+
+		assert.equal(headers["anthropic-ratelimit-unified-5h-utilization"], "0.92");
+		assert.equal(headers["anthropic-ratelimit-unified-5h-reset"], "1789770600");
+	});
+
+	it("prefers unifiedWindows over the event's single window", () => {
+		const { headers } = rateLimitResponse({
+			status: "allowed", rateLimitType: "five_hour", utilization: 0.9,
+			unifiedWindows: { five_hour: { utilization: 0.14, resetsAt: 1789770600 } },
+		});
+
+		assert.equal(headers["anthropic-ratelimit-unified-5h-utilization"], "0.14");
+	});
+
 	it("keeps a window name Claude Code has no abbreviation for", () => {
 		const { headers } = rateLimitResponse({ status: "allowed", unifiedWindows: { seven_day_opus: { utilization: 0.3 } } });
 
