@@ -115,3 +115,30 @@ it("a retry CC did not fully record still leaves a gap that marks the session di
 	assert.equal(c.recording.hasGaps, true, "pi holds a tool call CC has no record of");
 	assert.equal(reusable(c, [prompt, output]), false);
 });
+
+it("an abandoned tool call is never run: no toolCall, no tool-use stop, no gap", async () => {
+	const dead = "msg_dead_tool";
+	const { c, prompt, output } = await runTurn([
+		ev({ type: "message_start", message: { id: dead } }, { api_message_id: dead }),
+		ev({ type: "content_block_start", index: 0, content_block: { type: "tool_use", name: "mcp__custom-tools__bash", id: "toolu_dead", input: {} } }, { api_message_id: dead }),
+		ev({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"command":"rm' } }, { api_message_id: dead }),
+		ev({ type: "content_block_stop", index: 0 }, { api_message_id: dead }),
+		ev({ type: "message_stop" }, { api_message_id: dead, abandoned_blocks: { api_message_id: dead, from_block_index: 0 } }),
+		{ type: "system", subtype: "api_retry", attempt: 1, error: "Connection dropped (ECONNRESET)" },
+		ev({ type: "message_start", message: { id: "msg_retry" } }),
+		ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+		ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Done." } }),
+		assistant("msg_retry", "msg_retry-0", { type: "text", text: "Done." }),
+		ev({ type: "content_block_stop", index: 0 }),
+		ev({ type: "message_delta", delta: { stop_reason: "end_turn" } }),
+		ev({ type: "message_stop" }),
+	]);
+
+	assert.ok(!output.content.some((b) => b.type === "toolCall"), "the dead attempt's tool call must not reach pi");
+	assert.notEqual(output.stopReason, "toolUse");
+	assert.deepEqual(output.content.map((b) => b.text), ["Done."]);
+	assert.deepEqual(c.turnAssistantIds, ["msg_retry"]);
+	assert.ok(!c.recording.recorded.uuids.some((u) => String(u).includes(dead)));
+	assert.equal(c.recording.hasGaps, false);
+	assert.ok(reusable(c, [prompt, output]), "the next query must reuse the session");
+});
