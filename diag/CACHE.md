@@ -121,7 +121,7 @@ node diag/analyze-trace.mjs --capture ~/cc-trace/capture --trace ~/cc-trace/trac
 Raw mode records whole conversations, including file contents and the account details CC injects. Files are owner-only and nothing is uploaded; treat the directories like the conversation itself.
 
 - `src/cache-trace.ts` records provider inputs, session decisions and query lifecycle, and copies CC's session file before the bridge replaces it. `diag/capture-proxy.mjs` records request bodies and ties each to the query that sent it. Without `CLAUDE_BRIDGE_TRACE_RAW=1` only digests and block shapes are recorded: propagation cannot be checked and no session files are copied.
-- The recorder refuses to route if `ANTHROPIC_BASE_URL` is already set. If it cannot write, the next turn fails before a query starts. Anything over `CLAUDE_BRIDGE_TRACE_MAX_ARTIFACT_BYTES` (64 MiB) or `CLAUDE_BRIDGE_TRACE_MAX_RUN_BYTES` (2 GiB) is left out and marked, never truncated.
+- The recorder does not route if `ANTHROPIC_BASE_URL` is already set: the run records without routing and reads as incomplete. If it cannot write, it marks the run incomplete, reports once and stops recording; queries go on. Anything over `CLAUDE_BRIDGE_TRACE_MAX_ARTIFACT_BYTES` (64 MiB) or `CLAUDE_BRIDGE_TRACE_MAX_RUN_BYTES` (2 GiB) is left out and marked, never truncated.
 - `analyze-trace.mjs` also takes a bare capture, or `--probe DIR` for `probe-cache-mutations.mjs` output. Without a trace, ancestry is a guess and every transition is marked unattributed.
 
 ### Lifecycle scenarios and probes

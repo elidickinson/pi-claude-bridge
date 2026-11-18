@@ -13,12 +13,13 @@
 // files copied before the bridge deletes or abandons them). Disabled, every export returns at its first line:
 // no hashing, files, listeners or retained messages.
 //
-// Recorder I/O failure: before a query starts or a session file is replaced,
-// traceAssertReady/traceStrict/traceQueryStart throw, so that operation never
-// begins. Anywhere later (delivery, abort, completion callbacks) traceEvent
-// latches the run as incomplete, stops recording and reports it instead of
-// throwing into a live query; the next strict call then fails its provider call.
-// Serialization errors are programming errors and always throw.
+// Recorder I/O failure (a full disk, the trace folder deleted under a running
+// process): the run is latched as incomplete, stops recording, and is reported
+// once; nothing throws, so the trace never fails a provider call. The latch
+// lives on globalThis and survives /reload, so a throwing recorder would keep a
+// session failing until its process exits. An incomplete run says so in its
+// manifest; analysis reads it as such. Serialization errors are programming
+// errors and always throw.
 
 import type { Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
@@ -82,7 +83,11 @@ export function packageVersion(name: string): string | null {
 export const BRIDGE_VERSION: string = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version;
 
 function startRun(root: string): TraceRun {
-	const proxy = process.env.CLAUDE_BRIDGE_TRACE_PROXY?.replace(/\/$/, "") || undefined;
+	const wanted = process.env.CLAUDE_BRIDGE_TRACE_PROXY?.replace(/\/$/, "") || undefined;
+	// Claude Code refuses to be routed twice, and a gateway the user configured is
+	// never overridden: with one set the run records without routing, as incomplete.
+	const gateway = Boolean(wanted && process.env.ANTHROPIC_BASE_URL);
+	const proxy = gateway ? undefined : wanted;
 	const r: TraceRun = {
 		dir: join(root, `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`),
 		raw: process.env.CLAUDE_BRIDGE_TRACE_RAW === "1",
@@ -121,10 +126,8 @@ function startRun(root: string): TraceRun {
 		latch(r, error);
 		return r;
 	}
-	// Claude Code refuses to be routed twice; refusing beats silently overriding
-	// a gateway the user configured.
 	// The configured URL is not repeated: a gateway URL can carry credentials.
-	if (proxy && process.env.ANTHROPIC_BASE_URL) latch(r, new Error("CLAUDE_BRIDGE_TRACE_PROXY set but ANTHROPIC_BASE_URL is already configured"));
+	if (gateway) latch(r, new Error("CLAUDE_BRIDGE_TRACE_PROXY set but ANTHROPIC_BASE_URL is already configured; not routing"));
 	process.on("exit", () => {
 		try {
 			writeFileSync(join(r.dir, "manifest.json"), JSON.stringify({ ...r.manifest, endedAt: new Date().toISOString(), incomplete: r.incomplete, events: r.seq, artifactBytes: r.artifactBytes }, null, 1));
@@ -151,18 +154,14 @@ export function digest(value: unknown): string {
 	return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex").slice(0, 32);
 }
 
-function write(r: TraceRun, type: string, fields: Record<string, unknown>, strict: boolean): void {
+function write(r: TraceRun, type: string, fields: Record<string, unknown>): void {
+	if (r.incomplete) return;
 	const line = `${JSON.stringify({ seq: r.seq + 1, at: new Date().toISOString(), instance: INSTANCE, type, ...fields })}\n`;
-	if (r.incomplete) {
-		if (strict) throw new Error(`Claude bridge cache trace is incomplete: ${r.incomplete}`);
-		return;
-	}
 	try {
 		appendFileSync(join(r.dir, "events.jsonl"), line, { mode: 0o600 });
 		r.seq++;
 	} catch (error) {
 		latch(r, error);
-		if (strict) throw error;
 	}
 }
 
@@ -181,23 +180,17 @@ export function traceSignalId(signal: AbortSignal | undefined): string | undefin
 	return id;
 }
 
-/** Record after a query started: never throws for recorder I/O. */
+/** Record an event; never throws for recorder I/O. */
 export function traceEvent(type: string, fields: Record<string, unknown>): void {
 	const r = run();
-	if (r) write(r, type, fields, false);
+	if (r) write(r, type, fields);
 }
 
-/** Record before a query starts or a session file is replaced: throws if the
- *  trace cannot be written, so the operation never happens unrecorded. */
+/** Record a session decision before the query or the session file change it
+ *  decides; like traceEvent, recorder I/O latches the run and never throws. */
 export function traceStrict(type: string, fields: Record<string, unknown>): void {
 	const r = run();
-	if (r) write(r, type, fields, true);
-}
-
-/** Throws if an enabled trace cannot record; call before starting a query. */
-export function traceAssertReady(): void {
-	const r = run();
-	if (r?.incomplete) throw new Error(`Claude bridge cache trace is incomplete: ${r.incomplete}`);
+	if (r) write(r, type, fields);
 }
 
 /** Record a query about to start and route its child's API traffic through the
@@ -222,9 +215,8 @@ export function traceQueryStart<E extends Record<string, string | undefined>>(
 		// artifact() writes are recorder I/O; anything else here is a bug.
 		if ((error as NodeJS.ErrnoException)?.code === undefined) throw error;
 		latch(r, error);
-		throw error;
 	}
-	write(r, "query-start", { queryId, ...rest, ...(hashed ? { digests: hashed } : {}), ...(kept ? { artifacts: kept } : {}), route: r.proxy ? queryId : null }, true);
+	write(r, "query-start", { queryId, ...rest, ...(hashed ? { digests: hashed } : {}), ...(kept ? { artifacts: kept } : {}), route: r.proxy ? queryId : null });
 	// CC treats a base URL other than api.anthropic.com as not first-party and changes
 	// what it sends (no thinking-binding beta, tool search off, ...); the override keeps
 	// a traced request shaped like an untraced one. Mirrored in diag/lib/first-party.mjs.
@@ -298,7 +290,7 @@ export function traceInput(callId: string | undefined, source: Context, effectiv
 				messages: effective.messages.map((m) => projectMessage(m as unknown as Record<string, unknown>)),
 				...artifact(r, effective),
 			},
-		}, false);
+		});
 	} catch (error) {
 		// artifact() writes are recorder I/O; anything else here is a bug.
 		if ((error as NodeJS.ErrnoException)?.code === undefined) throw error;
@@ -316,28 +308,23 @@ type SnapshotWriter = "no-known-writer";
  *  non-files and files over the limits are refused, never followed or truncated,
  *  and leave the snapshot incomplete. Paths the JSONL names under the projects
  *  dir are checked: inside the session's own area they must be in the copy;
- *  anywhere else they are listed as outside the owned area. `strict` as for
- *  traceStrict: true before a delete, false in completion callbacks. */
+ *  anywhere else they are listed as outside the owned area. Recorder I/O
+ *  latches the run and never throws: a session file is then replaced without
+ *  its snapshot, and the run reads as incomplete. */
 export function traceSnapshot(
 	fields: { ccSession: string; cwd: string; mirrorCwd?: string; reason: string; writer: SnapshotWriter; callId?: string; queryId?: string },
-	strict: boolean,
 ): void {
 	const r = run();
-	if (!r) return;
-	if (r.incomplete) {
-		if (strict) throw new Error(`Claude bridge cache trace is incomplete: ${r.incomplete}`);
-		return;
-	}
+	if (!r || r.incomplete) return;
 	let record: Record<string, unknown>;
 	try {
 		record = snapshot(r, fields);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code === undefined) throw error;
 		latch(r, error);
-		if (strict) throw error;
 		return;
 	}
-	write(r, "snapshot", record, strict);
+	write(r, "snapshot", record);
 }
 
 function snapshot(r: TraceRun, fields: { ccSession: string; cwd: string; mirrorCwd?: string; reason: string; writer: SnapshotWriter }): Record<string, unknown> {

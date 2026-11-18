@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: a cache-trace write failure no longer fails every later query** — With `CLAUDE_BRIDGE_TRACE_DIR` set, a recorder I/O error (the trace folder deleted under a running pi, a full disk) latched the run and then failed each provider call with "Claude bridge cache trace is incomplete". The latch lives on `globalThis`, so it outlived `/reload` and the session stayed broken until its process exited. The run now latches as incomplete, reports once and stops recording; queries go on. With `CLAUDE_BRIDGE_TRACE_PROXY` and `ANTHROPIC_BASE_URL` both set, the run records without routing, so a configured gateway is never bypassed.
+
 ## 0.13.0 — 2026-11-16
 
 - **Add: new system prompt handling including option to suppress Claude Code system prompt (#112, #185)** — The bridge appends pi's prompt to Claude Code's preset as pi renders it (tools, rules, docs and context files included) instead of just selected parts. Set `provider.systemPromptPreset: false` to send pi's prompt alone, without Claude Code's preset. These changes simplify the code and remove a whole category of bugs: #71, #72, #153, #158, #178, #247, #249. Thanks @iamhucong and @jmtoepperwien. 

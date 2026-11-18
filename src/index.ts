@@ -27,7 +27,7 @@ import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
-import { BRIDGE_VERSION, packageVersion, setTraceNotifier, traceAssertReady, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
+import { BRIDGE_VERSION, packageVersion, setTraceNotifier, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
 import { DEBUG, debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import { CC_CHILD_ENV, ccChildEnv, CLAUDE_MD_EXCLUDES, errorMessage, REASONING_TO_EFFORT, resultErrorText } from "./cc-child.js";
 
@@ -608,7 +608,7 @@ function syncSharedSession(
 		decision("reuse", state!.ccSessionId);
 		return { sessionId: state!.ccSessionId, targetSessionId: state!.ccSessionId, created: false, recorded: copyRecording(state!), state };
 	}
-	if (state) traceSnapshot({ callId: traceCallId, ccSession: state.ccSessionId, cwd: state.cwd, reason: "rebuild-rotate", writer: "no-known-writer" }, true);
+	if (state) traceSnapshot({ callId: traceCallId, ccSession: state.ccSessionId, cwd: state.cwd, reason: "rebuild-rotate", writer: "no-known-writer" });
 	const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: modelId });
 	const targetSessionId = session.sessionId;
 	let recorded: Recording;
@@ -1871,11 +1871,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// pi's own prompt, whole: toBridgeContext joined pi's sections via pi-ai. No
 	// capture lookup -- the prompt is forwarded as-is, as the preset's append by
 	// default or as a plain string when provider.systemPromptPreset is off.
-	try {
-		traceAssertReady();
-	} catch (err) {
-		return failBeforeQuery(err);
-	}
 	const systemPromptText = context.systemPrompt;
 
 	queryCtx.piSessionId = options?.sessionId ?? null;
