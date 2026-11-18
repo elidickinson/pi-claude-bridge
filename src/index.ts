@@ -376,6 +376,10 @@ async function runIsolatedSummary(
 ): Promise<void> {
 	let sdkQuery: ReturnType<typeof query> | undefined;
 	let wasAborted = false;
+	// Carries only the usage: the query is billed whatever way it ends, so every output
+	// below (done, aborted, error) takes its counters from here.
+	const usageOutput = newAssistantOutput(model, "", "stop");
+	const withUsage = (output: AssistantMessage): AssistantMessage => ({ ...output, usage: usageOutput.usage });
 	const traceQueryId = traceId("summary");
 	const onAbort = () => {
 		wasAborted = true;
@@ -436,15 +440,20 @@ async function runIsolatedSummary(
 				for (const block of (message as any).message?.content ?? []) {
 					if (block.type === "text" && typeof block.text === "string") assistantText += block.text;
 				}
+				const usage = (message as any).message?.usage;
+				if (usage) recordUsage(usageOutput, usage, model, null);
 			} else if (message.type === "result") {
 				logServedContextWindow("compact summary", message, model);
+				// maxTurns is 1, so the result's usage is that one call's, and it is final where
+				// the assistant message's may not be. updateUsage overwrites, so no double count.
+				if (message.usage) recordUsage(usageOutput, message.usage, model, null);
 				errorText = resultErrorText(message);
 				if (!errorText && message.subtype === "success") finalText = message.result || assistantText;
 			}
 		}
 
 		if (wasAborted) {
-			const output = newAssistantOutput(model, "", "aborted", "Operation aborted");
+			const output = withUsage(newAssistantOutput(model, "", "aborted", "Operation aborted"));
 			debug("compact summary: aborted");
 			endStream(stream, { type: "error", reason: "aborted", error: output });
 			return;
@@ -454,16 +463,16 @@ async function runIsolatedSummary(
 		if (errorText || !text.trim()) {
 			const msg = errorText ?? "Claude Code summary returned empty text";
 			debug(`compact summary: error ${msg}`);
-			endStream(stream, { type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
+			endStream(stream, { type: "error", reason: "error", error: withUsage(newAssistantOutput(model, "", "error", msg)) });
 			return;
 		}
 
 		debug(`compact summary: done textLen=${text.length}`);
-		endStream(stream, { type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
+		endStream(stream, { type: "done", reason: "stop", message: withUsage(newAssistantOutput(model, text, "stop")) });
 	} catch (err) {
 		const msg = errorMessage(err);
 		debug("runIsolatedSummary threw; pushing terminal error", err);
-		endStream(stream, { type: "error", reason: "error", error: newAssistantOutput(model, "", "error", msg) });
+		endStream(stream, { type: "error", reason: "error", error: withUsage(newAssistantOutput(model, "", "error", msg)) });
 	} finally {
 		options?.signal?.removeEventListener("abort", onAbort);
 		if (sdkQuery) traceEvent("query-end", { queryId: traceQueryId, aborted: wasAborted });
