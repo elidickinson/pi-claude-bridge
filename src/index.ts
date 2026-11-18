@@ -1159,6 +1159,8 @@ function processStreamEvent(
 		} else {
 			debug("processStreamEvent: unhandled content_block_start type", event.content_block?.type);
 		}
+		const started = c.turnBlocks.at(-1);
+		if (started?.index === event.index) streamBlockApiIndex.set(started, event.index);
 		return;
 	}
 
@@ -1219,6 +1221,10 @@ function processStreamEvent(
 
 	if (event?.type === "message_stop") {
 		dropUnfinishedStreamBlocks(c, `message_stop for ${c.turnStreamMessageId}`);
+		const abandoned = (message as { abandoned_blocks?: { api_message_id?: string; from_block_index?: number } }).abandoned_blocks;
+		if (abandoned && abandoned.api_message_id === c.turnStreamMessageId && Number.isSafeInteger(abandoned.from_block_index)) {
+			dropBlocksCCAbandoned(c, abandoned.from_block_index!);
+		}
 		c.turnStreamOpen = false;
 	}
 
@@ -1260,6 +1266,33 @@ function dropUnfinishedStreamBlocks(c: QueryContext, why: string): void {
 	}
 	if (!dropped.length) return;
 	debug(`dropUnfinishedStreamBlocks: ${why}; dropped ${dropped.reverse().join(",")}`);
+	c.turnToolCallIds = c.turnBlocks.filter((b: any) => b.type === "toolCall").map((b: any) => b.id);
+	c.turnSawToolCall = c.turnBlocks.some((b: any) => b.type === "toolCall");
+}
+
+/** The API block index of each streamed block; `index` itself goes at content_block_stop. */
+const streamBlockApiIndex = new WeakMap<object, number>();
+
+/** Remove what Claude Code named abandoned when it closed a failed attempt itself
+ *  before retrying it (a dropped connection, a stream error): it sends a
+ *  content_block_stop for the open block, then a message_stop carrying
+ *  `abandoned_blocks: { api_message_id, from_block_index }` (undocumented; CC 2.1.321).
+ *  Blocks from that API index on never completed and CC records none of them, so
+ *  the closed thinking block is empty and unsigned. Left in, pi's message held a
+ *  block CC's transcript lacks, and with from_block_index 0 the attempt's id had no
+ *  CC record at all: the recording ended with a gap and the next query rebuilt the
+ *  session. Blocks before the index were completed and recorded, so they and the id
+ *  stay. */
+function dropBlocksCCAbandoned(c: QueryContext, fromBlockIndex: number): void {
+	const dropped: string[] = [];
+	for (let i = c.turnBlocks.length - 1; i >= c.turnStreamBlockStart; i--) {
+		const apiIndex = streamBlockApiIndex.get(c.turnBlocks[i]);
+		if (apiIndex === undefined || apiIndex < fromBlockIndex) continue;
+		dropped.push(`${c.turnBlocks[i].type}${c.turnBlocks[i].id ? `[${c.turnBlocks[i].id}]` : ""}`);
+		c.turnBlocks.splice(i, 1);
+	}
+	if (fromBlockIndex === 0) c.turnAssistantIds = c.turnAssistantIds.filter((id) => id !== c.turnStreamMessageId);
+	debug(`dropBlocksCCAbandoned: ${c.turnStreamMessageId} from block ${fromBlockIndex}; dropped ${dropped.reverse().join(",") || "none"}`);
 	c.turnToolCallIds = c.turnBlocks.filter((b: any) => b.type === "toolCall").map((b: any) => b.id);
 	c.turnSawToolCall = c.turnBlocks.some((b: any) => b.type === "toolCall");
 }

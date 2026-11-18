@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Fix: a retried API attempt no longer forces a prompt-cache rewrite** — when Claude Code retries a failed attempt (e.g. `Connection dropped (ECONNRESET)`), it closes the dead stream with a `message_stop` naming its `abandoned_blocks`; the bridge now drops those blocks (the empty unsigned thinking block) and, when nothing of the attempt completed, its message id, so the recording has no gap and the next query reuses the session instead of rebuilding it. Covered by `tests/unit-abandoned-attempt.mjs`.
+
 ## 0.13.0 — 2026-11-16
 
 - **Add: new system prompt handling including option to suppress Claude Code system prompt (#112, #185)** — The bridge appends pi's prompt to Claude Code's preset as pi renders it (tools, rules, docs and context files included) instead of just selected parts. Set `provider.systemPromptPreset: false` to send pi's prompt alone, without Claude Code's preset. These changes simplify the code and remove a whole category of bugs: #71, #72, #153, #158, #178, #247, #249. Thanks @iamhucong and @jmtoepperwien. 
