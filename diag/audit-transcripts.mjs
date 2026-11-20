@@ -142,7 +142,9 @@ function scanFile(file) {
 				pending.set(b.id, { line: m.line, name: b.name });
 				// The provider path runs with `tools: []`, so every tool Claude can
 				// legitimately call is one we serve over MCP. A bare builtin or a
-				// pascalCased pi name means the write path mangled it.
+				// pascalCased pi name means the write path mangled it. Exception: an
+				// AskClaude session left behind by a crash legitimately holds
+				// Read/Write/Edit/Bash/Grep, since CC runs its own tools there.
 				if (m.synthetic && !String(b.name).startsWith("mcp__")) {
 					add("bridge-written tool_use with a non-MCP name", m.line, String(b.name));
 				}

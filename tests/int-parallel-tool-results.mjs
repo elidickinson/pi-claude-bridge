@@ -23,7 +23,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { convertPiMessages } from "../src/convert.js";
 
 const CWD = process.cwd();
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 const TOKENS = ["ZEPHYR", "QUARTZ", "MARLIN"];
 
 /** Pi-shaped history: one assistant turn calling read three times, one pi

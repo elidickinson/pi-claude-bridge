@@ -1,6 +1,7 @@
 /**
  * Claude sometimes calls a Claude Code builtin by its bare name (`bash`, `Bash`,
- * `Edit`) instead of the `mcp__custom-tools__*` name we serve. The provider runs
+ * `Edit`) or a served name in the wrong case (`mcp__custom-tools__Bash`) instead
+ * of the exact `mcp__custom-tools__*` name we serve. The provider runs
  * CC with `tools: []`, so CC rejects those itself ("No such tool available") and
  * retries in the same query with a *fresh* tool_use id — it never dispatches the
  * bogus call to our MCP server.
@@ -49,13 +50,14 @@ describe("tool_use for a tool we do not serve", () => {
 		const c = makeCtx();
 		await consume(c, [
 			...toolUseTurn("bash", "toolu_phantom"),
+			...toolUseTurn("mcp__custom-tools__Bash", "toolu_wrong_case"),
 			...toolUseTurn("mcp__custom-tools__bash", "toolu_retry"),
 		]);
 
 		const toolCalls = c.turnOutput.content.filter((b) => b.type === "toolCall");
 		assert.deepStrictEqual(toolCalls.map((b) => [b.name, b.id]), [["bash", "toolu_retry"]]);
 		assert.deepStrictEqual(c.turnToolCallIds, ["toolu_retry"]);
-		assert.deepStrictEqual(toolCalls[0].arguments, { command: "ls", timeout: 120 });
+		assert.deepStrictEqual(toolCalls[0].arguments, { command: "ls" });
 	});
 
 	it("does not end the pi stream, so the turn continues into the retry", async () => {
