@@ -5,7 +5,7 @@
 
 import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { getProjectDir } from "cc-session-io";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
@@ -13,7 +13,7 @@ const TEST_TIMEOUT = 40_000;
 
 const harness = createRpcHarness({
 	name: "tool-message",
-	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-4-5"],
+	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-5-5"],
 	defaultTimeout: TEST_TIMEOUT,
 });
 
@@ -25,16 +25,19 @@ describe("tool-message integration", () => {
 	const logMark = () => statSync(DEBUG_LOG).size;
 	const logSince = (mark) => readFileSync(DEBUG_LOG, "utf8").slice(mark);
 
-	/** Session id of the last query in a slice of the debug log. Logged
-	 *  abbreviated, which is enough to pick the file out of the project dir. */
+	/** Transcript of the last query in a slice of the debug log: the target
+	 *  session of the last sync decision, which must also be the session of the
+	 *  last query that ran to completion (logged abbreviated). */
 	function sessionIdFrom(log) {
-		const ids = [...log.matchAll(/query done, session=([0-9a-f]+)/g)].map((m) => m[1]);
-		assert.ok(ids.length > 0, "no session id in debug log — the query never completed");
-		const prefix = ids[ids.length - 1];
-		const dir = getProjectDir(harness.DIR);
-		const file = readdirSync(dir).find((f) => f.startsWith(prefix) && f.endsWith(".jsonl"));
-		assert.ok(file, `no session file for ${prefix} in ${dir}`);
-		return `${dir}/${file}`;
+		const targets = [...log.matchAll(/syncResult: path=[a-z-]+ sessionId=([0-9a-f-]+)/g)].map((m) => m[1]);
+		const completed = [...log.matchAll(/for-await loop exited, wasAborted=false, capturedSessionId=([0-9a-f]+)/g)].map((m) => m[1]);
+		assert.ok(targets.length > 0, "no syncResult in debug log — the query never reached the provider");
+		assert.ok(completed.length > 0, "no completed query in debug log — the query never completed");
+		const id = targets.at(-1);
+		assert.ok(id.startsWith(completed.at(-1)), `last completed query ${completed.at(-1)} is not the last synced session ${id}`);
+		const file = `${getProjectDir(harness.DIR)}/${id}.jsonl`;
+		assert.ok(existsSync(file), `no session file ${file}`);
+		return file;
 	}
 
 	/** CC's session transcript as parsed JSONL records, in write order. */
@@ -157,12 +160,13 @@ describe("tool-message integration", () => {
 		);
 		await send({
 			type: "prompt",
-			message: "After you finish, also say the exact word 'PINEAPPLE' on its own line.",
+			message: "After you finish, add a last line giving how many sentences you wrote, as 'Total: N'.",
 			streamingBehavior: "steer",
 		});
 		await waitForEvent("agent_end");
 		const text = collector.stop();
-		assert.match(text.toLowerCase(), /pineapple/);
+		// On-topic steers: the model refuses code-word ones as prompt injection.
+		assert.match(text, /total:\s*\d+/i);
 	});
 
 	it("steer during tool execution is visible to assistant", { timeout: 20_000 }, async () => {
@@ -210,9 +214,11 @@ describe("tool-message integration", () => {
 		// prompt with no attachment at all.
 		const mark = logMark();
 		const steerText = "STOP. Do not call SlowTool again. Reply with only the word BANANA.";
+		// Few enough calls to fit the timeout when the model ignores the steer,
+		// as Haiku 5.5 does (see the note at the end).
 		await send({
 			type: "prompt",
-			message: "Call SlowTool with seconds=1 exactly 12 times, strictly one at a time — wait for each result before starting the next. Do not call it twice in the same message.",
+			message: "Call SlowTool with seconds=1 exactly 4 times, strictly one at a time — wait for each result before starting the next. Do not call it twice in the same message.",
 		});
 		await waitForEvent("tool_execution_start");
 		await send({ type: "prompt", message: steerText, streamingBehavior: "steer" });
@@ -266,14 +272,14 @@ describe("tool-message integration", () => {
 		);
 		await send({
 			type: "prompt",
-			message: "After you finish, also say the exact word 'KIWI' on its own line.",
+			message: "After you finish, add a one-sentence summary that starts with 'In short,'.",
 			streamingBehavior: "steer",
 		});
 		await waitForEvent("agent_end");
 		const text = collector.stop();
 		const log = logSince(mark);
 
-		assert.match(text.toLowerCase(), /kiwi/);
+		assert.match(text, /in short,/i);
 		assert.doesNotMatch(log, /steer written to CC stdin/, "text-only steer was pushed into the active query's input stream");
 		assert.doesNotMatch(log, /steer push rejected/, "text-only steer reached the push path at all");
 	});

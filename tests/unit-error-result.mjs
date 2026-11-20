@@ -7,11 +7,13 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import { QueryContext } from "../src/query-state.js";
 
 const { __test } = await import("../src/index.js");
 
 const fakeModel = { api: "anthropic-messages", provider: "anthropic", id: "test-model" };
+const toolMap = new Map([["mcp__custom-tools__bash", "bash"]]);
 
 function fakeStream() {
 	const events = [];
@@ -27,7 +29,7 @@ function makeCtx() {
 
 async function consume(c, messages) {
 	async function* gen() { for (const m of messages) yield m; }
-	await __test.consumeQuery(gen(), new Map(), fakeModel, () => false, c);
+	await __test.consumeQuery(gen(), toolMap, fakeModel, () => false, c);
 }
 
 const errorResult = {
@@ -63,7 +65,7 @@ describe("resultErrorText", () => {
 // pi carries a failure only as errorMessage text, so every consumer that reacts to a rate
 // limit pattern-matches it. These mirror pi-subagents' gate (model-fallback.ts): one pattern
 // from its retryable list, and the tool-failure shape it refuses to retry.
-const RETRYABLE = /rate\s*limit/i;
+const RATE_LIMIT = /rate\s*limit/i;
 const TOOL_FAILURE_PREFIX = /^[\w.:@/-]+ failed (?:(?:\(exit \d+\):)|(?:with exit code \d+))(?:\s|$)/i;
 
 describe("a rate-limited failure", () => {
@@ -82,7 +84,8 @@ describe("a rate-limited failure", () => {
 		const c = makeCtx();
 		await consume(c, [rejection, limitResult]);
 
-		assert.match(c.turnOutput.errorMessage, RETRYABLE);
+		assert.match(c.turnOutput.errorMessage, RATE_LIMIT);
+		assert.equal(isRetryableAssistantError(c.turnOutput), false, "a rejected window is not retried as transient");
 		assert.doesNotMatch(c.turnOutput.errorMessage, TOOL_FAILURE_PREFIX);
 		assert.ok(c.turnOutput.errorMessage.includes(limitResult.result), "keeps Claude Code's own wording");
 		assert.ok(c.turnOutput.errorMessage.includes("five_hour"));
@@ -90,15 +93,28 @@ describe("a rate-limited failure", () => {
 
 	it("labels only the failure it caused, not a later one", async () => {
 		const c = makeCtx();
-		await consume(c, [rejection, limitResult, errorResult]);
+		await consume(c, [rejection, limitResult]);
+		// The failure ends that query; the context's next query fails on its own.
+		c.resetTurnState(fakeModel);
+		await consume(c, [errorResult]);
 
 		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
 	});
+});
 
-	it("leaves an unrelated failure alone", async () => {
+// Recorded 2026-11-10 (diag/EXTRA-USAGE-400.md): Extra Usage off, pi 1.4.0's prompt
+// appended, plan at 16%. No rate_limit_event precedes it.
+describe("an extra-usage refusal with no plan window rejected", () => {
+	it("says the system prompt may have been read as a third-party app", async () => {
+		const refusal = {
+			type: "result", subtype: "success", is_error: true, api_error_status: 400,
+			result: "API Error: 400 You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+		};
 		const c = makeCtx();
-		await consume(c, [errorResult]);
-		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
+		await consume(c, [refusal]);
+
+		assert.ok(c.turnOutput.errorMessage.startsWith(refusal.result), "keeps Claude Code's own wording first");
+		assert.match(c.turnOutput.errorMessage, /third-party app/);
 	});
 });
 
@@ -111,22 +127,63 @@ describe("error results", () => {
 		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
 
 		const stream = c.currentPiStream;
-		__test.finalizeCurrentStream(c, c.turnOutput.stopReason);
+		__test.finalizeCurrentStream(c);
 		const terminal = stream.events.at(-2);
 		assert.strictEqual(terminal.type, "error");
 		assert.strictEqual(terminal.reason, "error");
 		assert.strictEqual(terminal.error.errorMessage, errorResult.result);
 	});
 
-	it("does not re-emit text the synthetic assistant message already delivered", async () => {
+	// A consumer that fails over only before output commits, such as
+	// pi-model-fallback-alias, cannot reach the next provider if Claude Code's own
+	// failure report counts as output. Such a consumer commits on anything that is
+	// not a start or thinking event, so only that prefix may precede the terminal
+	// error.
+	it("keeps a synthetic report off the stream, so failover is still possible", async () => {
 		const c = makeCtx();
 		await consume(c, [
 			{ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: errorResult.result }] } },
 			errorResult,
 		]);
 
-		const texts = c.turnOutput.content.filter((b) => b.type === "text");
-		assert.deepStrictEqual(texts.map((b) => b.text), [errorResult.result]);
+		const stream = c.currentPiStream;
+		__test.finalizeCurrentStream(c);
+
+		const beforeTerminal = stream.events.slice(0, -2);
+		assert.ok(
+			beforeTerminal.every((e) => e.type === "start" || e.type.startsWith("thinking_")),
+			`synthetic report must not commit output, got: ${stream.events.map((e) => e.type).join(",")}`,
+		);
+		assert.strictEqual(stream.events.at(-2).type, "error");
+		assert.strictEqual(stream.events.at(-2).error.errorMessage, errorResult.result);
+		// The wording still reaches pi's transcript as the failed turn's content, once.
+		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: errorResult.result }]);
+	});
+
+	// A stalled stream whose non-streaming retry also fails: the synthetic failure
+	// report arrives while the dead stream's partial blocks (unsigned thinking, a tool
+	// call CC will never dispatch) are still open. The report must drop them the same
+	// way the fallback path does — convertPiMessages would otherwise replay the
+	// abandoned tool call as one awaiting a result.
+	it("synthetic report after a stalled stream drops the abandoned partial blocks", async () => {
+		const c = makeCtx();
+		// A stream that reached a thinking block and the start of a tool call, then stalled.
+		const stalledStream = (id) => [
+			{ type: "stream_event", event: { type: "message_start", message: { id } } },
+			{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } },
+			{ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me look" } } },
+			{ type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", name: "mcp__custom-tools__bash", id: "toolu_dead", input: {} } } },
+			{ type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"comm" } } },
+		];
+		await consume(c, [
+			...stalledStream("msg_stalled"),
+			{ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: errorResult.result }] } },
+			errorResult,
+		]);
+
+		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: errorResult.result }]);
+		assert.strictEqual(c.turnSawToolCall, false);
+		assert.strictEqual(c.turnStreamOpen, false);
 	});
 
 	it("still streams and finalizes a successful result normally", async () => {
@@ -138,22 +195,26 @@ describe("error results", () => {
 		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: "done" }]);
 
 		const stream = c.currentPiStream;
-		__test.finalizeCurrentStream(c, c.turnOutput.stopReason);
+		__test.finalizeCurrentStream(c);
 		assert.strictEqual(stream.events.at(-2).type, "done");
 	});
 
-	// A turn that ended on a tool call has already closed its pi stream, and the
-	// guard that suppresses content events for a closed stream used to swallow the
-	// result message with it — so a 429 mid-tool set no stopReason, no
-	// errorMessage, and logged nothing at all.
-	it("records a failure that arrives after the turn ended on a tool call", async () => {
+	// A turn that ended on a tool call has already closed its pi stream, and its
+	// turnOutput is the message pi recorded (issue #181). A failure arriving then
+	// still closes stdin and consumes the rate-limit rejection, but leaves that
+	// message alone.
+	it("leaves a turn that ended on a tool call unchanged", async () => {
 		const c = makeCtx();
 		c.currentPiStream = null; // what the tool boundary leaves behind
+		let stdinEnded = false;
+		c.promptStream = { end: () => { stdinEnded = true; } };
+		const finalized = structuredClone(c.turnOutput);
 
-		await consume(c, [errorResult]);
+		await consume(c, [{ type: "rate_limit_event", rate_limit_info: { status: "rejected" } }, errorResult]);
 
-		assert.strictEqual(c.turnOutput.stopReason, "error");
-		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
+		assert.deepStrictEqual(c.turnOutput, finalized);
+		assert.ok(stdinEnded);
+		assert.strictEqual(c.rateLimitRejection, null);
 	});
 
 	it("reports the dedicated error subtypes", async () => {

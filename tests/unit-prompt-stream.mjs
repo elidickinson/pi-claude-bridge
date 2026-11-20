@@ -95,20 +95,10 @@ describe("makePromptStream", () => {
 		void pumping;
 	});
 
-	it("settles the ack when the consumer abandons the stream", async () => {
+	it("settles the parked ack and rejects later pushes when the consumer abandons the stream", async () => {
 		const ps = makePromptStream();
 		// `break` in the pump calls gen.return(), which must run the generator's
 		// finally and settle the parked ack.
-		const pumping = (async () => {
-			for await (const _msg of ps.stream) break;
-		})();
-
-		await assert.rejects(ps.push(userMessage([{ type: "text", text: "abandoned" }])), /closed/);
-		await pumping;
-	});
-
-	it("rejects a push made after the consumer abandoned the stream", async () => {
-		const ps = makePromptStream();
 		const pumping = (async () => {
 			for await (const _msg of ps.stream) break;
 		})();

@@ -2,9 +2,73 @@
 
 ## UNRELEASED
 
+- **Add: `provider.reportApiCost`** — Opt in to showing what the same tokens would cost at pi-ai’s Anthropic API list prices. The option does not change billing. By default, and for models without catalog prices, pi reports $0.
+
+## 0.13.0 — 2026-11-16
+
+- **Add: new system prompt handling including option to suppress Claude Code system prompt (#112, #185)** — The bridge appends pi's prompt to Claude Code's preset as pi renders it (tools, rules, docs and context files included) instead of just selected parts. Set `provider.systemPromptPreset: false` to send pi's prompt alone, without Claude Code's preset. These changes simplify the code and remove a whole category of bugs: #71, #72, #153, #158, #178, #247, #249. Thanks @iamhucong and @jmtoepperwien. 
+- **Fix: tool calls rejected by Claude Code no longer hang the turn (#218)** — We now fail the turn if a tool call is rejected (e.g. because Claude Code permission hook blocked). Running tools are not canceled or undone. Unknown and wrong-case tool names are intentionally ignored so CC can retry itself. If CC sends invalid arguments it can now require a new user prompt to continue. Thanks @sonSunnoi.
+- **Add: Claude Mythos 5.2 and 5.1 with 1M context (#259)** — pi-ai doesn't list these access-gated models, so the bridge now adds them, cloned from the Fable releases they shipped beside. Measured at 1M on Max. Listed last in `/model`; requests fail on accounts without Mythos access. Thanks @borski.
+
+## 0.12.0 — 2026-11-10
+
+- **Add: Claude Fable 5.2 with 1M context** — Agent SDK bumped to 0.3.321 (Claude Code 2.1.321), which knows Fable 5.2; AskClaude's too.
+- **Bump: require pi ≥1.5.1** — Also for AskClaude.
+- **Remove: the system prompt guard** — pi 1.5's prompt no longer trips Anthropic's third-party billing check.
+- **Add: warn when an extension's per-request message keeps rewriting the prompt cache (#246)** — A message added to every request but never saved (for example from a `context` hook, as pi-todo-rail does) makes each request rewrite the whole cache; the bridge now says so once, quoting the message.
+- **Add: warn when Extra Usage is billed with plan limits left** — Claude Code's `overageInUse` without a reached plan limit, or an "out of extra usage" error with none, now points at the system prompt.
+
+## 0.11.0 — 2026-11-06
+
+- **Breaking: AskClaude moved to its own package** — Run `pi install npm:pi-claude-bridge-askclaude` if you want to keep using the AskClaude tool.
+- **Refactor: code simplification and removal of dead/duplicated code** — No change in behavior intended. Tool results are no longer serialized for the debug log when debug is off, and the package no longer depends on `pi-tui`, `typebox` or `change-case`.
+- **Fix: a Claude Code output style no longer reaches bridge turns (#220)** — The provider runs Claude Code with its default output style, so a custom `outputStyle` in `~/.claude/settings.json` no longer competes with pi's system prompt.
+- **Fix: a tool that failed with no output no longer breaks the session (#227)** — A rebuilt session sent the empty error result as-is, which the API rejects on every later turn. Empty results now get the same placeholder text Claude Code uses live. This also applies when AskClaude sends pi's conversation to Claude Code. Thanks @ShyftXero.
+- **Fix: JSON-encoded tool arguments no longer rebuild the session every prompt (#242)** — pi now gets the arguments as Claude Code converted them. Thanks @alppp.
+- **Fix: `--thinking off` turns thinking off (#152, #209)** — On models that allow it; Claude Code keeps it on for Haiku 5.5. Thanks @pcbeingused333.
+- **Fix: Claude Code env vars to prevent useless reminders and truncate tool descriptions** — Opt out of CC adding "The user hasn't heard from you" reminders. Increase tool description limit from 4k chars to 16k chars.
+- **Remove: startup notice about `provider.plan`** — Current models get 1M context on every plan; `plan` only matters for Opus 4.6.
+- **Tests: remove redundant tests** — Drop integration and unit tests that repeated other tests or covered cc-session-io rather than the bridge.
+
+## 0.10.0 — 2026-11-04
+
+- **Breaking: Claude settings files in the repo and project-level `provider` config are ignored (#198)** — Claude Code's project and local settings (`.claude/settings.json`, `.claude/settings.local.json`) are no longer loaded, so a repo's hooks, `apiKeyHelper` and `env` don't run; `~/.claude/settings.json` still applies. A project `.pi/claude-bridge.json` can no longer set `provider` options, which include the Claude Code executable path; set them at user-level in `~/.pi/agent/claude-bridge.json`. Thanks @superninjv.
+- **Fix: session sync keeps Claude Code history that still matches pi's (#222)** — The bridge now compares message content instead of counting messages, so it catches edits and keeps everything up to the first difference. Rewinds, edits, interruptions and restarts fork or trim the Claude Code session instead of rebuilding it, preserving prompt cache and thinking. History edits made while a query waits on a tool are caught before the result is delivered. Fixes #30, #42, #62, #86, #103, #165, #182, #202, #243; helps #55, #77, #114, #207. Builds on PR #136; thanks @sonSunnoi and @rochecompaan.
+- **Fix: changed instructions reach Claude Code mid-session** — Edited AGENTS.md/CLAUDE.md, skills or extension prompt sections now take effect on the next turn (for example after `/reload`) instead of waiting for a new session. That turn costs one cache miss.
+- **Fix: rewritten history sends tool output as Claude Code first sent it (#207)** — After an edit, output Claude Code had saved to a file is sent as its short notice again instead of in full, and images keep their source line. Requires cc-session-io `^0.4.1`.
+- **Fix: `/fork` and clone keep the prompt cache and earlier thinking** — they now continue from the parent's Claude Code session instead of re-sending the whole conversation.
+- **Fix: the query left after a `terminate: true` tool (#210, #200, issue #199)** — `pi -p` now exits instead of being kept alive by it, and aborting the next run works. Thanks @maxboettinger, @orshih6 and @cootue.
+- **Fix: a tool result could reach another pi session's query (#111)** — when two sessions in one process share history (a worker seeded from its host, a fork), one session's turn could be delivered into the other's waiting Claude Code query and answered from that conversation. Results now go only to their own session's query. Thanks @iamhucong and @Adeptask.
+- **Fix: say when requests are billed to Extra Usage (#201, #213)** — The rate limit warning now says when Extra Usage is serving requests past the plan limit. The README install steps now cover logging in to Claude Code and picking `claude-bridge` models instead of pi's built-in `anthropic` ones.
+- **Add: pi's provider `env` reaches Claude Code** — A `claude-bridge` credential's `env` in `auth.json`, or a caller's per-request `env`, now applies to Claude Code's environment, so a proxy or gateway can apply to bridge requests only; an empty value unsets a variable, e.g. to keep an exported `ANTHROPIC_BASE_URL` (#107) away from Claude Code. See README "Claude Code's environment".
+- **Fix: no stray "Continue from where you left off." prompt when a session resumes at a tool result (#145)** — after a tool that ends the run (`terminate: true`) or a history edit, Claude Code could insert that user message ahead of pi's prompt. Thanks @Karrq.
+- **Fix: queued steering keeps MCP input open through later turns (#172)** — Keep Claude Code's input open until each steer is replayed into a turn, then close after that turn completes. An error result still ends the query, so a steer Claude Code had queued can no longer run on and replace the failure. Thanks @Maverobot.
+- **Fix: an abort or error could change a finished tool-call turn (issue #181)** — after a turn ended on a tool call, pi's copy of that message was changed to aborted/error, which could later orphan its tool result on Codex. Thanks @good-nightmoon.
+- **Fix: environment leaks to and from Claude Code (#198)** — The non-essential-traffic flag is set only for Claude Code, not on pi's own process, so commands pi runs no longer inherit it. When pi is started from inside a Claude Code session, that session's markers (entrypoint, session id, env file, IDE port) no longer reach the bridge's Claude Code. Thanks @superninjv.
+- **Fix: bash default timeout broke the prompt cache on rebuild (#203)** — The 120s default now applies when the command runs instead of being saved in pi's history, so rebuilt sessions match Claude Code's. A `background: true` call does not receive the default. Thanks @cad0p, @superninjv and @vindavs.
+- **Bump: Claude Agent SDK 0.3.308 (Claude Code 2.1.308)** — Claude Code's new per-request log in session files is turned off; it made them about a third larger.
+- **Debug: opt-in cache trace** — `CLAUDE_BRIDGE_TRACE_DIR` logs session decisions to help diagnose prompt-cache loss. See `diag/CACHE.md`.
+
+## 0.9.3 — 2026-10-13
+
+- **Remove: compaction and branch-summary takeovers (#189)** — pi runs them natively; the bridge routes summary calls to its isolated path. Other compaction extensions should now work. Resolves #115. Thanks @sonSunnoi.
+- **Deprecate: AskClaude tool** — Show a one-time notice on first use; remove the startup reminder to opt in.
+- **Fix: Haiku 5.5 registered at 1M (#190)** — Thanks @Blue-B.
+- **Fix: hang when a stream is cut right after a tool call starts (#146)** — Tool calls now dispatch only once their block closes, so pi no longer gets a `{}`-argument call Claude Code has dropped. Thanks @andreypopp.
+- **Fix: tool result after a restart resumes the turn (#174)** — a result with no parked query ends the turn only when pi delivers it on an aborted request; otherwise (restart, crash, stall, retry) it resumes the Claude Code session. Thanks @jcwasher.
+- **Fix: Claude Code runs in the pi session's cwd (#175)** — hosts serving many sessions from one process (pi-web) spawned it in the host process cwd, so it loaded that directory's AGENTS.md and mirrored the session under the wrong project. Thanks @SoulKyu.
+- **Add: report plan usage through pi's `after_provider_response` (#171)** — Claude Code's usage updates arrive as `anthropic-ratelimit-unified-*` headers, so extensions that read usage from the built-in `anthropic` provider work with the bridge too. Thanks @fj.
+- **Fix: one-off calls honor the caller's reasoning level (#184)** — compaction summaries, `/bug-report` summaries and extension one-shots that pass `reasoning` now send it to Claude Code as `effort` instead of using its default. Thanks @roberthmms.
+- **Fix: exhausted subscription windows go straight to fallback (#183)** — the error now leads with "Claude quota exceeded", which pi does not retry, and still says "rate limit" for fallback chains. Thanks @good-nightmoon.
+- **Fix: tools with a top-level `anyOf`/`oneOf`/`allOf` schema (#180, issue #179)** — Claude Code dropped them, so a call could run twice or hang the turn. The bridge now flattens the schema the way CC's own normalizer does. Thanks @MataM15.
+
+## 0.9.2 — 2026-10-07
+
+- **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
-- **Add: `provider.reportApiCost` prices usage at API list prices** — every model registers with zero cost, since a subscription is not billed per token, so pi's cost displays (`/session`, footer themes) always read $0. With the option set, models keep pi-ai's catalog prices and the per-message `usage.cost` the bridge already computes reflects what the same tokens would cost on the API. Off by default. Covered by `tests/unit-models.mjs`.
+- **Bump: Agent SDK `^0.3.293`** — bundles Claude Code 2.1.293, includes Haiku 5.5.
+- **Tests: fix test isolation by lazy loading log path (#164)** — log-paths resolves debug/diag paths per call instead of at import time. Fixes issues with config tests overwriting real user settings in some situations.
 
 ## 0.9.1 — 2026-09-30
 

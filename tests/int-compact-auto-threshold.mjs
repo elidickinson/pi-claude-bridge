@@ -1,23 +1,22 @@
 #!/usr/bin/env node
-// Regression: real auto-threshold compaction exercises the bridge takeover.
+// Regression: real auto-threshold compaction exercises native Pi summarization through the bridge.
 //
 // Unlike the manual /compact tests, this goes through pi's pre-prompt
 // AgentSession._checkCompaction() path and observes threshold compaction events.
-// keepRecentTokens=50 intentionally forces the split-turn dual-summary path that
-// used to hang through streamClaudeAgentSdk.
+// keepRecentTokens=50 forces separate history and turn-prefix summary calls.
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
 const COMPACT_TIMEOUT = 120_000;
 const TEST_TIMEOUT = 240_000;
 
 const testAgentDir = mkdtempSync(join(tmpdir(), "compact-auto-agent-"));
 writeFileSync(join(testAgentDir, "settings.json"), JSON.stringify({
-	compaction: { enabled: false, reserveTokens: 198000, keepRecentTokens: 50 },
+	compaction: { enabled: false, reserveTokens: 998000, keepRecentTokens: 50 },
 }));
 
 const harness = createRpcHarness({
@@ -131,11 +130,8 @@ try {
 	assert(thresholdEnds.length === 1, `second threshold compaction_end fired (${thresholdEnds.length} total)`);
 
 	const debugLog = readFileSync(DEBUG_LOG, "utf8");
-	assert(/session_before_compact: takeover/.test(debugLog), "debug log missing compact takeover marker");
-	assert(
-		/session_before_compact: takeover complete summaryLen=/.test(debugLog),
-		"debug log missing compact takeover completion marker",
-	);
+	assert(!/session_before_compact: takeover/.test(debugLog), "bridge must not take over compaction");
+	assert(/provider: one-off summarizer call \(cacheRetention none\) routed to isolated summary/.test(debugLog), "native compaction must route via the provider marker");
 	const compactSpawns = [...debugLog.matchAll(/compact summary: spawn/g)].length;
 	assert(compactSpawns >= 2, `expected at least 2 isolated compact summary spawns, got ${compactSpawns}`);
 	assert(!/currentPiStream overwritten/.test(debugLog), "debug log reported currentPiStream overwrite");

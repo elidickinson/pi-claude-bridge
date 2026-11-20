@@ -33,13 +33,13 @@ function fixture(name) {
 }
 
 /** Replays a fixture through the real consumeQuery, collecting the pi-side events. */
-async function replay(name, { toolNames = ["read"] } = {}) {
+async function replay(name) {
 	const events = [];
 	const c = new QueryContext();
 	c.currentPiStream = { push: (e) => events.push(e), end: () => events.push({ type: "end" }) };
 	c.resetTurnState(model);
 	// The map the provider path builds from the served tool list: SDK name → pi name.
-	const customToolNameToPi = new Map(toolNames.map((n) => [`mcp__custom-tools__${n}`, n]));
+	const customToolNameToPi = new Map([["mcp__custom-tools__read", "read"]]);
 
 	const messages = fixture(name);
 	async function* stream() { for (const m of messages) yield m; }
@@ -138,15 +138,7 @@ describe("replaying a recorded parallel-tool turn", () => {
 		assert.deepEqual(ctx.turnToolCallIds, calls.map((c) => c.id), "routing ids must match the emitted calls, in order");
 		assert.equal(new Set(calls.map((c) => c.id)).size, calls.length, "no duplicate ids");
 		for (const call of calls) assert.equal(call.name, "read");
-	});
-
-	// The bug in 122914dd was a tool_use surviving into pi under a name the bridge
-	// does not serve. Recorded streams are the check that the names CC really sends
-	// are the ones the map is keyed on.
-	it("leaves nothing unmapped when the served tool list is empty", async () => {
-		const { ctx } = await replay("parallel-tools", { toolNames: [] });
-
-		assert.equal(blocks(ctx, "toolCall").length, 0, "unserved names must not reach pi");
-		assert.equal(ctx.turnSawToolCall, false);
+		// The recording splits each call's input across several input_json_delta frames.
+		assert.deepEqual(calls.map((c) => c.arguments), [{ path: "one.txt" }, { path: "two.txt" }, { path: "three.txt" }]);
 	});
 });

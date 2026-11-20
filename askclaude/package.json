@@ -1,0 +1,44 @@
+{
+  "name": "pi-claude-bridge-askclaude",
+  "version": "0.1.2",
+  "private": false,
+  "description": "Pi extension that adds an AskClaude tool: delegate questions or tasks to Claude Code (via Agent SDK) from any provider.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "claude-code",
+    "claude-agent-sdk"
+  ],
+  "author": "Eli Dickinson",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elidickinson/pi-claude-bridge.git",
+    "directory": "askclaude"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.321",
+    "cc-session-io": "^0.4.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=1.5.1",
+    "@earendil-works/pi-coding-agent": ">=1.5.1",
+    "@earendil-works/pi-tui": ">=1.5.1",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

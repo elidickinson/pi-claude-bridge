@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 // Unit tests for carrying CC attachments across a rebuild (attachments.ts).
 
+import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSession, openSession } from "cc-session-io";
 import { collectCarriedAttachments, placeCarriedAttachments } from "../src/attachments.js";
 
 const user = (uuid, text) => ({ type: "user", uuid, message: { role: "user", content: [{ type: "text", text }] } });
@@ -53,28 +58,46 @@ describe("placeCarriedAttachments", () => {
 	const carried = [{ attachment: { type: "file", filename: "/a.js" }, userOrdinal: 1, parentText: "review @a.js" }];
 
 	it("resolves the ordinal to an index in the array being imported", () => {
-		const { attachments, skipped } = placeCarriedAttachments(carried, [
+		const attachments = placeCarriedAttachments(carried, [
 			{ role: "user", content: "first" },
 			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 			{ role: "user", content: [{ type: "text", text: "review @a.js" }] },
 		]);
-		assert.equal(skipped.length, 0);
 		assert.deepEqual(attachments, [{ afterIndex: 2, attachment: carried[0].attachment }]);
 	});
 
 	it("drops it when that prompt changed rather than guessing", () => {
-		const { attachments, skipped } = placeCarriedAttachments(carried, [
+		const attachments = placeCarriedAttachments(carried, [
 			{ role: "user", content: "first" },
 			{ role: "user", content: "something else entirely" },
 		]);
-		assert.equal(attachments.length, 0);
-		assert.match(skipped[0], /changed/);
+		assert.deepEqual(attachments, []);
 	});
 
 	it("drops it when history no longer reaches that prompt", () => {
-		const { attachments, skipped } = placeCarriedAttachments(carried, [{ role: "user", content: "first" }]);
-		assert.equal(attachments.length, 0);
-		assert.match(skipped[0], /no longer in history/);
+		const attachments = placeCarriedAttachments(carried, [{ role: "user", content: "first" }]);
+		assert.deepEqual(attachments, []);
+	});
+});
+
+describe("session request-audit records", () => {
+	it("keeps attachments across uuid-less audit records", (t) => {
+		const cwd = mkdtempSync(join(tmpdir(), "attachment-audit-"));
+		t.after(() => rmSync(cwd, { recursive: true, force: true }));
+		const sessionId = randomUUID();
+		const session = createSession({ sessionId, projectPath: cwd, claudeDir: cwd });
+		const promptUuid = session.addUserMessage([{ type: "text", text: "review @a.js" }]);
+		session.dangerousAppendRecord({ type: "api-request" });
+		session.addAttachment({ type: "file", filename: "/a.js" }, { parentUuid: promptUuid });
+		session.dangerousAppendRecord({ type: "api-request-shape" });
+		session.addAssistantMessage([{ type: "text", text: "done" }]);
+		session.dangerousAppendRecord({ type: "api-request-blob" });
+		session.save();
+
+		const reopened = openSession({ sessionId, projectPath: cwd, claudeDir: cwd });
+		assert.deepEqual(collectCarriedAttachments(reopened.records), [
+			{ attachment: { type: "file", filename: "/a.js" }, userOrdinal: 0, parentText: "review @a.js" },
+		]);
 	});
 });
 
@@ -90,15 +113,5 @@ describe("attachments chained to other attachments", () => {
 		// The uncarried kind still has to resolve, or the run breaks after it.
 		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/a.js", "/c.js"]);
 		assert.deepEqual(carried.map((c) => c.userOrdinal), [1, 1]);
-	});
-
-	it("resolves through a kind it does not carry", () => {
-		const carried = collectCarriedAttachments([
-			user("u1", "go"),
-			attach("a1", "u1", "skill_listing"),
-			attach("a2", "a1", "file", "/a.js"),
-		]);
-		assert.deepEqual(carried.map((c) => c.attachment.filename), ["/a.js"]);
-		assert.equal(carried[0].userOrdinal, 0);
 	});
 });

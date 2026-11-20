@@ -16,8 +16,8 @@
  * the same reason AGENTS.md distrusts claude-code-rip.
  *
  * If this fails: a pi upgrade added or moved a streamFn consumer. Work out
- * whether it can reach a bridge model, and either handle it (the way
- * `session_before_compact` and `session_before_tree` are taken over) or add it
+ * whether it can reach a bridge model, and either route it through the isolated
+ * summary path using cacheRetention:"none" or add it
  * below with a note on why it is harmless.
  */
 
@@ -37,11 +37,11 @@ const PI_DIST = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding
  *  branch-summarization miss, and a filename-only inventory would wave it through.
  *  A changed count is not automatically a bug; it means read the diff and re-decide. */
 const HANDLED = {
-	"agent-session.js": { mentions: 2, why: "hand-offs: branch summary into generateBranchSummary, /bug into generateBugReportSummary — both via agent.streamFunction" },
-	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize" },
-	"bug-report.js": { mentions: 1, why: "/bug summarization via completeSummarization (cacheRetention: none) — routed to the isolated path from streamClaudeAgentSdk (no takeover hook, unlike compaction)" },
-	"compaction/compaction.js": { mentions: 13, why: "taken over via session_before_compact -> isolatedStreamFn" },
-	"compaction/branch-summarization.js": { mentions: 2, why: "taken over via session_before_tree -> isolatedStreamFn" },
+	"agent-session.js": { mentions: 5, why: "hand-offs: branch summary into generateBranchSummary, /bug into generateBugReportSummary — both via agent.streamFunction; the other 3 are markRuntimeStreamFunction, an auth bookkeeping WeakMap that sends nothing" },
+	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize; its streamFn starts the cache warmer, which never replays a bridge request because bridge models carry no promptCache (unit-models.mjs)" },
+	"bug-report.js": { mentions: 1, why: "/bug summarization via completeSummarization (cacheRetention: none) — routed to the isolated path from streamClaudeAgentSdk (like compaction and branch summaries)" },
+	"compaction/compaction.js": { mentions: 13, why: "native completeSummarization -> provider cacheRetention:none -> isolatedStreamFn" },
+	"compaction/branch-summarization.js": { mentions: 2, why: "native completeSummarization -> provider cacheRetention:none -> isolatedStreamFn" },
 };
 
 const mentionsOf = (text) => (text.match(/streamFn/g) ?? []).length;
@@ -71,12 +71,12 @@ describe("pi streamFn consumers", () => {
 			unexpected,
 			[],
 			`pi has streamFn consumers this bridge has never considered: ${unexpected.join(", ")}. `
-			+ `Each can route an LLM call through our provider with a system prompt no before_agent_start recorded.`,
+			+ `Each can route an LLM call through our provider with its own system prompt.`,
 		);
 
-		// If one of these disappears, the takeover it justifies is now dead code.
+		// Keep the inventory aligned with pi's current summary consumers.
 		const missing = Object.keys(HANDLED).filter((rel) => !found.has(rel));
-		assert.deepEqual(missing, [], `these no longer consume streamFn — is the takeover still needed? ${missing.join(", ")}`);
+		assert.deepEqual(missing, [], `these no longer consume streamFn — update the summary inventory: ${missing.join(", ")}`);
 
 		const drifted = [...found].filter(([rel, n]) => HANDLED[rel].mentions !== n)
 			.map(([rel, n]) => `${rel}: ${HANDLED[rel].mentions} -> ${n}`);
