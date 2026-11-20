@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: `provider.reportApiCost`** — Opt in to showing what the same tokens would cost at pi-ai’s Anthropic API list prices. The option does not change billing. By default, and for models without catalog prices, pi reports $0.
+
 ## 0.13.0 — 2026-11-16
 
 - **Add: new system prompt handling including option to suppress Claude Code system prompt (#112, #185)** — The bridge appends pi's prompt to Claude Code's preset as pi renders it (tools, rules, docs and context files included) instead of just selected parts. Set `provider.systemPromptPreset: false` to send pi's prompt alone, without Claude Code's preset. These changes simplify the code and remove a whole category of bugs: #71, #72, #153, #158, #178, #247, #249. Thanks @iamhucong and @jmtoepperwien. 

@@ -48,7 +48,24 @@ function versionRank(id: string): { family: string; tuple: [number, number] } {
 	return { family, tuple: [Number(major) || 0, Number(minor) || 0] };
 }
 
-export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]) {
+interface ModelPrice {
+	input?: unknown;
+	output?: unknown;
+	cacheRead?: unknown;
+	cacheWrite?: unknown;
+}
+
+// Registered cost is zero by default: a subscription is not billed per token.
+// `apiCost` (provider.reportApiCost) keeps pi-ai's list prices instead, so pi
+// reports what the same tokens would cost on the API.
+function listPrice(cost: ModelPrice | null | undefined) {
+	const price = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+	return { input: price(cost?.input), output: price(cost?.output), cacheRead: price(cost?.cacheRead), cacheWrite: price(cost?.cacheWrite) };
+}
+
+export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[], options: { apiCost?: boolean } = {}) {
+	// Gated catalog stand-ins must not inherit a different model's price.
+	const prices = options.apiCost ? new Map<string, ModelPrice>(piAiModels.map((m) => [m.id, m.cost])) : undefined;
 	return withGatedModels(piAiModels)
 		.filter((m) => typeof m.id === "string" && !isDatedAlias(m.id))
 		.sort((a, b) => {
@@ -70,7 +87,7 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 			name,
 			reasoning, input, contextWindow, maxTokens,
 			thinkingLevelMap,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			cost: listPrice(prices?.get(id)),
 		}));
 }
 

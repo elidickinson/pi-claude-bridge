@@ -71,6 +71,7 @@ Create `~/.pi/agent/claude-bridge.json`
 - `forceTwoHundredK` - array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
 - `plan` - set to `"max"` on a Max (or Team Premium/Enterprise) plan to run Opus 4.6 with 1M context (default `"pro"`).
 - `longContextExtraUsage` - set to `true` to run Opus 4.6 (on Pro) and Sonnet 4.6 with 1M context, billed through Extra Usage.
+- `reportApiCost` - set to `true` to show what the same tokens would cost at pi-ai's Anthropic API list prices in displays such as `/session` and footer themes. This does not change billing. The default is `false`; models without catalog prices still report $0.
 
 ### Model overrides
 

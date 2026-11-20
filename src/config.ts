@@ -27,6 +27,9 @@ export interface Config {
 		// Model ids (e.g. "claude-future-9") whose declared 1M context Claude Code
 		// does not actually serve; pins them to the bare id at 200K.
 		forceTwoHundredK?: string[];
+		// Set to true to price usage at pi-ai's API list prices, so pi's cost
+		// displays show what the tokens would cost on the API. Default zero.
+		reportApiCost?: boolean;
 		// Claude Code's own preset goes in front of pi's prompt, with pi's whole prompt
 		// as its append. On by default (unset or "claude_code"); false or null turns it
 		// off, making pi's prompt the whole system prompt. Any other value is a startup
