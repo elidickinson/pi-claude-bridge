@@ -27,10 +27,16 @@ export function newAssistantOutput(model: Model<any>, text: string, stopReason: 
 	};
 }
 
-interface PendingToolCall {
+export interface PendingToolCall {
 	toolName: string;
 	resolve: (result: McpResult) => void;
+	/** Fires when the call has waited long enough to check that pi knows about it. */
+	watchdog?: ReturnType<typeof setTimeout>;
 }
+
+/** How long an MCP handler may wait for a tool call pi was never handed before the turn
+ *  is failed. A call pi did receive is never failed, however long its tool runs. */
+const LOST_TOOL_CALL_TIMEOUT_MS = 120_000;
 
 export interface AssistantStep {
 	content: AssistantMessage["content"];
@@ -71,6 +77,12 @@ export class QueryContext {
 	 *  answer calls pi got — pairing a result to its call is done by id from
 	 *  Claude's tools/call _meta, not from here. */
 	turnToolCallIds: string[] = [];
+	/** Every tool call id pi has been handed over the query's turns: the calls of each
+	 *  stream the bridge ended on toolUse. With the current turn's tool calls it is the
+	 *  set of ids a result can still come back for. */
+	deliveredToolCallIds = new Set<string>();
+	/** See LOST_TOOL_CALL_TIMEOUT_MS; a field so tests need not wait it out. */
+	lostCallTimeoutMs = LOST_TOOL_CALL_TIMEOUT_MS;
 	/** tool_use ids Claude Code called our MCP handler for. A result for a call pi
 	 *  got that is not in here is one Claude Code rejected itself. */
 	dispatchedToolCalls = new Set<string>();
@@ -128,6 +140,12 @@ export class QueryContext {
 	/** API message id of the non-streaming fallback being delivered from `assistant`
 	 *  messages. The SDK hands it over one block per message, all under this id. */
 	turnFallbackMessageId: string | undefined;
+
+	/** Whether pi has the tool call, or will have it when the stream being built ends. */
+	knowsToolCall(id: string): boolean {
+		if (this.deliveredToolCallIds.has(id)) return true;
+		return this.turnOutput?.content.some((b) => b.type === "toolCall" && b.id === id) ?? false;
+	}
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");

@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: fail the turn when pi never received a tool call** — After two minutes, the bridge checks whether pi knows about each tool call Claude Code is waiting on. If a call never reached pi, the bridge stops the query, names the missing call in an error notice, and logs it for diagnosis. A tool call pi received can still run for as long as it needs.
+
 ## 0.13.0 — 2026-11-16
 
 - **Add: new system prompt handling including option to suppress Claude Code system prompt (#112, #185)** — The bridge appends pi's prompt to Claude Code's preset as pi renders it (tools, rules, docs and context files included) instead of just selected parts. Set `provider.systemPromptPreset: false` to send pi's prompt alone, without Claude Code's preset. These changes simplify the code and remove a whole category of bugs: #71, #72, #153, #158, #178, #247, #249. Thanks @iamhucong and @jmtoepperwien. 
