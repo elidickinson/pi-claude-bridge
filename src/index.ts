@@ -978,9 +978,11 @@ function endCurrentPiStream(c: QueryContext, event: AssistantMessageEvent): void
 
 /** The turn stopped on a tool call: end pi's stream so pi runs the tool. */
 function endToolUseTurn(c: QueryContext): void {
-	c.turnOutput!.stopReason = "toolUse";
+	if (!c.currentPiStream || !c.turnOutput) return;
+	c.clearToolUseSettle();
+	c.turnOutput.stopReason = "toolUse";
 	recordAssistantEmission(c);
-	endCurrentPiStream(c, { type: "done", reason: "toolUse", message: c.turnOutput! });
+	endCurrentPiStream(c, { type: "done", reason: "toolUse", message: c.turnOutput });
 }
 
 /** Append a complete text block to the turn and stream it to pi. */
@@ -1236,6 +1238,42 @@ function processStreamEvent(
 	}
 }
 
+/** How long a non-streaming fallback's tool-use stop waits for another block. Claude
+ *  Code writes all of the message's blocks in one go, so this only has to outlast the
+ *  gaps between reads of the SDK's stdout; it is paid once per fallback turn, which a
+ *  stalled stream makes rare and slow already. */
+const FALLBACK_SETTLE_MS = 100;
+
+/** End the stream on a fallback's tool calls once no further block has followed the
+ *  last for FALLBACK_SETTLE_MS.
+ *
+ *  A non-streaming answer reaches the SDK as one `assistant` message per content
+ *  block, all under one message id, and nothing marks the last (every block carries
+ *  stop_reason "tool_use"). Ending the stream at the first tool_use lost the rest of
+ *  the message, which Claude Code had dispatched and waited on. Waiting for the next
+ *  SDK message cannot work: CC sends none until its tool calls are answered, and pi
+ *  cannot answer a stream that has not ended. */
+function settleFallbackToolUse(c: QueryContext, stream: AssistantMessageEventStream): void {
+	c.clearToolUseSettle();
+	const seq = c.toolUseSettleSeq;
+	const timer = setTimeout(() => {
+		// Timers run ahead of the poll phase, so after a stalled event loop this can fire
+		// with the next block already read but not yet delivered. Check again once it has been.
+		setImmediate(() => {
+			if (c.currentPiStream !== stream || c.toolUseSettleSeq !== seq) return;
+			debug(`processAssistantMessage: fallback settled on ${c.turnToolCallIds.length} tool call(s)`);
+			endToolUseTurn(c);
+		});
+	}, FALLBACK_SETTLE_MS);
+	timer.unref?.();
+	c.toolUseSettle = { timer, stream };
+}
+
+/** End a pending fallback stop now: the SDK moved past the message's blocks, or ended. */
+function flushFallbackToolUse(c: QueryContext): void {
+	if (c.toolUseSettle?.stream === c.currentPiStream) endToolUseTurn(c);
+}
+
 /** Remove the blocks of the message that just stopped which never got their own
  *  content_block_stop, because the stream was cut inside them. A tool call left
  *  that way carries whatever JSON survived the cut — `{}` when no delta landed at
@@ -1333,6 +1371,7 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 		if (id && !c.turnAssistantIds.includes(id)) c.turnAssistantIds.push(id);
 		c.turnToolCallIds = [];
 	}
+	c.toolUseSettleSeq++;
 	debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}`);
 	for (const block of assistantMsg.content) {
 		if (block.type === "text" && block.text) {
@@ -1368,8 +1407,8 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	}
 	if (assistantMsg.usage && c.turnOutput) recordUsage(c.turnOutput, assistantMsg.usage, model, c.piSessionId);
 
-	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
-	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) endToolUseTurn(c);
+	// End the stream on tool_use once the message's other blocks are in.
+	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) settleFallbackToolUse(c, c.currentPiStream);
 }
 
 /** Errors of queries that ended on a tool call Claude Code rejected while pi was
@@ -1540,6 +1579,8 @@ async function consumeQuery(
 			capturedSessionId = message.session_id;
 			traceEvent("query-init", { queryId: traceQueryId, ccSession: capturedSessionId, claudeCodeVersion: message.claude_code_version });
 		}
+		// A fallback's blocks come back to back, so any of these means the SDK is past them.
+		if (message.type === "stream_event" || message.type === "user" || message.type === "result") flushFallbackToolUse(queryCtx);
 		if (!queryCtx.currentPiStream || !queryCtx.turnOutput) continue;
 
 		switch (message.type) {
@@ -1572,6 +1613,13 @@ async function consumeQuery(
 				break;
 		}
 	}
+
+	// The query ended behind a fallback's last block: nothing more is coming to wait for.
+	// An abort or a failure is not that — the caller ends the stream as aborted or
+	// failed, and the calls Claude Code dispatched will never be answered, so only
+	// drop the wait.
+	if (wasAborted() || failure) queryCtx.clearToolUseSettle();
+	else flushFallbackToolUse(queryCtx);
 
 	// DEBUG: trace when consumeQuery exits
 	debug(`consumeQuery: for-await loop exited, wasAborted=${wasAborted()}, capturedSessionId=${capturedSessionId?.slice(0, 8) ?? "none"}`);
