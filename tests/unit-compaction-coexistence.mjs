@@ -2,18 +2,6 @@ import { it } from "node:test";
 import assert from "node:assert/strict";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import activate, { __test } from "../src/index.js";
-import { activateWithMockPi } from "./lib/mock-pi.mjs";
-
-it("bridge leaves compaction and branch-summary ownership to Pi and other extensions", () => {
-	const handlers = activateWithMockPi();
-	try {
-		const ctx = { sessionManager: { getSessionId: () => "coexistence" } };
-		for (const name of ["session_before_compact", "session_before_tree"]) {
-			assert.equal(handlers.get(name)({ signal: new AbortController().signal }, ctx), undefined);
-		}
-	}
-	finally { handlers.get("session_shutdown")({}, { sessionManager: { getSessionId: () => "coexistence" } }); }
-});
 
 // Real Pi session, extension runner, native summarizer and bridge provider. Only
 // Claude Code query is replaced; no network, credentials or paid subprocesses.

@@ -13,10 +13,16 @@
 // rate measured from the same log. Within a single query() call the bridge cannot
 // mutate the prefix — it only appends tool results — so in-query breaks are pure
 // server-side eviction and serve as the control group. A bridge-side prefix bug
-// would push the boundary rate above that floor. See diag/AUDIT.md for baselines.
+// would push the boundary rate above that floor. See diag/CACHE.md for baselines.
 //
-// Exits 1 when the boundary rate exceeds the documented ceiling, or when a break
-// lands on a rebuild boundary (the shape most likely to be our own bug).
+// Requests pair per pi session (the bridge tags its lines `piSession=`), since
+// one process serves the parent and its in-process subagents at once. Untagged
+// lines from older builds pair per process, where those conversations interleave.
+//
+// Exits 1 when the boundary rate exceeds the documented ceiling, when a break
+// lands on a fork, which should read back everything its ancestor cached (the
+// shape most likely to be our own bug), or when a query ended cleanly with
+// messages CC never acknowledged, which costs the next turn a prefix-write.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -29,6 +35,8 @@ const LINE = /^\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\] \[([a-z0-9]+)\] (.*)$/;
 const USAGE = /^usage: in=(\d+) out=(\d+) cacheRead=(\d+) cacheWrite=(\d+) total=(\d+)(?: reasoning=\d+)? cachePct=(\d+)% model=(\S+)/;
 const FRESH = /^provider: fresh query model=(\S+) msgs=(\d+) tools=(\d+) resume=(\S+) effort=(\S+)/;
 const SYNC = /^syncResult: path=(\S+)/;
+const UNRECORDED = /^recording: clean end left messages unrecorded/;
+const TAG = / piSession=(\S+)/;
 const RESET = /^(session_start|session_compact|session_before_compact|compact summary|Case 1 synthetic)/;
 
 // Claude Code's own detector (reference-code/claude-code-rip/src/services/api/
@@ -39,7 +47,7 @@ const MIN_SHORTFALL = 2_000;
 // query source, so a 5-90 min gap may or may not have expired. Excluding anything
 // over 5 minutes means the residual is a lower bound on real breaks.
 const TTL_MIN_MS = 5 * 60 * 1000;
-// Boundary break rate measured over the full April-July 2026 log (see AUDIT.md).
+// Boundary break rate measured over the full April-July 2026 log (see CACHE.md).
 // Well above it means a prefix-mutation regression, not server-side noise.
 const BOUNDARY_RATE_CEILING = 0.10;
 
@@ -49,7 +57,7 @@ const flag = (name, fallback) => {
 	return i === -1 ? fallback : args[i + 1];
 };
 const since = args.includes("--since") ? Date.parse(flag("--since")) : null;
-// The 28% boundary rate documented in diag/AUDIT.md is an open
+// The boundary rate documented in diag/CACHE.md is an open
 // finding, not a regression, so the ceiling is a knob: set it just above the
 // current rate to catch it getting *worse* while the root cause is unresolved.
 const ceiling = Number(flag("--ceiling", BOUNDARY_RATE_CEILING));
@@ -67,14 +75,25 @@ const logPath = args.filter((a, i) => !a.startsWith("--") && !args[i - 1]?.start
 // grows. Collapsing runs that share (cacheRead, cacheWrite, model) leaves one row
 // per API request, which is what the cache math needs.
 function parse(text) {
-	const perModule = new Map();
+	const streams = new Map();
+	const syncs = [];
+	const unrecorded = [];
 	for (const line of text.split("\n")) {
 		const m = LINE.exec(line);
 		if (!m) continue;
 		const [, ts, moduleId, msg] = m;
-		let entry = perModule.get(moduleId);
-		if (!entry) perModule.set(moduleId, (entry = { requests: [], marks: [] }));
+		// Every kind read below is anchored at the message start, so tool output
+		// echoed into a line (which can quote tagged lines) never contributes.
 		const u = USAGE.exec(msg);
+		const s = SYNC.exec(msg);
+		const lost = UNRECORDED.test(msg);
+		if (!u && !s && !lost && !FRESH.test(msg) && !RESET.test(msg)) continue;
+		const tag = TAG.exec(msg)?.[1];
+		const key = tag && tag !== "none" ? tag : moduleId;
+		if (s) syncs.push({ at: Date.parse(ts), path: s[1] });
+		if (lost) unrecorded.push({ ts, at: Date.parse(ts), key });
+		let entry = streams.get(key);
+		if (!entry) streams.set(key, (entry = { requests: [], marks: [] }));
 		if (!u) { entry.marks.push(msg); continue; }
 		const cacheRead = +u[3], cacheWrite = +u[4], model = u[7];
 		const prev = entry.requests.at(-1);
@@ -86,13 +105,13 @@ function parse(text) {
 			continue;
 		}
 		entry.requests.push({
-			ts, at: Date.parse(ts), moduleId,
+			ts, at: Date.parse(ts), key,
 			in: +u[1], cacheRead, cacheWrite, pct: +u[6], model,
 			marks: entry.marks,
 		});
 		entry.marks = [];
 	}
-	return perModule;
+	return { streams, syncs, unrecorded };
 }
 
 function run() {
@@ -112,9 +131,11 @@ function run() {
 	};
 	const group = { "in-query": { n: 0, breaks: 0, tokens: 0 }, boundary: { n: 0, breaks: 0, tokens: 0 } };
 	const breaks = [];
+	const pairs = [];
 	let requests = 0;
 
-	for (const { requests: rs } of parse(text).values()) {
+	const { streams, syncs, unrecorded } = parse(text);
+	for (const { requests: rs } of streams.values()) {
 		requests += rs.length;
 		for (let i = 1; i < rs.length; i++) {
 			const prev = rs[i - 1], cur = rs[i];
@@ -128,7 +149,10 @@ function run() {
 			const shortfall = expected - cur.cacheRead;
 
 			const fresh = cur.marks.map((m) => FRESH.exec(m)).filter(Boolean).at(-1);
-			const sync = cur.marks.map((m) => SYNC.exec(m)).filter(Boolean).at(-1);
+			// A sync line describes a boundary only when a query opens there: AskClaude
+			// once logged its own under the caller's session in the middle of a query,
+			// and older logs still hold them.
+			const sync = fresh && cur.marks.map((m) => SYNC.exec(m)).filter(Boolean).at(-1);
 			const prevFresh = prev.freshParams ?? null;
 			cur.freshParams = fresh ?? prevFresh;
 
@@ -142,6 +166,7 @@ function run() {
 			if (prev.model !== cur.model) { bump(`model change (${prev.model} → ${cur.model})`, shortfall); continue; }
 			if (cur.marks.some((m) => RESET.test(m))) { bump("compaction / new session / isolated subprocess", shortfall); continue; }
 			if (sync && sync[1] === "clean-start") { bump("clean start (no prior history)", shortfall); continue; }
+			if (sync && sync[1] === "rebuild") { bump("full import (CC's records not kept)", shortfall); continue; }
 			if (fresh && fresh[4] === "none") { bump("fresh query, no resume", shortfall); continue; }
 			if (fresh && prevFresh && fresh[3] !== prevFresh[3]) { bump("tool set changed", shortfall); continue; }
 			if (fresh && prevFresh && fresh[5] !== prevFresh[5]) { bump("effort changed", shortfall); continue; }
@@ -158,7 +183,10 @@ function run() {
 			if (cur.marks.some((m) => RESET.test(m))) continue;
 			const fresh = cur.marks.map((m) => FRESH.exec(m)).filter(Boolean).at(-1);
 			if (fresh && fresh[4] === "none") continue;
-			group[fresh ? "boundary" : "in-query"].n++;
+			if (fresh && cur.marks.some((m) => SYNC.exec(m)?.[1] === "rebuild")) continue;
+			const kind = fresh ? "boundary" : "in-query";
+			group[kind].n++;
+			pairs.push({ kind, at: cur.at });
 		}
 	}
 
@@ -177,27 +205,40 @@ function run() {
 	console.log(`  in-query  ${String(group["in-query"].breaks).padStart(4)} / ${String(group["in-query"].n).padStart(5)} pairs  ${(rate(group["in-query"]) * 100).toFixed(1)}%  ${(group["in-query"].tokens / 1e6).toFixed(1)}M tok   <- control: bridge cannot mutate the prefix here`);
 	console.log(`  boundary  ${String(group.boundary.breaks).padStart(4)} / ${String(group.boundary.n).padStart(5)} pairs  ${(rate(group.boundary) * 100).toFixed(1)}%  ${(group.boundary.tokens / 1e6).toFixed(1)}M tok   <- --resume boundaries`);
 
-	const onRebuild = breaks.filter((b) => b.path === "rebuild");
-	console.log(`\nbreaks on a rebuild boundary (bridge rewrote the session): ${onRebuild.length}`);
-	for (const b of onRebuild.sort((x, y) => y.shortfall - x.shortfall).slice(0, 10)) {
-		console.log(`  ${b.ts} module=${b.moduleId} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
+	const onFork = breaks.filter((b) => b.path === "fork");
+	console.log(`\nbreaks on a fork (it should read back everything its ancestor cached): ${onFork.length}`);
+	for (const b of onFork.sort((x, y) => y.shortfall - x.shortfall).slice(0, 10)) {
+		console.log(`  ${b.ts} stream=${b.key} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
 	}
 
 	console.log("\nlargest residual breaks:");
 	for (const b of [...breaks].sort((x, y) => y.shortfall - x.shortfall).slice(0, 10)) {
-		console.log(`  ${b.ts} module=${b.moduleId} ${b.kind}/${b.path} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
+		console.log(`  ${b.ts} stream=${b.key} ${b.kind}/${b.path} -${b.shortfall} tok (read ${b.cacheRead}/${b.expected}, ${b.pct}%)`);
 	}
 
 	// Exit reflects only the window: the log spans months of already-fixed bugs.
-	const recent = (b) => since === null || Date.parse(b.at) >= since;
-	const windowed = onRebuild.filter(recent);
-	const excess = rate(group.boundary) > ceiling && group.boundary.breaks >= 10;
-	console.log();
-	if (excess) console.log(`FAIL: boundary break rate ${(rate(group.boundary) * 100).toFixed(1)}% exceeds ceiling ${(ceiling * 100).toFixed(0)}% — suspect a prefix-mutation regression`);
-	else if (windowed.length) console.log(`FAIL: ${windowed.length} break(s) on a rebuild boundary${since === null ? "" : " in window"} — inspect the rewritten session`);
-	else console.log(`OK: boundary rate ${(rate(group.boundary) * 100).toFixed(1)}% vs in-query control ${(rate(group["in-query"]) * 100).toFixed(1)}% — residual is at the server-side eviction floor`);
+	const recent = (x) => since === null || x.at >= since;
+	const pathCounts = new Map();
+	for (const sync of syncs.filter(recent)) pathCounts.set(sync.path, (pathCounts.get(sync.path) ?? 0) + 1);
+	console.log(`\nsync paths${since === null ? "" : " in window"}:`);
+	for (const [path, n] of [...pathCounts].sort((a, b) => b[1] - a[1])) console.log(`  ${String(n).padStart(5)}  ${path}`);
+	console.log(`\nclean ends that left messages unrecorded (the next turn pays a prefix-write): ${unrecorded.length}`);
+	for (const u of unrecorded.slice(-10)) console.log(`  ${u.ts} stream=${u.key}`);
+	const windowUnrecorded = unrecorded.filter(recent);
 
-	process.exit(excess || windowed.length ? 1 : 0);
+	const windowed = onFork.filter(recent);
+	const windowBreaks = breaks.filter((b) => b.kind === "boundary" && recent(b)).length;
+	const windowPairs = pairs.filter((p) => p.kind === "boundary" && recent(p)).length;
+	const windowRate = windowPairs ? windowBreaks / windowPairs : 0;
+	const excess = windowRate > ceiling && windowBreaks >= 10;
+	const inWindow = since === null ? "" : " in window";
+	console.log();
+	if (excess) console.log(`FAIL: boundary break rate${inWindow} ${(windowRate * 100).toFixed(1)}% (${windowBreaks}/${windowPairs}) exceeds ceiling ${(ceiling * 100).toFixed(0)}% — suspect a prefix-mutation regression`);
+	else if (windowed.length) console.log(`FAIL: ${windowed.length} break(s) on a fork${inWindow} — inspect the forked session`);
+	else if (windowUnrecorded.length) console.log(`FAIL: ${windowUnrecorded.length} clean end(s)${inWindow} left messages unrecorded — inspect that session's log`);
+	else console.log(`OK: boundary rate${inWindow} ${(windowRate * 100).toFixed(1)}% (${windowBreaks}/${windowPairs}); whole log ${(rate(group.boundary) * 100).toFixed(1)}% vs in-query control ${(rate(group["in-query"]) * 100).toFixed(1)}% — residual is at the server-side eviction floor`);
+
+	process.exit(excess || windowed.length || windowUnrecorded.length ? 1 : 0);
 }
 
 run();

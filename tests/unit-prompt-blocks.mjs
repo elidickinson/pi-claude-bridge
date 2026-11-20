@@ -67,9 +67,6 @@ describe("history/prompt split", () => {
 	// message can never be replayed as history *and* resent as the prompt.
 	it("does not replay the current turn as session history", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "turn-split-"));
-		const claudeDir = mkdtempSync(join(tmpdir(), "turn-split-cfg-"));
-		const prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
-		process.env.CLAUDE_CONFIG_DIR = claudeDir;
 		try {
 			const messages = [
 				{ role: "user", content: "earlier question", timestamp: 1 },
@@ -83,9 +80,9 @@ describe("history/prompt split", () => {
 				{ role: "user", content: "(attachment preview: [#image 1])", timestamp: 4 },
 			];
 
-			const { sessionId } = __test.syncSharedSession(messages, cwd);
+			const { sessionId } = __test.syncSharedSession(messages, cwd, new Map(), "", null, undefined, "");
 			// readdir rather than fs.globSync — the latter is Node 22+, and engines allows 20.
-			const projectsDir = join(claudeDir, "projects");
+			const projectsDir = join(process.env.CLAUDE_CONFIG_DIR, "projects");
 			const [projectDir] = readdirSync(projectsDir);
 			assert.ok(projectDir, "syncSharedSession should have written a session file");
 			const history = readFileSync(join(projectsDir, projectDir, `${sessionId}.jsonl`), "utf8");
@@ -95,11 +92,7 @@ describe("history/prompt split", () => {
 			assert.doesNotMatch(history, /describe this/, "and must not also be replayed as history");
 			assert.match(history, /earlier question/, "genuinely prior turns still become history");
 		} finally {
-			// Assigning undefined would set the literal string "undefined".
-			if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-			else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
 			rmSync(cwd, { recursive: true, force: true });
-			rmSync(claudeDir, { recursive: true, force: true });
 		}
 	});
 });

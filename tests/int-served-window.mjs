@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TIMEOUT = 120_000;
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
 
 const testAgentDir = mkdtempSync(join(tmpdir(), "served-window-agent-"));
 writeFileSync(join(testAgentDir, "settings.json"), JSON.stringify({}));

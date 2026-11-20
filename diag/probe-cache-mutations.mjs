@@ -4,10 +4,24 @@
 // unchanged REUSE control, restore, one JSONL mutation, then the same continuation.
 // Never point this at a production session; mutations are applied only under /tmp.
 //
-//   node diag/probe-cache-mutations.mjs [--model claude-haiku-4-5] [--out DIR]
+//   node diag/probe-cache-mutations.mjs [--model claude-haiku-5-5] [--out DIR]
+//       [--cases NAME,NAME] [--order control-first|changed-first]
 //
-// Three bounded live cases: drop CC context attachments, change tool_result.content
-// string/array shape, and reorder tool_result keys. Raw request pairs are sensitive.
+// --cases runs a subset (each probe run warms its own fresh seed, so running one
+// case per invocation keeps one case's cache writes out of another's); --order
+// runs the changed arm first, to check a result does not depend on which arm
+// wrote the cache entry the other read.
+//
+// Live cases (see MUTATION_NAMES): drop CC context attachments together, the
+// total_tokens reminders alone, and each other attachment type alone; change
+// tool_result.content string/array shape, strip tool_result text's trailing "\n",
+// reorder tool_result keys; turn single-text-block user content into a string;
+// edit one attachment value in place (no record dropped for CC to re-add); and
+// resume the same records under a new session id (changes only metadata).
+// A case with no matching records is reported as not applicable and costs no
+// request. CC runs with the bridge provider path's settings, effort and thinking
+// display (src/index.ts); pi's appended system prompt and streaming-input prompt
+// are not reproduced. Raw request pairs are sensitive.
 
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
@@ -23,6 +37,8 @@ import { deleteSession, openSession } from "cc-session-io";
 import { assessMutationAttribution, compareCacheUsage } from "./lib/cache-effect.mjs";
 import { compareRequestBodies } from "./lib/request-diff.mjs";
 import { MUTATION_NAMES, mutateSessionJsonl } from "./lib/session-mutations.mjs";
+import { FIRST_PARTY_ENV } from "./lib/first-party.mjs";
+import { configChanges } from "./lib/trace-analysis.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SDK_META = JSON.parse(readFileSync(join(REPO, "node_modules/@anthropic-ai/claude-agent-sdk/package.json"), "utf8"));
@@ -31,8 +47,20 @@ const flag = (name, fallback) => {
 	const index = args.indexOf(`--${name}`);
 	return index === -1 ? fallback : args[index + 1];
 };
-const MODEL = flag("model", "claude-haiku-4-5");
+const MODEL = flag("model", "claude-haiku-5-5");
+const EFFORT = "medium";
+// The bridge provider path's CC options (src/index.ts): CC_CHILD_ENV, settings, extraArgs.
+const CC_SETTINGS = {
+	autoMemoryEnabled: false,
+	claudeMdExcludes: ["**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"],
+	includeGitInstructions: false,
+};
+const EXTRA_ARGS = { "strict-mcp-config": null, "thinking-display": "summarized" };
 const OUT = flag("out") ?? mkdtempSync(join(tmpdir(), "cache-mutations-"));
+const CASES = flag("cases")?.split(",") ?? MUTATION_NAMES;
+for (const name of CASES) if (!MUTATION_NAMES.includes(name)) throw new Error(`unknown case ${name}; have ${MUTATION_NAMES.join(", ")}`);
+const ORDER = flag("order", "control-first");
+if (!["control-first", "changed-first"].includes(ORDER)) throw new Error(`--order must be control-first or changed-first`);
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR;
 
 async function freePort() {
@@ -74,18 +102,25 @@ const textOf = (message) => typeof message.content === "string" ? message.conten
 	: (message.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("\n");
 const requestHas = (request, marker) => (request.body.messages ?? []).some((message) => textOf(message).includes(marker));
 
+/** Main-loop /v1/messages requests of any status, in send order. */
 function requestRows(captureDir) {
 	const rows = readFileSync(join(captureDir, "index.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-	return rows.filter((row) => row.path?.startsWith("/v1/messages") && row.status === 200 && (row.tools ?? 0) > 0).map((row) => ({
+	return rows.filter((row) => /^\/v1\/messages(\?|$)/.test(row.path ?? "") && (row.tools ?? 0) > 0).sort((a, b) => a.n - b.n).map((row) => ({
 		...row,
 		body: JSON.parse(readFileSync(join(captureDir, `req-${String(row.n).padStart(4, "0")}.json`), "utf8")),
 	}));
 }
 
-function requestSince(captureDir, afterN, marker) {
-	const row = requestRows(captureDir).find((request) => request.n > afterN && requestHas(request, marker));
-	if (!row) throw new Error(`no captured request after #${afterN} carried ${marker}; see ${captureDir}`);
-	return row;
+/** The first request after #afterN carrying `marker` is the arm's measurement: a later
+ *  one (retry or tool loop) can read cache its predecessor wrote. All are reported. */
+function armRequest(captureDir, afterN, marker) {
+	const requests = requestRows(captureDir).filter((request) => request.n > afterN && requestHas(request, marker));
+	const markerRequests = requests.map(({ n, status, terminal, retryCount }) => ({ n, status, terminal, retryCount }));
+	if (!requests.length) throw new Error(`no captured request after #${afterN} carried ${marker}; see ${captureDir}`);
+	if (requests[0].status !== 200 || !requests[0].usage) {
+		throw new Error(`first request carrying ${marker} was not a measured 200: ${JSON.stringify(markerRequests)}; see ${captureDir}`);
+	}
+	return { request: requests[0], markerRequests };
 }
 
 function maxRequestNumber(captureDir) {
@@ -105,16 +140,18 @@ async function runTurn({ cwd, proxyUrl, prompt, resume, onSessionId }) {
 			tools: [],
 			permissionMode: "bypassPermissions",
 			allowDangerouslySkipPermissions: true,
-			thinking: { type: "disabled" },
+			effort: EFFORT,
+			settings: CC_SETTINGS,
 			settingSources: ["user", "project"],
 			maxTurns: 2,
 			env: {
 				...process.env,
+				...FIRST_PARTY_ENV,
 				ANTHROPIC_BASE_URL: proxyUrl,
 				ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 				DISABLE_AUTO_COMPACT: "1",
 			},
-			extraArgs: { "strict-mcp-config": null },
+			extraArgs: EXTRA_ARGS,
 			systemPrompt: { type: "preset", preset: "claude_code" },
 			mcpServers: toolServer(calls),
 			...(resume ? { resume } : {}),
@@ -210,6 +247,7 @@ async function main() {
 	});
 	let sessionId = null;
 	let sessionPath = null;
+	const extraSessions = [];
 	let actualCcVersions = new Set();
 	try {
 		await waitForPort(port);
@@ -224,7 +262,7 @@ async function main() {
 		sessionId = seed.sessionId;
 		actualCcVersions.add(seed.ccVersion);
 		if (seed.calls.length !== 1) throw new Error(`seed called cache_probe ${seed.calls.length} times, not once`);
-		const seedRequests = requestRows(captureDir).filter((request) => request.n > seedCallsStart && requestHas(request, seedMarker));
+		const seedRequests = requestRows(captureDir).filter((request) => request.n > seedCallsStart && request.status === 200 && requestHas(request, seedMarker));
 		if (!seedRequests.length) throw new Error(`seed prompt did not reach capture; see ${captureDir}`);
 		const cachedRequest = seedRequests.at(-1);
 		const seedPrefixObservations = seedRequests.map((request) => ({
@@ -237,35 +275,45 @@ async function main() {
 		sessionPath = session.jsonlPath;
 		const baselineJsonl = readFileSync(sessionPath, "utf8");
 		writeFileSync(join(OUT, "native-session-baseline.jsonl"), baselineJsonl);
-		const changes = MUTATION_NAMES.map((name) => mutateSessionJsonl(baselineJsonl, name));
+		const changes = CASES.map((name) => mutateSessionJsonl(baselineJsonl, name));
 		const results = [];
 		for (const mutation of changes) {
 			if (!mutation.changed) {
-				results.push({ name: mutation.name, status: "not exercised", reason: "no matching records in native probe session", mutation: mutation.details });
-				console.log(`${mutation.name}: not exercised (${JSON.stringify(mutation.details)})`);
+				results.push({ name: mutation.name, status: "not applicable", reason: "no matching records in native probe session", mutation: mutation.details });
+				console.log(`${mutation.name}: not applicable (${JSON.stringify(mutation.details)})`);
 				continue;
 			}
 
+			try {
 			const continuationMarker = `[CACHE-CONTINUATION-${mutation.name}-${process.pid}-${Date.now()}]`;
 			const continuation = `${continuationMarker} Resume this history and reply with exactly: continued.`;
-			writeFileSync(sessionPath, baselineJsonl);
-			const controlStart = maxRequestNumber(captureDir);
-			const controlTurn = await runTurn({ cwd, proxyUrl, prompt: continuation, resume: sessionId });
-			actualCcVersions.add(controlTurn.ccVersion);
-			if (controlTurn.sessionId !== sessionId) throw new Error(`${mutation.name}: control resumed ${controlTurn.sessionId}, expected ${sessionId}`);
-			const controlRequest = requestSince(captureDir, controlStart, continuationMarker);
+			// A rotated session is written beside the original and resumed by its own id.
+			const changedSessionId = mutation.sessionId ?? sessionId;
+			const changedPath = mutation.sessionId ? join(dirname(sessionPath), `${mutation.sessionId}.jsonl`) : sessionPath;
+			if (mutation.sessionId) extraSessions.push(mutation.sessionId);
+			const runArm = async (arm, jsonl, path, id) => {
+				writeFileSync(sessionPath, baselineJsonl);
+				writeFileSync(path, jsonl);
+				const start = maxRequestNumber(captureDir);
+				const turn = await runTurn({ cwd, proxyUrl, prompt: continuation, resume: id });
+				actualCcVersions.add(turn.ccVersion);
+				if (turn.sessionId !== id) throw new Error(`${mutation.name}: ${arm} arm resumed ${turn.sessionId}, expected ${id}`);
+				return { turn, ...armRequest(captureDir, start, continuationMarker) };
+			};
+			const arms = {};
+			for (const arm of ORDER === "control-first" ? ["control", "changed"] : ["changed", "control"]) {
+				arms[arm] = arm === "control" ? await runArm(arm, baselineJsonl, sessionPath, sessionId) : await runArm(arm, mutation.jsonl, changedPath, changedSessionId);
+			}
+			const { turn: controlTurn, request: controlRequest, markerRequests: controlMarkerRequests } = arms.control;
+			const { turn: changedTurn, request: changedRequest, markerRequests: changedMarkerRequests } = arms.changed;
 			const controlUsage = usageAgainst(cachedRequest, controlRequest);
 			const controlHistory = compareRequestBodies(cachedRequest.body, controlRequest.body, { prefixOnly: true });
-
-			writeFileSync(sessionPath, mutation.jsonl);
-			const changedStart = maxRequestNumber(captureDir);
-			const changedTurn = await runTurn({ cwd, proxyUrl, prompt: continuation, resume: sessionId });
-			actualCcVersions.add(changedTurn.ccVersion);
-			if (changedTurn.sessionId !== sessionId) throw new Error(`${mutation.name}: changed arm resumed ${changedTurn.sessionId}, expected ${sessionId}`);
-			const changedRequest = requestSince(captureDir, changedStart, continuationMarker);
 			const changedHistory = compareRequestBodies(cachedRequest.body, changedRequest.body, { prefixOnly: true });
 			const pair = compareRequestBodies(controlRequest.body, changedRequest.body, { prefixBody: cachedRequest.body });
 			const prefixChanged = pair.normalized.aligned.length > 0;
+			// The normalized view folds single-text-block message content into a string, hiding this target.
+			const attributionView = mutation.name === "user-content-single-block-to-string" ? "raw" : "normalized";
+			const attributionDiffs = pair[attributionView].aligned;
 			const changedUsage = usageAgainst(cachedRequest, changedRequest);
 			const controlHistoryComplete = historyComplete(controlHistory, cachedRequest.body, controlRequest.body)
 				&& controlHistory.normalized.aligned.length === 0;
@@ -278,23 +326,31 @@ async function main() {
 				thinking: { control: controlRequest.body.thinking ?? null, changed: changedRequest.body.thinking ?? null },
 				thinkingSame: JSON.stringify(controlRequest.body.thinking ?? null) === JSON.stringify(changedRequest.body.thinking ?? null),
 				normalizedSystemSame: !systemDiffs(pair).length && !systemDiffs(controlHistory).length && !systemDiffs(changedHistory).length,
-				resumeSessionSame: controlTurn.sessionId === sessionId && changedTurn.sessionId === sessionId,
+				resumeSessionSame: controlTurn.sessionId === sessionId && changedTurn.sessionId === changedSessionId,
 				controlHistoryComplete,
 				changedHistoryComplete,
+				// Rotation's target is metadata (it carries the session id); anything else confounds.
+				configChanges: configChanges(controlRequest.body, changedRequest.body).filter((c) => !(mutation.sessionId && c.key === "metadata")),
+				headerChanges: ["auth", "betas"].filter((key) => controlRequest[key] !== changedRequest[key])
+					.map((key) => ({ key, before: controlRequest[key] ?? null, after: changedRequest[key] ?? null })),
 			};
-			const targetObserved = observedTargetWireDifference(mutation.name, controlRequest.body, changedRequest.body, pair.normalized.aligned);
-			const attribution = assessMutationAttribution(mutation.name, pair.normalized.aligned, invariants, { targetObserved });
+			const targetObserved = mutation.sessionId
+				? JSON.stringify(controlRequest.body.metadata) !== JSON.stringify(changedRequest.body.metadata)
+				: observedTargetWireDifference(mutation.name, controlRequest.body, changedRequest.body, attributionDiffs);
+			const attribution = assessMutationAttribution(mutation.name, attributionDiffs, invariants, { targetObserved });
 			const requestDifference = attribution.targetObserved;
 			const validityIssues = attribution.status === "confounded" ? attribution.reasons : [];
 			const result = {
 				name: mutation.name,
 				continuationMarker,
+				order: ORDER,
 				status: "measured",
 				mutation: { changed: mutation.changed, ...mutation.details },
-				control: { n: controlRequest.n, at: controlRequest.at, ...controlUsage, cacheControls: cacheControls(controlRequest.body) },
-				changed: { n: changedRequest.n, at: changedRequest.at, ...changedUsage, cacheControls: cacheControls(changedRequest.body) },
+				control: { n: controlRequest.n, at: controlRequest.at, ...controlUsage, markerRequests: controlMarkerRequests, cacheControls: cacheControls(controlRequest.body) },
+				changed: { n: changedRequest.n, at: changedRequest.at, ...changedUsage, markerRequests: changedMarkerRequests, cacheControls: cacheControls(changedRequest.body) },
 				requestDifference: {
 					observed: requestDifference,
+					attributionView,
 					anyRawPrefixChange: pair.raw.aligned.length > 0,
 					anyNormalizedPrefixChange: prefixChanged,
 					raw: pair.raw,
@@ -322,12 +378,22 @@ async function main() {
 			results.push(result);
 			console.log(`${mutation.name}: ${attribution.status}; control read ${controlUsage.cacheRead}/${controlUsage.expected}, changed read ${changedUsage.cacheRead}/${changedUsage.expected}; ` +
 				`${result.cacheEffect.status} (capped read loss ${result.cacheEffect.readLoss}, raw difference ${result.cacheEffect.rawReadDifference}, write increase ${result.cacheEffect.writeIncrease})`);
-			for (const diff of pair.normalized.aligned) console.log(`  ${diff.kind}${diff.path ? ` ${diff.path}${diff.afterPath && diff.afterPath !== diff.path ? ` -> ${diff.afterPath}` : ""}` : diff.afterPath ? ` ${diff.afterPath}` : ""}`);
+			for (const [arm, requests] of [["control", controlMarkerRequests], ["changed", changedMarkerRequests]]) {
+				if (requests.length > 1) console.log(`  WARNING ${arm} arm sent ${requests.length} requests carrying its marker; measured #${requests[0].n}: ${JSON.stringify(requests)}`);
+			}
+			for (const diff of attributionDiffs) console.log(`  ${diff.kind}${diff.path ? ` ${diff.path}${diff.afterPath && diff.afterPath !== diff.path ? ` -> ${diff.afterPath}` : ""}` : diff.afterPath ? ` ${diff.afterPath}` : ""}`);
+			} catch (error) {
+				// One failed case does not cost the rest of a paid run -- but a rate limit
+				// stops it: further requests would only be refused too.
+				if (/429|rate.?limit|session limit|quota/i.test(String(error?.message))) throw error;
+				results.push({ name: mutation.name, status: "error", error: String(error?.message ?? error) });
+				console.log(`${mutation.name}: ERROR ${error?.message ?? error}`);
+			}
 		}
 
 		const report = {
 			model: MODEL,
-			thinking: "disabled",
+			thinking: `effort ${EFFORT}, thinking-display summarized (bridge provider path)`,
 			versions: { sdk: SDK_META.version, bundledClaudeCode: SDK_META.claudeCodeVersion, observedClaudeCode: [...actualCcVersions] },
 			session: { sessionId, cwd, jsonlPath: sessionPath, immutableSnapshot: "native-session-baseline.jsonl" },
 			seed: {
@@ -343,10 +409,10 @@ async function main() {
 			},
 			effectiveOptions: {
 				cwd, model: MODEL, tools: [], permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true,
-				thinking: { type: "disabled" }, maxTurns: 2, settingSources: ["user", "project"],
-				systemPrompt: { type: "preset", preset: "claude_code" }, mcpServers: ["custom-tools"],
-				strictMcpConfig: true, persistSession: true,
+				effort: EFFORT, settings: CC_SETTINGS, extraArgs: EXTRA_ARGS, maxTurns: 2, settingSources: ["user", "project"],
+				systemPrompt: { type: "preset", preset: "claude_code" }, mcpServers: ["custom-tools"], persistSession: true,
 			},
+			order: ORDER,
 			mutationCount: results.filter((result) => result.status === "measured").length,
 			results,
 			captureDir,
@@ -359,6 +425,7 @@ async function main() {
 		proxy.kill();
 		closeSync(proxyLog);
 		if (sessionId) deleteSession(sessionId, cwd, CLAUDE_DIR);
+		for (const id of extraSessions) deleteSession(id, cwd, CLAUDE_DIR);
 	}
 }
 

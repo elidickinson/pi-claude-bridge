@@ -10,13 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
-const BRIDGE_MODEL = "claude-bridge/claude-haiku-4-5";
+const BRIDGE_MODEL = "claude-bridge/claude-haiku-5-5";
 const COMPACT_TIMEOUT = 120_000;
 const TEST_TIMEOUT = 240_000;
 
 const testAgentDir = mkdtempSync(join(tmpdir(), "compact-auto-agent-"));
 writeFileSync(join(testAgentDir, "settings.json"), JSON.stringify({
-	compaction: { enabled: false, reserveTokens: 198000, keepRecentTokens: 50 },
+	compaction: { enabled: false, reserveTokens: 998000, keepRecentTokens: 50 },
 }));
 
 const harness = createRpcHarness({

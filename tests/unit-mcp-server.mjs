@@ -236,19 +236,9 @@ describe("MCP tool invocation", () => {
 		assert.strictEqual(beta.result.isError, true);
 	});
 
-	// Claude sends the authoritative tool_use id on every call. Inferring it from
-	// call order instead silently pairs a result with the wrong call whenever the
-	// order diverges — e.g. parallel tool calls, or a call that never arrives.
-	it("hands the handler Claude's tool_use id, not one inferred from call order", async () => {
-		const calls = [];
-		const { callTool } = await connectClient(createToolServer("custom-tools", twoTools(calls)));
-
-		await callTool("beta", "toolu_second", { x: "hi" });
-		await callTool("alpha", "toolu_first");
-
-		assert.deepStrictEqual(calls, [["beta", "toolu_second"], ["alpha", "toolu_first"]]);
-	});
-
+	// Claude sends the authoritative tool_use id on every call (pairing by it is
+	// covered in unit-queue.mjs). Inferring it from call order instead silently pairs
+	// a result with the wrong call whenever the order diverges.
 	it("fails loudly when the tool_use id is absent rather than mispairing", async () => {
 		const calls = [];
 		const { callTool } = await connectClient(createToolServer("custom-tools", twoTools(calls)));

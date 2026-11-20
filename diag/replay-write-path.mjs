@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Replay a real pi session through the bridge's session write path —
-// convertPiMessages → repairToolPairing → Session.importMessages — and report
+// Replay a real pi session through the bridge's session write path
+// (importHistory: convertPiMessages, repair, record writes) and report
 // what the rebuild would actually hand Claude Code. Reaches for this when a
 // rebuild is suspected of mangling history: it answers "did we lose a tool
 // result?" and "did the transcript stay cache-stable?" without spending a turn.
@@ -28,7 +28,7 @@
 
 import { repairToolPairing } from "cc-session-io";
 import { convertPiMessages } from "../src/convert.js";
-import { loadPiMessages, settledPrefixes, transcript } from "./lib/write-path.mjs";
+import { loadPiMessages, providerMessages, settledPrefixes, transcript } from "./lib/write-path.mjs";
 
 // A long session makes the prefix sweep quadratic; sample evenly past this.
 const MAX_PREFIX_SAMPLES = 200;
@@ -52,7 +52,9 @@ const blocksOf = (messages, role) => messages
 
 // --- Replay ---
 
-const { messages, skipped } = loadPiMessages(path);
+const loaded = loadPiMessages(path);
+const { skipped } = loaded;
+const messages = providerMessages(loaded.messages);
 const roles = {};
 for (const m of messages) roles[m.role] = (roles[m.role] ?? 0) + 1;
 
