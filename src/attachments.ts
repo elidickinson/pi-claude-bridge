@@ -96,18 +96,17 @@ export function collectCarriedAttachments(records: readonly JsonlRecord[]): Carr
 /**
  * Resolve each carried attachment to a position in the array about to be
  * imported — the messages *after* conversion and repair, since that is the index
- * space `importMessages` reads. Repair is idempotent, so an already-repaired array
- * passes through its second run unchanged and the indices stay valid.
+ * space importHistory writes from.
  *
  * Deliberately conservative: attaching a file to the wrong turn tells the model it
  * saw something at a point it did not, which is worse than the loss this exists to
  * prevent. So the ordinal has to land on a prompt whose text still matches; any
- * disagreement is reported and dropped rather than approximated.
+ * disagreement is dropped rather than approximated.
  */
 export function placeCarriedAttachments(
 	carried: readonly CarriedAttachment[],
 	messages: readonly { role: string; content: unknown }[],
-): { attachments: ImportAttachment[]; skipped: string[] } {
+): ImportAttachment[] {
 	const prompts: { index: number; text: string }[] = [];
 	messages.forEach((msg, index) => {
 		if (msg.role !== "user") return;
@@ -117,19 +116,10 @@ export function placeCarriedAttachments(
 	});
 
 	const attachments: ImportAttachment[] = [];
-	const skipped: string[] = [];
 	for (const item of carried) {
-		const name = String(item.attachment.filename ?? item.attachment.type);
 		const candidate = prompts[item.userOrdinal];
-		if (!candidate) {
-			skipped.push(`${name}: prompt #${item.userOrdinal} is no longer in history`);
-			continue;
-		}
-		if (candidate.text !== item.parentText) {
-			skipped.push(`${name}: prompt #${item.userOrdinal} changed`);
-			continue;
-		}
+		if (!candidate || candidate.text !== item.parentText) continue;
 		attachments.push({ afterIndex: candidate.index, attachment: item.attachment });
 	}
-	return { attachments, skipped };
+	return attachments;
 }

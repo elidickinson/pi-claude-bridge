@@ -37,8 +37,8 @@ const PI_DIST = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding
  *  branch-summarization miss, and a filename-only inventory would wave it through.
  *  A changed count is not automatically a bug; it means read the diff and re-decide. */
 const HANDLED = {
-	"agent-session.js": { mentions: 2, why: "hand-offs: branch summary into generateBranchSummary, /bug into generateBugReportSummary — both via agent.streamFunction" },
-	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize" },
+	"agent-session.js": { mentions: 5, why: "hand-offs: branch summary into generateBranchSummary, /bug into generateBugReportSummary — both via agent.streamFunction; the other 3 are markRuntimeStreamFunction, an auth bookkeeping WeakMap that sends nothing" },
+	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize; its streamFn starts the cache warmer, which never replays a bridge request because bridge models carry no promptCache (unit-models.mjs)" },
 	"bug-report.js": { mentions: 1, why: "/bug summarization via completeSummarization (cacheRetention: none) — routed to the isolated path from streamClaudeAgentSdk (like compaction and branch summaries)" },
 	"compaction/compaction.js": { mentions: 13, why: "native completeSummarization -> provider cacheRetention:none -> isolatedStreamFn" },
 	"compaction/branch-summarization.js": { mentions: 2, why: "native completeSummarization -> provider cacheRetention:none -> isolatedStreamFn" },
@@ -71,7 +71,7 @@ describe("pi streamFn consumers", () => {
 			unexpected,
 			[],
 			`pi has streamFn consumers this bridge has never considered: ${unexpected.join(", ")}. `
-			+ `Each can route an LLM call through our provider with a system prompt no before_agent_start recorded.`,
+			+ `Each can route an LLM call through our provider with its own system prompt.`,
 		);
 
 		// Keep the inventory aligned with pi's current summary consumers.

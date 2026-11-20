@@ -5,9 +5,8 @@
 #   cacheWrite is small after the first turn (only new content is written).
 #
 # Also checks session sync correctness: consecutive same-provider turns must
-# resume the session (Case 3), not rebuild it (Case 4). A rebuild would reset
-# prompt caching. This catches the off-by-one cursor bug where pi's post-return
-# assistant message append caused syncSharedSession to see 1 "missed" message.
+# resume the session, not fork or rewrite it. Complete content recording must
+# include tool results and pi's final assistant message.
 
 source "$(dirname "$0")/lib/bash-setup.sh"
 
@@ -19,12 +18,15 @@ LOGFILE="$LOGDIR/cache-test.ndjson"
 
 trap kill_descendants EXIT
 
-TMPFILE="$LOGDIR/cache-test-scratch.txt"
-rm -f "$TMPFILE" "$CLAUDE_BRIDGE_DEBUG_PATH"
+# An empty folder of its own, so a model that lists it before writing adds little
+# to the next turn's cache write.
+SCRATCH_DIR=$(mktemp -d)
+TMPFILE="$SCRATCH_DIR/cache-test-scratch.txt"
+rm -f "$CLAUDE_BRIDGE_DEBUG_PATH"
 
 echo "Running 5-turn conversation (text + tool use)..."
 timeout 180 pi --no-session -ne -e "$DIR" \
-  --model "claude-bridge/claude-haiku-4-5" \
+  --model "claude-bridge/claude-haiku-5-5" \
   --mode json \
   -p "The secret number is 42. Acknowledge briefly." \
      "Write the secret number to $TMPFILE. Just the number, nothing else." \
@@ -34,7 +36,7 @@ timeout 180 pi --no-session -ne -e "$DIR" \
   > "$LOGFILE" 2>"$LOGFILE.err" || PI_EXIT=$?
 PI_EXIT=${PI_EXIT:-0}
 
-rm -f "$TMPFILE"
+rm -rf "$SCRATCH_DIR"
 
 if [ -s "$LOGFILE.err" ]; then
   echo ""
@@ -57,7 +59,7 @@ printf "%-6s  %8s  %8s  %8s  %8s  %s\n" "Turn" "Input" "CacheRd" "CacheWr" "Outp
 MIN_CACHE_HIT_PCT=90
 # Count tool calls, not turns: how many assistant turns the write and read get
 # split across is the model's choice, but both tools have to run for the prompts
-# to be answered, and it is tool results that exercise the cursor/cache path.
+# to be answered, and tool results exercise the recording/cache path.
 MIN_EXPECTED_TOOL_CALLS=2   # write + read
 MIN_CASE3_RESUMES=2
 EXPECTED_CASE1=1
@@ -111,11 +113,8 @@ if [ "$TOOL_CALLS" -lt $MIN_EXPECTED_TOOL_CALLS ]; then
 fi
 
 # --- Assert session resume (no spurious rebuilds) ---
-# With the off-by-one cursor bug, every follow-up turn triggered a rebuild
-# instead of a resume, because pi appends the final assistant message after
-# streamSimple returns, making the cursor lag by 1.
-#
-# Parses the "syncResult: path=<reuse|rebuild|clean-start> sessionId=<uuid>"
+# Every follow-up turn must match the recorded content exactly.
+# Parses the "syncResult: path=<path> sessionId=<uuid>"
 # marker emitted by syncSharedSession at the end of each call. Gives us both
 # the distribution and sessionId stability in one pass.
 
@@ -133,7 +132,8 @@ while IFS= read -r line; do
   case "$path" in
     clean-start) CLEAN_START_COUNT=$((CLEAN_START_COUNT + 1));;
     reuse)       REUSE_COUNT=$((REUSE_COUNT + 1));;
-    rebuild)     REBUILD_COUNT=$((REBUILD_COUNT + 1));;
+    rebuild|fork|prefix-write) REBUILD_COUNT=$((REBUILD_COUNT + 1));;
+    *) echo "FAIL: unrecognized sync path: $path"; FAIL=$((FAIL + 1));;
   esac
   if [ -n "$sid" ]; then
     SESSION_IDS+=("$sid")
@@ -155,7 +155,7 @@ fi
 
 if [ "$REBUILD_COUNT" -gt 0 ]; then
   echo "  FAIL: $REBUILD_COUNT spurious rebuilds (expected 0 for consecutive same-provider turns)"
-  echo "    Likely cause: off-by-one cursor — trailing assistant message misidentified as missed"
+  echo "    Recorded content does not match the unchanged conversation"
   FAIL=$((FAIL + 1))
 fi
 

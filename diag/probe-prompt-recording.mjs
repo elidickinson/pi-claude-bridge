@@ -2,10 +2,10 @@
 // What Claude Code's recorded system prompt freezes, and whether the bridge's
 // REBUILD releases it.
 //
-// eli/plan-snapshot-middle.md rests on a chain no probe has run end to end: a
-// changed append while the recording stands (the known issue in
-// eli/known-issues.md), then a rebuild in the bridge's own shape, then what the
-// next request carries. This runs the whole chain in one session and reads
+// Claude Code resends its recorded system prompt on resume and ignores a changed
+// append (systemPrompt.snapshot). Whether a rebuild releases it needs the whole
+// chain: a changed append while the recording stands, then a rebuild in the
+// bridge's own shape, then what the next request carries. This runs the whole chain in one session and reads
 // every answer off the wire (diag/capture-proxy.mjs), cross-checked against the
 // session file.
 //
@@ -46,6 +46,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createSession, deleteSession, openSession, parseJsonlFile } from "cc-session-io";
+import { FIRST_PARTY_ENV } from "./lib/first-party.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -58,8 +59,9 @@ const OUT = flag("out") ?? mkdtempSync(join(tmpdir(), "prompt-recording-"));
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR;
 
 // The claude_code preset's own anchor. CC's title/summary side requests share no
-// prefix with it, so this selects the agent-loop requests from a capture.
-const PRESET_ANCHOR = "You are an interactive agent";
+// prefix with it, so this selects the agent-loop requests from a capture. Not
+// the intro line: its wording changed in 2.1.308, while this one is in both.
+const PRESET_ANCHOR = "IMPORTANT: Assist with authorized security testing";
 
 const runTag = randomUUID().slice(0, 8);
 const MARK = { one: `MARKER-ONE-${runTag}`, two: `MARKER-TWO-${runTag}` };
@@ -199,6 +201,7 @@ async function runTurn(cwd, proxyUrl, { turn, append, resume, mcpServers }) {
 			maxTurns: 3,
 			env: {
 				...process.env,
+				...FIRST_PARTY_ENV,
 				ANTHROPIC_BASE_URL: proxyUrl,
 				ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 				DISABLE_AUTO_COMPACT: "1",

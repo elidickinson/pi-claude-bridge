@@ -33,7 +33,7 @@ it("keeps input open until every queued steer is replayed and its turn completes
 	await consume(c, [success(), first, success(), replay({ ...first, parent_tool_use_id: "subagent" }), success()]);
 
 	await __test.deliverToolResults(c, [], steer, 2);
-	assert.equal(c.missedSteer, false);
+	assert.deepEqual(c.recording.recorded.digests, []);
 	assert.notEqual(sent[0].uuid, sent[1].uuid);
 	await consume(c, [replay(first), success()]);
 	await c.promptStream.push(userMessage("input still connected"));
@@ -78,7 +78,7 @@ it("does not wait for a failed steer write at completion", async (t) => {
 	c.promptStream.push = push;
 	await consume(c, [success()]);
 	await pump;
-	assert.equal(c.missedSteer, true);
+	assert.deepEqual(c.recording.recorded.digests, []);
 	assert.equal(c.pendingSteerUuids.size, 0);
 	await assert.rejects(push(userMessage("too late")), /closed/);
 });
@@ -124,8 +124,10 @@ it("ends the query at an error result even with a steer queued", async (t) => {
 
 // Real SDK/CLI with localhost-only model responses. Closing input after the first
 // result used to interrupt MCP calls in the later turn before they reached the server.
-for (const [name, laterTurn, absorbedSteers] of [
+for (const [name, laterTurn, absorbedSteers, tag = ""] of [
 	["later-turn steering", true, 0],
+	// CC never replays a turn's opening prompt holding one of its own tags.
+	["a later-turn steer holding <task-notification>", true, 0, "<task-notification><task-id>abc</task-id></task-notification> "],
 	["one absorbed steer", false, 1],
 	["65 absorbed steers", false, 65],
 	["queued opener plus 64 absorbed steers", true, 64],
@@ -142,7 +144,7 @@ for (const [name, laterTurn, absorbedSteers] of [
 			: Array.from({ length: absorbedSteers }, (_, i) => i + 1);
 		const steers = [];
 		const writeSteer = async () => {
-			const text = `Steer ${steers.length + 1}. Continue.`;
+			const text = `${tag}Steer ${steers.length + 1}. Continue.`;
 			steers.push(text);
 			await __test.deliverToolResults(c, [], [{ type: "text", text }], steers.length);
 		};

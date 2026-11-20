@@ -135,6 +135,9 @@ test("cache read loss is capped to the seed prefix and every positive loss is re
 	assert.equal(confounded.readLoss, 914);
 	assert.equal(compareCacheUsage({ cacheRead: 7914, cacheWrite: 0, expected }, { cacheRead: 6200, cacheWrite: 0, expected }, false).status,
 		"not-attributed-no-target-wire-change");
+	const uncached = compareCacheUsage({ cacheRead: 0, cacheWrite: 0, expected: 0 }, { cacheRead: 0, cacheWrite: 0, expected: 0 }, true);
+	assert.equal(uncached.status, "inconclusive-seed-cached-nothing");
+	assert.equal(uncached.controlCoversExpectedPrefix, false);
 });
 
 test("attribution gates reject unrelated changes and expose surviving-text side effects", () => {
@@ -156,6 +159,18 @@ test("attribution gates reject unrelated changes and expose surviving-text side 
 	assert.equal(drop.sideEffects[0].path, "messages[0].content[3].text");
 	assert.equal(assessMutationAttribution("tool-result-key-order", [{ kind: "key-order", path: "messages[2].content[0]" }],
 		{ ...validInvariants, toolsSame: false }).status, "confounded");
+	assert.equal(assessMutationAttribution("drop-attachment-date", [{ kind: "missing-array-item", path: "messages[0].content[5]" }],
+		validInvariants).status, "valid");
+	assert.equal(assessMutationAttribution("tool-result-trailing-newline", [{ kind: "value", path: "messages[2].content[0].content[0].text" }],
+		validInvariants).status, "valid");
+	assert.equal(assessMutationAttribution("user-content-single-block-to-string", [{ kind: "type-or-shape", path: "messages[0].content" }],
+		validInvariants).status, "valid");
+	assert.throws(() => assessMutationAttribution("no-such-mutation", [], validInvariants), /unknown session mutation/);
+	const config = assessMutationAttribution("tool-result-key-order", [{ kind: "key-order", path: "messages[2].content[0]" }], {
+		...validInvariants, configChanges: [{ key: "output_config" }], headerChanges: [{ key: "betas" }],
+	});
+	assert.equal(config.status, "confounded");
+	assert.deepEqual(config.reasons, ["config-changed:output_config", "header-changed:betas"]);
 });
 
 test("context attachment mutation repairs parent links", () => {
@@ -173,6 +188,36 @@ test("context attachment mutation repairs parent links", () => {
 	assert.equal(mutation.records[2].parentUuid, "snap");
 });
 
+test("single-type attachment drops remove only that type and report absent types as unchanged", () => {
+	const records = [
+		{ type: "user", uuid: "u", parentUuid: null, message: { content: "prompt" } },
+		{ type: "attachment", uuid: "a1", parentUuid: "u", attachment: { type: "environment" } },
+		{ type: "attachment", uuid: "a2", parentUuid: "a1", attachment: { type: "total_tokens_reminder" } },
+		{ type: "attachment", uuid: "a3", parentUuid: "a2", attachment: { type: "date" } },
+	];
+	const reminders = mutateSessionRecords(records, "drop-total-tokens-reminders");
+	assert.deepEqual(reminders.details.removed, ["total_tokens_reminder"]);
+	assert.deepEqual(reminders.records.map((record) => [record.uuid, record.parentUuid]), [["u", null], ["a1", "u"], ["a3", "a1"]]);
+	assert.deepEqual(mutateSessionRecords(records, "drop-attachment-environment").records.map((record) => record.uuid), ["u", "a2", "a3"]);
+	assert.equal(mutateSessionRecords(records, "drop-attachment-instructions").changed, 0);
+});
+
+test("trailing-newline and user-content mutations change only their target", () => {
+	const records = [
+		{ type: "user", uuid: "p", message: { content: [{ type: "text", text: "prompt" }] } },
+		{ type: "user", uuid: "two", message: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] } },
+		{ type: "user", uuid: "t", message: { content: [toolResult([{ type: "text", text: "result\n" }])] } },
+	];
+	const newline = mutateSessionRecords(records, "tool-result-trailing-newline");
+	assert.equal(newline.changed, 1);
+	assert.deepEqual(newline.records[2].message.content[0].content, [{ type: "text", text: "result" }]);
+	assert.equal(newline.records[0], records[0]);
+	const user = mutateSessionRecords(records, "user-content-single-block-to-string");
+	assert.equal(user.changed, 1);
+	assert.equal(user.records[0].message.content, "prompt");
+	assert.deepEqual(user.records.slice(1), records.slice(1));
+});
+
 test("tool-result mutations change representation and preserve key order", () => {
 	const records = [{ type: "user", uuid: "u", parentUuid: "a", message: { content: [toolResult("result")] } }];
 	const shape = mutateSessionRecords(records, "tool-result-content-shape");
@@ -183,4 +228,35 @@ test("tool-result mutations change representation and preserve key order", () =>
 	assert.deepEqual(Object.keys(order.records[0].message.content[0]), ["is_error", "content", "tool_use_id", "type"]);
 	const parsed = mutateSessionJsonl(`${JSON.stringify(records[0])}\n`, "tool-result-key-order");
 	assert.deepEqual(Object.keys(JSON.parse(parsed.jsonl).message.content[0]), ["is_error", "content", "tool_use_id", "type"]);
+});
+
+test("in-place attachment edits change one value and keep every record", () => {
+	const records = [
+		{ type: "attachment", uuid: "d", sessionId: "s", attachment: { type: "date", date: "2026-10-21" } },
+		{ type: "attachment", uuid: "t", sessionId: "s", attachment: { type: "total_tokens_reminder", text: "<total_tokens>15000000 tokens left</total_tokens>" } },
+	];
+	const date = mutateSessionRecords(records, "edit-attachment-date");
+	assert.deepEqual([date.changed, date.records.length, date.records[0].attachment.date], [1, 2, "2026-10-20"]);
+	const tokens = mutateSessionRecords(records, "edit-total-tokens-reminder");
+	assert.equal(tokens.records[1].attachment.text, "<total_tokens>15000001 tokens left</total_tokens>");
+});
+
+test("session id rotation keeps every record and changes only the id", () => {
+	const records = [{ type: "user", uuid: "u", sessionId: "old" }, { type: "summary", uuid: "x" }];
+	const rotated = mutateSessionRecords(records, "rotate-session-id");
+	assert.equal(rotated.changed, 1);
+	assert.notEqual(rotated.sessionId, "old");
+	assert.deepEqual(rotated.records, [{ type: "user", uuid: "u", sessionId: rotated.sessionId }, { type: "summary", uuid: "x" }]);
+});
+
+test("a dropped attachment rendered inside a shared message counts as its removal", () => {
+	const shrunk = [{ kind: "value", path: "messages[1].content", before: { type: "string", length: 940 }, after: { type: "string", length: 206 } }];
+	assert.equal(assessMutationAttribution("drop-attachment-environment", shrunk, validInvariants).status, "valid");
+	const grown = [{ ...shrunk[0], before: shrunk[0].after, after: shrunk[0].before }];
+	assert.notEqual(assessMutationAttribution("drop-attachment-environment", grown, validInvariants).status, "valid");
+});
+
+test("rotation is attributed by its metadata change alone, and any prompt change confounds it", () => {
+	assert.equal(assessMutationAttribution("rotate-session-id", [], validInvariants, { targetObserved: true }).status, "valid");
+	assert.equal(assessMutationAttribution("rotate-session-id", [{ kind: "value", path: "messages[0].content" }], validInvariants, { targetObserved: true }).status, "confounded");
 });

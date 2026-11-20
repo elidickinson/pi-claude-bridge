@@ -29,7 +29,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { collectCarriedAttachments, placeCarriedAttachments } from "../src/attachments.js";
 
 const CWD = process.cwd();
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 // Nothing can infer this from the filename, the prompt, or the file on disk —
 // it exists only in the attachment payload the rebuild has to carry.
 const TOKEN = "ZORBLAT-4417-QUUX";
@@ -77,7 +77,7 @@ function rebuild(sid, carried) {
 		{ role: "assistant", content: [{ type: "text", text: "Noted." }] },
 	];
 	const placed = placeCarriedAttachments(carried, messages);
-	session.importMessages(messages, placed.attachments.length ? { attachments: placed.attachments } : undefined);
+	session.importMessages(messages, placed.length ? { attachments: placed } : undefined);
 	session.save();
 	return { session, placed };
 }
@@ -111,7 +111,7 @@ test("an @file attachment survives a rebuild and reaches Claude", { timeout: 180
 		assert.equal(carried.length, 1, "collectCarriedAttachments did not find the attachment");
 
 		const { session, placed } = rebuild(sid, carried);
-		assert.equal(placed.skipped.length, 0, `placement skipped: ${placed.skipped.join("; ")}`);
+		assert.equal(placed.length, carried.length, "placement dropped the attachment");
 		assert.equal(session.attachments.length, 1, "rebuilt session has no attachment");
 
 		const answer = await ask(sid);

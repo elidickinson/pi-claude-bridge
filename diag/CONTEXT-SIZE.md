@@ -42,6 +42,21 @@ options and auth:
   `overageStatus: "rejected"`, `overageDisabledReason: "org_level_disabled"`
 - Date: 2026-09-28
 
+The Fable 5.2 rows come from a later run, same options and auth:
+
+- Claude Agent SDK 0.3.321 (bundled Claude Code 2.1.321)
+- Plan: Max, Extra Usage off (`hasExtraUsageEnabled: false`,
+  `cachedExtraUsageDisabledReason: "org_level_disabled"` in `~/.claude.json`)
+- Date: 2026-11-09
+
+The Mythos rows come from a later run, same options and auth:
+
+- Claude Agent SDK 0.3.321 (bundled Claude Code 2.1.321)
+- Plan: Max, no Extra Usage credits — the run's rate-limit event reports
+  `overageStatus: "rejected"`, `overageDisabledReason: "out_of_credits"`.
+  Nothing could bill to Extra Usage, so the cells go in the credits-off column.
+- Date: 2026-11-10
+
 ## Served context windows
 
 Four conditions, each run with the probe above. Values are tokens; `1M` =
@@ -51,6 +66,12 @@ the footnote below the table).
 
 | requested id              | Pro, credits off | Pro, credits on | Max, credits off | Max, credits on |
 |---------------------------|------------------|-----------------|------------------|-----------------|
+| `claude-mythos-5-2`       | —                | —               | 1M               | —               |
+| `claude-mythos-5-2[1m]`  | —                | —               | 1M               | —               |
+| `claude-mythos-5-1`       | —                | —               | 1M               | —               |
+| `claude-mythos-5-1[1m]`  | —                | —               | 1M               | —               |
+| `claude-fable-5-2`        | —                | —               | 1M               | —               |
+| `claude-fable-5-2[1m]`   | —                | —               | 1M               | —               |
 | `claude-sonnet-5-5`       | 1M               | 1M              | —                | —               |
 | `claude-sonnet-5-5[1m]`  | 1M               | 1M              | —                | —               |
 | `claude-opus-5-5`         | 1M               | 1M              | 1M               | —               |
@@ -76,7 +97,8 @@ Raw runs: `.test-output/context-size/{pro,max}-2026-06-26T21-*.json`,
 Opus 5.5 `.test-output/context-size/max-2026-09-23T13-50-08-107Z.json`,
 Sonnet 5.5 `.test-output/context-size/max-2026-09-28T18-33-28-340Z.json`
 (Pro credits on) and `.test-output/context-size/pro-2026-09-28T18-56-52-762Z.json`
-(Pro credits off)
+(Pro credits off), Mythos `.test-output/context-size/max-2026-11-10T19-30-15-749Z.json`
+(Max credits off)
 
 `—` = not yet tested in that condition. Max-credits-on matched Pro-credits-on
 for every cell tested in both (shown for completeness). Opus 5.5 served 1M from
@@ -94,6 +116,12 @@ off, so the June Pro-credits-off bare cells of 200K for sonnet-5 and opus-4-8
 are stale — a backend change, not an entitlement effect. Two exceptions:
 `fable-5` is now fully credits-gated on Pro (§ below), and the 4-6 models
 keep their `[1m]` credits gate (`PLAN_GATED_ONE_M` still required).
+
+Measured 2026-11-10, Max with no Extra Usage credits: Mythos 5.2 and 5.1 serve 1M
+from both the bare id and `[1m]`, like Fable 5.2 in the same run. Claude Code
+reports the same max output as each Fable sibling: 128K for Mythos 5.2 and
+Fable 5.2, 64K for Mythos 5.1 and Fable 5.1. Mythos is access-gated, so the
+Pro columns can only be filled by an account in one of Anthropic's programs.
 
 † **Inferred, not directly measured.** The Pro-credits-off run predates
 error-field capture; its three rejected `[1m]` rows have no recorded HTTP status

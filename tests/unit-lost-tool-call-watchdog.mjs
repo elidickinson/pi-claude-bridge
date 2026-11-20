@@ -37,10 +37,13 @@ function makeCtx() {
 	c.currentPiStream = fakeStream();
 	c.resetTurnState(fakeModel);
 	const killed = [];
-	c.activeQuery = { interrupt: async () => { killed.push("interrupt"); }, close: () => { killed.push("close"); } };
+	const commits = [];
+	c.activeQuery = {};
+	c.stopProcess = () => { killed.push("stop"); };
+	c.commitRecording = (dirty) => { commits.push(dirty); };
 	c.promptStream = { fail: () => {} };
 	__test.activeQueryContexts.add(c);
-	return { c, killed, handlers: Object.fromEntries(__test.toMcpToolDefs(piTools, c).map((d) => [d.name, d.handler])) };
+	return { c, killed, commits, handlers: Object.fromEntries(__test.toMcpToolDefs(piTools, c).map((d) => [d.name, d.handler])) };
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -77,12 +80,11 @@ async function pieceOfAParallelCall(c) {
 beforeEach(() => {
 	__test.resetSharedSession();
 	__test.setPiUI(null);
-	__test.setSharedSession(null, { sessionId: "abc", cursor: 3, cwd: "/tmp", needsRebuild: false });
 });
 
 describe("a handler waiting on a tool call pi never received", () => {
 	it("fails the turn pi is waiting on, once the timeout passes", async () => {
-		const { c, killed, handlers } = makeCtx();
+		const { c, killed, commits, handlers } = makeCtx();
 		const query = await pieceOfAParallelCall(c);
 		const bash = handlers.bash("toolu_bash");
 		const monitor = handlers.MonitorCreate("toolu_monitor");
@@ -103,10 +105,11 @@ describe("a handler waiting on a tool call pi never received", () => {
 		assert.strictEqual(c.currentPiStream, null);
 		// The orphaned handler is released, and the Claude Code process behind it killed.
 		assert.ok((await settled(monitor)).value, "the lost call's handler must settle");
-		assert.deepStrictEqual(killed, ["interrupt", "close"]);
+		assert.deepStrictEqual(killed, ["stop"]);
 		assert.strictEqual(c.activeQuery, null);
 		assert.ok(!__test.activeQueryContexts.has(c));
-		assert.strictEqual(__test.getSharedSession(null).needsRebuild, true);
+		assert.strictEqual(c.discarded, true);
+		assert.deepStrictEqual(commits, [true]);
 		query.release();
 		await query.done;
 	});
@@ -132,15 +135,16 @@ describe("a handler waiting on a tool call pi never received", () => {
 	});
 
 	it("ends the query even when pi is still running the calls it did get", async () => {
-		const { c, killed, handlers } = makeCtx();
+		const { c, killed, commits, handlers } = makeCtx();
 		c.currentPiStream = null; // pi has the stream's tool calls and is executing them
 		const monitor = handlers.MonitorCreate("toolu_monitor");
 
 		assert.ok((await settled(monitor)).value);
-		assert.deepStrictEqual(killed, ["interrupt", "close"]);
+		assert.deepStrictEqual(killed, ["stop"]);
 		assert.strictEqual(c.activeQuery, null);
 		// pi's results will find no parked query and resume from its own history.
-		assert.strictEqual(__test.getSharedSession(null).needsRebuild, true);
+		assert.strictEqual(c.discarded, true);
+		assert.deepStrictEqual(commits, [true]);
 	});
 });
 
@@ -174,6 +178,8 @@ describe("a handler waiting on a tool call pi has", () => {
 		assert.deepStrictEqual(killed, []);
 		assert.strictEqual(c.currentPiStream, stream);
 		assert.deepStrictEqual(stream.events, []);
+		await __test.deliverToolResults(c, [result("toolu_streaming")], null, 4);
+		assert.deepStrictEqual(await settled(bash), { value: result("toolu_streaming") });
 	});
 
 	it("is checked again, and failed if the call has since been dropped", async () => {
