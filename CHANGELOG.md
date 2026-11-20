@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Add: 200K twins of every 1M model** — Select `claude-bridge/claude-200k-opus-5-5`, for example, to run a worker at 200K without changing the 1M model available to the parent session. The provider and isolated summary paths both send the bare model id with `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for twins. A model only gets a twin when it is registered at 1M under the current settings.
+
 ## 0.13.0 — 2026-11-16
 
 - **Add: new system prompt handling including option to suppress Claude Code system prompt (#112, #185)** — The bridge appends pi's prompt to Claude Code's preset as pi renders it (tools, rules, docs and context files included) instead of just selected parts. Set `provider.systemPromptPreset: false` to send pi's prompt alone, without Claude Code's preset. These changes simplify the code and remove a whole category of bugs: #71, #72, #153, #158, #178, #247, #249. Thanks @iamhucong and @jmtoepperwien. 

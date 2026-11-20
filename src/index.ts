@@ -11,7 +11,7 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { QueryProcess } from "./query-process.js";
 import { readTranscript, recordedToolResults, resolveRecordingCut, savePrefixSession } from "./session-transcript.js";
 import { debugLogPath, diagLogPath } from "./log-paths.js";
-import { applyLongContext, buildModels, claudeCodeModelId, extraUsageByChoice, type LongContextSettings } from "./models.js";
+import { applyLongContext, buildModels, extraUsageByChoice, resolveClaudeCodeRuntimeModel, type LongContextSettings } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -388,7 +388,7 @@ async function runIsolatedSummary(
 		if (!promptText) throw new Error("runIsolatedSummary: one-off summary without a user prompt (last message is not user?)");
 		const cwd = sessionCwdFor(summarySessionFor(options?.signal) ?? options?.sessionId);
 		const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
-		const cliModel = claudeCodeModelId(model, longContextSettings);
+		const { cliModelId: cliModel, childEnv: modelEnv } = resolveClaudeCodeRuntimeModel(model, longContextSettings);
 		// Honour the caller's reasoning level, same mapping as the provider path.
 		const effort = effortForReasoning(model, options?.reasoning);
 		const thinking = thinkingForReasoning(model, options?.reasoning);
@@ -398,7 +398,7 @@ async function runIsolatedSummary(
 			prompt: promptText,
 			options: {
 				cwd,
-				env: traceQueryStart(traceQueryId, { kind: "isolated-summary", callId: traceCallId, model: cliModel }, ccChildEnv(options?.env)),
+				env: traceQueryStart(traceQueryId, { kind: "isolated-summary", callId: traceCallId, model: cliModel }, ccChildEnv({ ...options?.env, ...modelEnv })),
 				settings: { autoMemoryEnabled: false },
 				tools: [],
 				strictMcpConfig: true,
@@ -1892,7 +1892,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		const cwd = sessionCwdFor(options?.sessionId);
 		// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 		// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
-		const cliModel = claudeCodeModelId(model, longContextSettings);
+		const { cliModelId: cliModel, childEnv: modelEnv } = resolveClaudeCodeRuntimeModel(model, longContextSettings);
 		// Which pi session this query serves — the attribution key for history
 		// rewrites (session_compact / session_tree) and for SessionState above.
 		const piSessionId = options?.sessionId ?? null;
@@ -1989,7 +1989,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			kind: "provider", callId: traceCallId, piSessionId, reentrant: isReentrant, resume: resumeSessionId ?? null,
 			model: cliModel, effort: effort ?? null, servedToolNames: Object.fromEntries(customToolNameToSdk), mcpTools: mcpTools.map((t) => t.name),
 			signal: traceSignalId(options?.signal), digests: { systemPrompt: systemPromptText }, systemPromptPreset: providerSettings.systemPromptPreset ?? null,
-		}, ccChildEnv(options?.env));
+		}, ccChildEnv({ ...options?.env, ...modelEnv }));
 		const cliDebug = makeCliDebugOptions("provider");
 		const childProcess = new QueryProcess(cliDebug.stderr);
 		const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
@@ -2228,7 +2228,7 @@ export default function (pi: ExtensionAPI) {
 	providerSettings = config.provider ?? {};
 	// Opus 4.6 and Sonnet 4.6 need these settings to know if they're eligible for 1M context
 	// Validate at the boundary: a non-array here would throw inside every
-	// claudeCodeModelId call and brick the extension at activation.
+	// runtime model resolution and brick the extension at activation.
 	const forceTwoHundredK = Array.isArray(providerSettings.forceTwoHundredK)
 		? providerSettings.forceTwoHundredK.filter((id): id is string => typeof id === "string")
 		: undefined;

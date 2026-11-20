@@ -43,6 +43,8 @@ Claude Mythos 5.2 and 5.1 are listed too (at the bottom), though pi-ai leaves th
 
 All current models run with 1M context. Opus 4.6 and Sonnet 4.6 need extra settings for 1M (see [Configuration](#configuration)).
 
+Each model listed at 1M also has a 200K twin. Select an id such as `claude-bridge/claude-200k-opus-5-5` to run a worker at 200K without changing the parent session’s model. The twin sends the bare model id and sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for that Claude Code process.
+
 pi's tools are bridged to Claude Code, but you continue to use pi as usual:
 
 - Bash commands get Claude Code's 120-second default timeout since Claude expects it but pi's bash has no default limit.
