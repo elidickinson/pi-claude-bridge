@@ -64,13 +64,17 @@ beforeEach(() => {
 	setQuery(({ prompt, options }) => {
 		const script = scripts.shift();
 		if (!script) throw new Error("no fake script queued");
-		const call = { label: script.label, resume: options.resume };
+		// A continuation: CC resumes the interrupted turn with its own meta prompt and reads none,
+		// unless it judged the turn complete (ignoresResume), when it waits for input.
+		const resumed = options.env?.CLAUDE_CODE_RESUME_INTERRUPTED_TURN === "1" && !script.ignoresResume;
+		const call = { label: script.label, resume: options.resume, env: options.env, resumed };
 		calls.push(call);
 		// close() is how the bridge kills CC on abort; it ends a parked script.
 		let closed = false, onClose;
 		const killed = new Promise((r) => { onClose = r; });
 		const gen = (async function* () {
-			const first = (await prompt[Symbol.asyncIterator]().next()).value;
+			const first = resumed ? { type: "user", message: { content: [{ type: "text", text: options.env.CLAUDE_CODE_RESUME_PROMPT }] } }
+				: (await prompt[Symbol.asyncIterator]().next()).value;
 			call.prompt = first.message.content[0].text;
 			const sessionId = options.sessionId ?? options.resume;
 			for (const step of script.steps) {
@@ -78,7 +82,7 @@ beforeEach(() => {
 				if (typeof step === "function") { await step(killed); continue; }
 				if (step.type === "system" && step.subtype === "init") {
 					yield { ...step, session_id: sessionId };
-					yield { ...first, isReplay: true, session_id: sessionId };
+					if (!resumed) yield { ...first, isReplay: true, session_id: sessionId };
 				} else yield step;
 			}
 		})();
@@ -99,8 +103,32 @@ describe("tool result with no parked query", () => {
 			{ sessionId: "pi-restarted" }).result();
 
 		assert.equal(calls.length, 1, "the result carries the turn into a fresh query");
+		assert.equal(calls[0].resumed, true, "Claude Code resumes the interrupted turn instead of reading a prompt (#274)");
+		assert.equal(calls[0].env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS, "0");
 		assert.match(calls[0].prompt, /interrupted and resumed/);
 		assert.equal(replyText(reply), "answer after restart");
+	});
+
+	it("writes the continue prompt after all when Claude Code does not resume the turn", async (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		scripts.push({ label: "not resumed", ignoresResume: true, steps: [init("cc-idle"), ...text("answer after fallback"), result("answer after fallback")] });
+		const reply = streamSimple(model, { messages: [user("read a"), toolCall("toolu_10"), toolResult("toolu_10")], tools: [] },
+			{ sessionId: "pi-idle" }).result();
+		for (let i = 0; i < 20 && !calls.length; i++) await new Promise(setImmediate);
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].prompt, undefined, "no prompt is written while Claude Code may still resume");
+		t.mock.timers.tick(30_000);
+		assert.equal(replyText(await reply), "answer after fallback");
+		assert.match(calls[0].prompt, /interrupted and resumed/);
+	});
+
+	it("an ordinary prompt never inherits the resume settings", async () => {
+		scripts.push({ label: "prompt", steps: [init("cc-prompt"), ...text("hi"), result("hi")] });
+		await streamSimple(model, { messages: [user("hello")], tools: [] }, { sessionId: "pi-prompt" }).result();
+		assert.equal(calls[0].resumed, false);
+		assert.equal(calls[0].env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN, undefined);
+		assert.equal(calls[0].env.CLAUDE_CODE_RESUME_PROMPT, undefined);
+		assert.equal(calls[0].env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS, "1");
 	});
 
 	it("after compaction rewrote the history, tells Claude Code its context was compacted", async () => {
@@ -112,6 +140,7 @@ describe("tool result with no parked query", () => {
 			{ sessionId: "pi-compacted" }).result();
 
 		assert.equal(calls.length, 1);
+		assert.equal(calls[0].resumed, true);
 		assert.match(calls[0].prompt, /context was compacted/);
 	});
 

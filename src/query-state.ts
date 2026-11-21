@@ -82,6 +82,9 @@ export class QueryContext {
 	 *  result the oldest steer still pending, since CC runs queued input in order.
 	 *  Cleared by that turn's first output. */
 	turnOpener: string | undefined;
+	/** Claude Code has answered: any output or a result. A continuation that CC
+	 *  resumes on its own writes no prompt, and is given one if this stays false. */
+	outputSeen = false;
 	/** Binds a later run's abort signal to this query. Set by the run that opened it;
 	 *  a run that continues it from a tool result (e.g. after pi terminated a tool
 	 *  batch and ended the opening run) has no other way to stop it. */
