@@ -1,16 +1,27 @@
 // /claude-account: pick which Claude Code login a project runs on, and sign in to it
 // without leaving pi. The choice lives in the project's .pi/claude-bridge.json as
-// provider.account; config.ts maps it to CLAUDE_CONFIG_DIR.
+// provider.account; activation maps it to CLAUDE_CONFIG_DIR.
 
 import { execFileSync, spawn } from "child_process";
-import { CONFIG_DIR_NAME, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { createRequire } from "module";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import { accountConfigDir, loadConfig, type Config } from "./config.js";
+import { loadConfig, type Config } from "../config.js";
+import { accountConfigDir } from "./config.js";
 
 const ORIGINAL_CONFIG_DIR = Symbol.for("claude-bridge:original-claude-config-dir");
+
+/** Activate before any Claude Code child or session path is created. Never fall
+ *  back to the default login when a selected account is missing. */
+export function registerAccount(pi: ExtensionAPI, provider: Config["provider"] = {}): void {
+	const dir = applyAccount(provider.account);
+	if (provider.account !== undefined && dir !== undefined && !existsSync(dir)) {
+		console.error(`claude-bridge: account "${provider.account}" is not signed in. Run /claude-account login`);
+	}
+	pi.registerCommand("claude-account", claudeAccountCommand);
+}
 
 /** Point every Claude Code child at the account's login, or back at whatever
  *  CLAUDE_CONFIG_DIR pi was started with. The original is remembered across

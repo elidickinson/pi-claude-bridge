@@ -4,14 +4,15 @@
 // Anthropic bills some system prompts to Extra Usage even with plan limits left,
 // or refuses them with "You're out of extra usage" when Extra Usage is off
 // (diag/EXTRA-USAGE-400.md). Each arm is one Agent SDK query shaped like a bridge
-// turn (src/index.ts provider path: no tools, user settings, `claude_code` preset)
-// with the arm's prompt as the preset's append, the way the bridge forwards pi's
-// prompt parts. Haiku 4.5, "Reply with just: OK".
+// turn (src/index.ts provider path: no tools, user settings, auto memory off). A
+// file arm sends the prompt as the `claude_code` preset's append (the bridge's
+// default); a `plain:` arm sends it as a plain string (systemPromptPreset: false). Default Haiku 5.5 (--model to change), "Reply with just: OK".
 //
-//   node --import tsx diag/probe-third-party-gate.mjs control diag/third-party-gate/pi-1.5.1.txt ...
+//   node --import tsx diag/probe-third-party-gate.mjs [--model <id>] control diag/third-party-gate/pi-1.5.1.txt ...
 //   node --import tsx diag/probe-third-party-gate.mjs --render <pi-bin> <out.txt>
 //
-// An arm is `control` (no append) or a prompt file. Interleave arms and repeat
+// An arm is `control` (no append), a prompt file (sent as the preset's append),
+// or `plain:<file>` (sent as a plain string, no preset). Interleave arms and repeat
 // them; results append to .test-output/third-party-gate/results.jsonl.
 // --render writes the default system prompt a pi binary renders in an empty
 // project with an empty agent dir (no context files or skills), with install
@@ -36,6 +37,9 @@ import { ccChildEnv, CLAUDE_MD_EXCLUDES } from "../src/cc-child.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUTDIR = join(ROOT, ".test-output", "third-party-gate");
 const args = process.argv.slice(2);
+const mi = args.indexOf("--model");
+const MODEL = mi === -1 ? "claude-haiku-5-5" : args[mi + 1];
+if (mi !== -1) args.splice(mi, 2);
 
 if (args[0] === "--render") {
 	const [, piBin, outArg] = args;
@@ -57,7 +61,7 @@ export default function (pi: any) {
 	// The dummy key only gets pi to before_agent_start. No other Anthropic credential
 	// reaches it: the agent dir is empty and the ANTHROPIC_* env is dropped.
 	const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("ANTHROPIC_")));
-	execFileSync(piBin, ["--no-session", "-ne", "-e", dump, "--model", "anthropic/claude-haiku-4-5", "-p", "hi"], {
+	execFileSync(piBin, ["--no-session", "-ne", "-e", dump, "--model", "anthropic/claude-haiku-5-5", "-p", "hi"], {
 		cwd: project, stdio: "inherit",
 		env: { ...env, PI_CODING_AGENT_DIR: join(scratch, "agent"), PI_OFFLINE: "1", ANTHROPIC_API_KEY: "sk-ant-dummy" },
 	});
@@ -77,8 +81,11 @@ const cwd = mkdtempSync(join(tmpdir(), "gate-probe-"));
 mkdirSync(OUTDIR, { recursive: true });
 
 for (const arm of args) {
-	const append = arm === "control" ? undefined : readFileSync(arm, "utf8");
-	const record = { arm: arm === "control" ? arm : basename(arm), at: new Date().toISOString(), rateLimits: [] };
+	const plain = arm.startsWith("plain:");
+	const file = plain ? arm.slice(6) : arm;
+	if (plain && file === "control") throw new Error("plain:control is not an arm; use control");
+	const text = file === "control" ? undefined : readFileSync(file, "utf8");
+	const record = { arm: file === "control" ? "control" : (plain ? "plain:" : "") + basename(file), model: MODEL, at: new Date().toISOString(), rateLimits: [] };
 	try {
 		for await (const m of query({
 			prompt: "Reply with just: OK",
@@ -87,9 +94,9 @@ for (const arm of args) {
 				tools: [],
 				permissionMode: "bypassPermissions",
 				settingSources: ["user"],
-				settings: { claudeMdExcludes: CLAUDE_MD_EXCLUDES, includeGitInstructions: false, outputStyle: "default" },
-				systemPrompt: { type: "preset", preset: "claude_code", append },
-				model: "claude-haiku-4-5",
+				settings: { claudeMdExcludes: CLAUDE_MD_EXCLUDES, includeGitInstructions: false, outputStyle: "default", autoMemoryEnabled: false },
+				systemPrompt: plain ? text : { type: "preset", preset: "claude_code", append: text },
+				model: MODEL,
 				strictMcpConfig: true,
 				persistSession: false,
 				maxTurns: 1,

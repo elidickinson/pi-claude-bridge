@@ -22,7 +22,7 @@
 // boundary inside the run is the one that compacts.
 //
 // The threshold is calibrated, not guessed: a probe run measures what one
-// minimal turn through this bridge actually costs (the Claude Code preset, the
+// minimal turn through this bridge actually costs (pi's system prompt, the
 // served pi tools, the transcript), and the threshold is set that far plus a
 // margin, so a seeded turn that reads two ~48KB files is over it while the
 // compacted history is comfortably under.
