@@ -74,7 +74,10 @@ function fakeQuery({ options, prompt }) {
 	const gen = (async function* () {
 		await ready;
 		const input = typeof prompt === "string" ? null : prompt[Symbol.asyncIterator]();
-		const initial = input ? (await input.next()).value : { message: { content: prompt } };
+		// A continuation: CC resumes the interrupted turn with its own meta prompt and reads none.
+		entry.resumed = options.env?.CLAUDE_CODE_RESUME_INTERRUPTED_TURN === "1";
+		const initial = entry.resumed ? { message: { content: options.env.CLAUDE_CODE_RESUME_PROMPT } }
+			: input ? (await input.next()).value : { message: { content: prompt } };
 		if (input) void (async () => {
 			for await (const _ of input) { /* Drain stdin like the SDK transport. */ }
 		})().catch(() => {});
@@ -83,7 +86,7 @@ function fakeQuery({ options, prompt }) {
 		if (script.boot) { await parked; return; }
 		record("user", initial.message.content, initial.uuid);
 		if (!script.preInit) yield { type: "system", subtype: "init", session_id: id };
-		if (!script.preInit && input) yield { type: "user", isReplay: true, parent_tool_use_id: null, uuid: initial.uuid, session_id: id, message: initial.message };
+		if (!script.preInit && input && !entry.resumed) yield { type: "user", isReplay: true, parent_tool_use_id: null, uuid: initial.uuid, session_id: id, message: initial.message };
 		if (script.tool) {
 			const value = record("assistant", [{ type: "tool_use", id: script.toolId ?? "X", name: "mcp__custom-tools__read", input: {} }], undefined, script.deferTool);
 			yield { type: "assistant", parent_tool_use_id: null, uuid: value.uuid, message: { id: "tool-api", model: model.id, content: value.message.content } };
