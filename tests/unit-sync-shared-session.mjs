@@ -68,28 +68,6 @@ describe("digest session decisions", () => {
 		assert.deepEqual(synced.recorded.digests, digestMessages(rewrite));
 		assert.deepEqual(readFileSync(session.jsonlPath), before);
 	});
-	// An extension that shrinks a session's history in place (context folding,
-	// billion-context-pi's compress) fires no rewrite event. The next query must
-	// carry the shortened history, not start with none (issue #77).
-	it("imports a compressed history instead of starting with none", () => {
-		seed([user("a"), say("b"), user("c"), say("d"), user("e"), say("f")]);
-		const compressed = [user("[summary] earlier work"), say("Noted.")];
-		const synced = sync([...compressed, user("next")]);
-		assert.ok(synced.sessionId);
-		assert.deepEqual(synced.recorded.digests, digestMessages(compressed));
-		assert.equal(openSession({ sessionId: synced.sessionId, projectPath: cwd }).messages.length, 2);
-	});
-	it("a continuation prefix-writes equal history instead of resuming CC's tail (#274)", () => {
-		const priors = [user("read"), calls("A"), result("A")];
-		const { session } = seed(priors);
-		const continued = __test.syncSharedSession(priors, cwd, new Map(), "sonnet", "pi", undefined, "", true);
-		assert.notEqual(continued.sessionId, session.sessionId, "reuse would resume whatever CC wrote after the result");
-		assert.equal(continued.forkAt, undefined, "a fork's resumeSessionAt marks a rewind, which CC does not continue");
-		const records = readFileSync(getSessionPath(continued.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR), "utf8").trim().split("\n").map(JSON.parse);
-		const last = records.filter((r) => r.type === "user" || r.type === "assistant").at(-1);
-		assert.equal(last.message.content[0].type, "tool_result", "the file ends at the tool result CC resumes from");
-		assert.equal(sync(priors).sessionId, session.sessionId, "an ordinary turn still reuses");
-	});
 	it("model changes rotate even for equal history", () => {
 		const priors = [user("hi"), say("hello")];
 		const { session } = seed(priors);

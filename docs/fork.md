@@ -11,14 +11,32 @@ so upstream's `test:unit` glob runs them too. Do not install this worktree in pi
   PR is authorized by this job. Multiple single-line hooks in `src/index.ts` are
   explicitly approved because session selection, input, output and child env
   must agree on whether Claude Code resumes the interrupted turn itself.
-- Current implementation: `src/index.ts`, `src/query-state.ts`; extraction into
-  `src/fork/` follows the account extraction, before merging upstream.
+- Implementation: `src/fork/continuation.ts`, re-exported by `src/fork/index.ts`.
+  Upstream `src/query-state.ts` is restored exactly: output tracking uses a
+  fork-owned weak set, so completed queries are not retained.
+- All hook/wiring lines in `src/index.ts` (line numbers refreshed after merge):
+  - L23: the single `./fork/index.js` import (shared with account registration).
+  - L577: optional `continuation = false` parameter on `syncSharedSession`.
+  - L596: `let row` instead of `const row` allows the policy hook to select it.
+  - L605: `row = continuationSyncRow(row, compared.cutCount, continuation);`
+  - L1086: `observeContinuationOutput(message, c);`
+  - L1936: `let { promptBlocks, promptText, continuation } = prepareContinuationPrompt(context.messages, historyRewritten, unparkedToolResult, extractUserPromptBlocks, extractUserPrompt);`
+  - L1937: `syncSharedSession(..., continuation.active)` passes the decision.
+  - L1973–1978: `const pushPrompt = () => { ... };` wraps upstream's unchanged
+    initial-record/push statements; it contains no fork policy.
+  - L1979: `pushContinuationPrompt(queryCtx, continuation, pushPrompt);`
+  - L2012: `continuationPromptEnv(options?.env, continuation)` supplies trace env.
+  - L2017: `env: continuationChildEnv(childEnv, continuation)` sets launch env.
+  Each policy hook is a one-line call; the other lines only carry its values.
 - Setting: automatic only for continuations ending at a tool result; ordinary
   user prompts keep upstream behavior. Uses child-only
   `CLAUDE_CODE_RESUME_INTERRUPTED_TURN`, `CLAUDE_CODE_RESUME_PROMPT` and
   `CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS`; 30s no-output fallback.
-- Tests: `tests/unit-orphan-result-after-restart.mjs`,
-  `tests/unit-sync-shared-session.mjs`, `tests/unit-query-lifecycle.mjs`.
+- Fork test: `tests/unit-fork-session-sync.mjs` (#274 prefix-write regression).
+  End-to-end provider mocks: `tests/unit-orphan-result-after-restart.mjs`
+  (restart, rewrite, 30s fallback, ordinary env) and
+  `tests/unit-query-lifecycle.mjs` (discard, reload, termination).
+  Their existing fake SDKs understand interrupted-turn resume; no paid calls.
 
 ## 2. Per-project Claude account
 
@@ -27,7 +45,8 @@ so upstream's `test:unit` glob runs them too. Do not install this worktree in pi
 - Hooks: `src/config.ts` imports `withProjectAccount, type AccountProvider`;
   `Config.provider` intersects `AccountProvider`; `loadConfig(cwd = process.cwd())`
   returns `withProjectAccount({ askClaude: global.askClaude, provider: { ...global.provider } }, cwd, tryParseJson)`.
-  `src/index.ts` calls `registerAccount(pi, providerSettings)`.
+  `src/index.ts:23` imports the shared fork barrel and `src/index.ts:2250`
+  calls `registerAccount(pi, providerSettings)`.
 - Setting: `provider.account`, global or project `.pi/claude-bridge.json`;
   project account overrides global account, no other project provider settings
   are trusted. Unset keeps the original Claude Code login. Missing named login
@@ -52,7 +71,7 @@ so upstream's `test:unit` glob runs them too. Do not install this worktree in pi
   (`b151768`, `10e61df`). No duplicate fork implementation or production hook.
 - Setting: none; edited/shortened pi history is imported into a fresh transcript.
 - Fork regression: "imports a compressed history instead of starting with none"
-  in `tests/unit-sync-shared-session.mjs` (fork commit `d63fcbb`).
+  in `tests/unit-fork-session-sync.mjs` (moved from fork commit `d63fcbb`).
 - Upstream candidate: none; already upstream. Keep the fork regression.
 
 ## 5. CI on branch pushes
