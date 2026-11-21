@@ -5,7 +5,7 @@ import { query, type EffortLevel, type SDKMessage, type SettingSource, type Thin
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { createSession, deleteSession, getSessionPath } from "cc-session-io";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname } from "path";
 import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { QueryProcess } from "./query-process.js";
@@ -20,7 +20,7 @@ import { compareHistory, copyRecording, importHistory, LiveRecording, type Recor
 import { deleteSessionState, loadSessionState, saveSessionState } from "./session-store.js";
 import { newAssistantOutput, QueryContext, type AssistantStep } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { applyAccount, claudeAccountCommand } from "./account.js";
+import { registerAccount } from "./fork/account.js";
 import { claudeCodeSettings, globalConfigPath, loadConfig, type Config } from "./config.js";
 import {
 	projectPromptCapture,
@@ -2285,18 +2285,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 // --- Extension registration ---
 
 export default function (pi: ExtensionAPI) {
-	const config = loadConfig(process.cwd());
+	const config = loadConfig();
 	debug(`bridge: version=${BRIDGE_VERSION} sdk=${packageVersion("@anthropic-ai/claude-agent-sdk")} pi=${PI_VERSION}`);
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
-	// Every Claude Code child inherits process.env, and the session paths read it too.
-	// Set even when the login is missing: Claude Code then refuses as not logged in
-	// instead of falling back to the default account.
-	const accountDir = applyAccount(providerSettings.account);
-	if (providerSettings.account !== undefined && accountDir !== undefined && !existsSync(accountDir)) {
-		console.error(`claude-bridge: account "${providerSettings.account}" is not signed in. Run /claude-account login`);
-	}
-	pi.registerCommand("claude-account", claudeAccountCommand);
+	registerAccount(pi, providerSettings);
 	// Opus 4.6 and Sonnet 4.6 need these settings to know if they're eligible for 1M context
 	// Validate at the boundary: a non-array here would throw inside every
 	// claudeCodeModelId call and brick the extension at activation.

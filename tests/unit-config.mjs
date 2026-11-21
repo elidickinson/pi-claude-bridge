@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { accountConfigDir, claudeCodeSettings, loadConfig } from "../src/config.js";
+import { claudeCodeSettings, loadConfig } from "../src/config.js";
 import activate, { __test } from "../src/index.js";
 
 function withTempHome(fn) {
@@ -34,18 +34,6 @@ describe("claudeCodeSettings", () => {
 	});
 });
 
-describe("accountConfigDir", () => {
-	it("maps a name to its own Claude Code config dir under ~/.claude-accounts", () => withTempHome((home) => {
-		assert.equal(accountConfigDir("banx"), join(home, ".claude-accounts", "banx"));
-	}));
-
-	it("rejects names that could resolve to another login", () => {
-		for (const name of ["", "..", "../personal", "a/b", "/tmp/x", ".hidden"]) {
-			assert.throws(() => accountConfigDir(name), /plain name/, name);
-		}
-	});
-});
-
 describe("loadConfig", () => {
 	it("ignores a project config: a repo can't set provider settings", () => withTempHome(() => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
@@ -61,24 +49,6 @@ describe("loadConfig", () => {
 			assert.deepEqual(loadConfig(process.cwd()), { askClaude: undefined, provider: {} });
 		} finally {
 			process.chdir(oldCwd);
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	}));
-
-	it("lets a project name its Claude account but nothing else in provider", () => withTempHome(() => {
-		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
-		try {
-			const globalDir = getAgentDir();
-			const projectDir = join(cwd, CONFIG_DIR_NAME);
-			mkdirSync(globalDir, { recursive: true });
-			mkdirSync(projectDir, { recursive: true });
-			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({ provider: { plan: "pro", account: "personal" } }));
-			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
-				provider: { plan: "max", account: "banx", pathToClaudeCodeExecutable: join(cwd, "evil") },
-			}));
-
-			assert.deepEqual(loadConfig(cwd).provider, { plan: "pro", account: "banx" });
-		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	}));

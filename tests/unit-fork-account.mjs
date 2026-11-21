@@ -5,8 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { applyAccount, excludeFromGit, writeProjectAccount } from "../src/account.js";
-import { accountConfigDir } from "../src/config.js";
+import { applyAccount, excludeFromGit, writeProjectAccount } from "../src/fork/account.js";
+import { accountConfigDir } from "../src/fork/config.js";
 
 function withProject(fn) {
 	const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-account-"));
