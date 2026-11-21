@@ -2,8 +2,12 @@
 
 ## UNRELEASED
 
-- **Refactor: isolate fork features for upstream syncs** — keep project account and interrupted-turn behavior in `src/fork/`, with documented hooks and fork regression tests.
+- **Refactor: isolate fork features for upstream syncs** — sync upstream 0.13.0 while keeping project account and interrupted-turn behavior in `src/fork/`, with documented hooks and fork regression tests.
 - **Add: per-project Claude account (`provider.account`)** — a project's `.pi/claude-bridge.json` can name a login, e.g. `"banx"`, and Claude Code runs with `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name>`. A missing login fails as not logged in rather than falling back to the default account; `/claude-account` shows the project's account and who it is signed in as, `/claude-account <name>` or `/claude-account default` switches it (keeping the file out of git) and reloads, `/claude-account login` signs in from inside pi (asking before it creates a new login folder), and `/claude-account logout` signs the project's account out.
+
+## 0.13.0 — 2026-11-16
+
+- **Add: new system prompt handling including option to suppress Claude Code system prompt (#112, #185)** — The bridge appends pi's prompt to Claude Code's preset as pi renders it (tools, rules, docs and context files included) instead of just selected parts. Set `provider.systemPromptPreset: false` to send pi's prompt alone, without Claude Code's preset. These changes simplify the code and remove a whole category of bugs: #71, #72, #153, #158, #178, #247, #249. Thanks @iamhucong and @jmtoepperwien. 
 - **Fix: tool calls rejected by Claude Code no longer hang the turn (#218)** — We now fail the turn if a tool call is rejected (e.g. because Claude Code permission hook blocked). Running tools are not canceled or undone. Unknown and wrong-case tool names are intentionally ignored so CC can retry itself. If CC sends invalid arguments it can now require a new user prompt to continue. Thanks @sonSunnoi.
 - **Add: Claude Mythos 5.2 and 5.1 with 1M context (#259)** — pi-ai doesn't list these access-gated models, so the bridge now adds them, cloned from the Fable releases they shipped beside. Measured at 1M on Max. Listed last in `/model`; requests fail on accounts without Mythos access. Thanks @borski.
 

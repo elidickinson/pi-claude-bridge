@@ -71,7 +71,7 @@ describe("pi streamFn consumers", () => {
 			unexpected,
 			[],
 			`pi has streamFn consumers this bridge has never considered: ${unexpected.join(", ")}. `
-			+ `Each can route an LLM call through our provider with a system prompt no before_agent_start recorded.`,
+			+ `Each can route an LLM call through our provider with its own system prompt.`,
 		);
 
 		// Keep the inventory aligned with pi's current summary consumers.

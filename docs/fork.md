@@ -7,7 +7,7 @@ so upstream's `test:unit` glob runs them too. Do not install this worktree in pi
 ## 1. Continue at a tool result — top upstream candidate (#274)
 
 - Kind: generally useful bug fix; upstream issue #274, fork PR #6 (`0e9ff15`).
-  Upstream has not fixed it. Upstreaming this removes several hooks; no upstream
+  Upstream `5ea9bb8` (0.13.0) has not fixed it. Upstreaming this removes several hooks; no upstream
   PR is authorized by this job. Multiple single-line hooks in `src/index.ts` are
   explicitly approved because session selection, input, output and child env
   must agree on whether Claude Code resumes the interrupted turn itself.
@@ -16,17 +16,17 @@ so upstream's `test:unit` glob runs them too. Do not install this worktree in pi
   fork-owned weak set, so completed queries are not retained.
 - All hook/wiring lines in `src/index.ts` (line numbers refreshed after merge):
   - L23: the single `./fork/index.js` import (shared with account registration).
-  - L577: optional `continuation = false` parameter on `syncSharedSession`.
-  - L596: `let row` instead of `const row` allows the policy hook to select it.
-  - L605: `row = continuationSyncRow(row, compared.cutCount, continuation);`
-  - L1086: `observeContinuationOutput(message, c);`
-  - L1936: `let { promptBlocks, promptText, continuation } = prepareContinuationPrompt(context.messages, historyRewritten, unparkedToolResult, extractUserPromptBlocks, extractUserPrompt);`
-  - L1937: `syncSharedSession(..., continuation.active)` passes the decision.
-  - L1973–1978: `const pushPrompt = () => { ... };` wraps upstream's unchanged
+  - L572: optional `continuation = false` parameter on `syncSharedSession`.
+  - L594: `let row` instead of `const row` allows the policy hook to select it.
+  - L600: `row = continuationSyncRow(row, compared.cutCount, continuation);`
+  - L1062: `observeContinuationOutput(message, c);`
+  - L1893: `let { promptBlocks, promptText, continuation } = prepareContinuationPrompt(context.messages, historyRewritten, unparkedToolResult, extractUserPromptBlocks, extractUserPrompt);`
+  - L1894: `syncSharedSession(..., continuation.active)` passes the decision.
+  - L1930–1935: `const pushPrompt = () => { ... };` wraps upstream's unchanged
     initial-record/push statements; it contains no fork policy.
-  - L1979: `pushContinuationPrompt(queryCtx, continuation, pushPrompt);`
-  - L2012: `continuationPromptEnv(options?.env, continuation)` supplies trace env.
-  - L2017: `env: continuationChildEnv(childEnv, continuation)` sets launch env.
+  - L1936: `pushContinuationPrompt(queryCtx, continuation, pushPrompt);`
+  - L1969: `continuationPromptEnv(options?.env, continuation)` supplies trace env.
+  - L1974: `env: continuationChildEnv(childEnv, continuation)` sets launch env.
   Each policy hook is a one-line call; the other lines only carry its values.
 - Setting: automatic only for continuations ending at a tool result; ordinary
   user prompts keep upstream behavior. Uses child-only
@@ -42,10 +42,13 @@ so upstream's `test:unit` glob runs them too. Do not install this worktree in pi
 
 - Kind: generally useful opt-in feature; upstream candidate after #274.
 - Implementation: `src/fork/config.ts`, `src/fork/account.ts` (`applyAccount`).
-- Hooks: `src/config.ts` imports `withProjectAccount, type AccountProvider`;
-  `Config.provider` intersects `AccountProvider`; `loadConfig(cwd = process.cwd())`
-  returns `withProjectAccount({ askClaude: global.askClaude, provider: { ...global.provider } }, cwd, tryParseJson)`.
-  `src/index.ts:23` imports the shared fork barrel and `src/index.ts:2250`
+- Hooks: `src/config.ts:11` imports `withProjectAccount, type AccountProvider`;
+  `src/config.ts:17` intersects `Config.provider` with `AccountProvider`;
+  `src/config.ts:57` accepts `loadConfig(cwd = process.cwd())`;
+  `src/config.ts:67` returns
+  `withProjectAccount({ askClaude: global.askClaude, provider }, cwd, tryParseJson)`
+  after upstream's `systemPromptPreset` normalization.
+  `src/index.ts:23` imports the shared fork barrel and `src/index.ts:2206`
   calls `registerAccount(pi, providerSettings)`.
 - Setting: `provider.account`, global or project `.pi/claude-bridge.json`;
   project account overrides global account, no other project provider settings
@@ -104,4 +107,13 @@ so upstream's `test:unit` glob runs them too. Do not install this worktree in pi
 - Commit extractions before `git merge --no-ff upstream/main`. Keep upstream
   code in conflicts and reattach these hooks; rerere is enabled. Walk every
   entry's hook, setting and regression test after merging.
-- No fork account code depends on `prompt-capture.ts` or `agents-md.ts`.
+- Post-merge audit at upstream `5ea9bb8`: all six entries above retain their
+  hooks, settings and tests; #77 remains upstream-owned. Upstream's whole-prompt
+  forwarding, preset normalization, rejected-tool-call handling and Mythos model
+  changes are retained. Neither fork module depends on deleted
+  `src/prompt-capture.ts` or `src/agents-md.ts`.
+- Deleted fork test `tests/unit-prompt-capture-turn-failure.mjs` imported
+  `__capture` from `src/prompt-capture.ts`. Its capture-failure path no longer
+  exists in 0.13.0, so the test was retired with the module, not reimplemented.
+  `tests/unit-system-prompt-provider.mjs` covers the new forwarding behavior;
+  `tests/unit-cc-rejected-tool-call.mjs` retains rejection/failure coverage.
