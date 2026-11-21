@@ -568,6 +568,7 @@ function syncSharedSession(
 	piSessionId: string | null,
 	traceCallId: string | undefined,
 	promptDigest: string,
+	continuation = false,
 ): SyncResult {
 	let state = sessionStateFor(piSessionId);
 	const before = state;
@@ -589,12 +590,16 @@ function syncSharedSession(
 	const cwdChanged = Boolean(state && safeRealpath(state.cwd) !== safeRealpath(cwd));
 	const promptChanged = Boolean(state && state.promptDigest !== promptDigest);
 	if (promptChanged) debug(`sync: system prompt changed; importing pi history ${sessionTag(piSessionId)}`);
-	const row = piSessionId == null ? 0 : !state ? (priors.length ? 2 : 1) : state.model !== modelId || promptChanged ? 3
+	let row = piSessionId == null ? 0 : !state ? (priors.length ? 2 : 1) : state.model !== modelId || promptChanged ? 3
 		: cwdChanged ? 5
 		: compared.equal && !state.dirtyTail ? 4 : !compared.cutCount ? 5 : compared.cutCount === priors.length ? 6 : 7;
 	const reason = piSessionId == null ? "unattributed-history" : missingFile ? "missing-transcript" : !state ? "no-state"
 		: state.model !== modelId ? "model-changed" : promptChanged ? "prompt-changed" : cwdChanged ? "cwd-changed"
 		: row === 4 ? "equal-digests" : state.dirtyTail && compared.equal ? "dirty-tail" : "history-difference";
+	// Claude Code resumes an interrupted turn only from a file that ends at its tool
+	// result: reuse keeps what CC wrote after it, and a fork's resumeSessionAt marks
+	// the tail as a rewind, which CC does not continue. Both become a prefix write.
+	if (continuation && (row === 4 || row === 6)) row = compared.cutCount ? 7 : 5;
 	const decision = (path: string, after: string) => {
 		traceStrict("decision", {
 			callId: traceCallId, piSessionId: piSessionId ?? null, row, path, reason,
@@ -1056,6 +1061,7 @@ function incorporate(c: QueryContext, uuid: string): boolean {
 /** Recording precedes the UI guard: echoes after a tool boundary still belong
  * to the emitted step, not to whatever stream is currently attached. */
 function tapRecording(message: SDKMessage, names: Map<string, string>, c: QueryContext): void {
+	if (message.type === "assistant" || message.type === "stream_event" || message.type === "result") c.outputSeen = true;
 	if ((message.type === "assistant" && message.parent_tool_use_id === null && message.message.model !== "<synthetic>")
 		|| (message.type === "stream_event" && message.parent_tool_use_id === null && ["content_block_start", "content_block_delta"].includes(message.event.type))) {
 		c.recording.assistantObserved();
@@ -1677,6 +1683,10 @@ const CONTINUE_AFTER_RESUME_PROMPT =
 	"[Your session was interrupted and resumed. What precedes this ends with the tool result "
 	+ "you were waiting for. Continue the task from there.]";
 
+/** How long a continuation waits for Claude Code to resume the turn on its own
+ *  before the continue prompt is written after all, so a turn never hangs. */
+const CONTINUATION_FALLBACK_MS = 30_000;
+
 /** Drop a Claude Code query parked at a tool boundary whose conversation pi has
  *  since rewritten (/compact, tree navigation).
  *
@@ -1900,28 +1910,26 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// after compaction), the session's mark is the only sign of the rewrite.
 		const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
 		const promptDigest = createHash("sha256").update(JSON.stringify([providerSettings.systemPromptPreset ?? null, systemPromptText ?? ""])).digest("hex");
-		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, promptDigest);
+		const promptBlocks = extractUserPromptBlocks(context.messages);
+		let promptText = extractUserPrompt(context.messages) ?? "";
+		// A turn that goes on at its tool result (after a rewrite, or with no query
+		// parked on it) has no prompt. Written as one, CC finds two user records in a
+		// row on resume and puts a <synthetic> "No response requested." assistant
+		// between them, which the model takes for its own answer (issue #274). So CC
+		// resumes the interrupted turn itself, with this text as its meta prompt.
+		const continuePrompt = promptText || promptBlocks ? undefined
+			: historyRewritten ? CONTINUE_AFTER_REWRITE_PROMPT : unparkedToolResult ? CONTINUE_AFTER_RESUME_PROMPT : undefined;
+		const continuation = lastMsg?.role === "toolResult" ? continuePrompt : undefined;
+		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, promptDigest, continuation !== undefined);
 		if (syncResult.created) createdBeforeLaunch = { id: syncResult.targetSessionId, cwd };
 		// This query starts from the history pi has now: consume this session's
 		// armed rewrite — a sibling pi session's stays armed for its own queries.
 		if (piSessionId) historyRewrittenBySession.delete(piSessionId);
 		const { sessionId: resumeSessionId } = syncResult;
 		const recording = queryCtx.recording = new LiveRecording(syncResult.recorded, nonSystemMessages(context.messages));
-		const promptBlocks = extractUserPromptBlocks(context.messages);
-		let promptText = extractUserPrompt(context.messages) ?? "";
-
-		// A turn continuing past a rewrite ends at its tool result, not at a
-		// prompt, so say what happened rather than falling into the empty-prompt
-		// recovery below — that one is for a shape we do not expect, and this is one
-		// we do. The rebuilt session already ends with the tool result, placed after
-		// the tool call it answers.
-		if (historyRewritten && !promptText && !promptBlocks) {
-			promptText = CONTINUE_AFTER_REWRITE_PROMPT;
-			debug(`provider: continuing the turn after a rewritten history, ${context.messages.length} msgs rebuilt`);
-		}
-		if (unparkedToolResult && !promptText && !promptBlocks) {
-			promptText = CONTINUE_AFTER_RESUME_PROMPT;
-			debug(`provider: resuming the turn at a tool result with no parked query, ${context.messages.length} msgs`);
+		if (continuePrompt) {
+			promptText = continuePrompt;
+			debug(`provider: ${historyRewritten ? "continuing the turn after a rewritten history" : "resuming the turn at a tool result with no parked query"}, ${context.messages.length} msgs`);
 		}
 
 		// Guard: empty prompt means the last context message isn't a user message.
@@ -1953,10 +1961,19 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// Like a steer, the prompt is recorded only on CC's replay acknowledgement
 		// or, when CC never replays it, on the query's first output (tapRecording):
 		// a stdin write does not prove CC persisted its record.
-		recording.users(context.messages, turnStart(context.messages), promptUuid, false, false);
-		queryCtx.turnOpener = promptUuid;
-		void promptStream.push({ ...userMessage(promptBlocks ?? [{ type: "text", text: promptText }]), uuid: promptUuid })
-			.catch((error) => debug(`provider: initial prompt push rejected:`, error));
+		const pushPrompt = () => {
+			recording.users(context.messages, turnStart(context.messages), promptUuid, false, false);
+			queryCtx.turnOpener = promptUuid;
+			void promptStream.push({ ...userMessage(promptBlocks ?? [{ type: "text", text: promptText }]), uuid: promptUuid })
+				.catch((error) => debug(`provider: initial prompt push rejected:`, error));
+		};
+		if (!continuation) pushPrompt();
+		// CC that judged the turn complete resumes nothing and waits for input.
+		else setTimeout(() => {
+			if (queryCtx.discarded || queryCtx.outputSeen) return;
+			debug("provider: Claude Code did not resume the interrupted turn, writing the continue prompt");
+			pushPrompt();
+		}, CONTINUATION_FALLBACK_MS).unref?.();
 		queryCtx.promptStream = promptStream;
 		const mcpServers = buildMcpServers(mcpTools, queryCtx);
 
@@ -1989,12 +2006,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			kind: "provider", callId: traceCallId, piSessionId, reentrant: isReentrant, resume: resumeSessionId ?? null,
 			model: cliModel, effort: effort ?? null, servedToolNames: Object.fromEntries(customToolNameToSdk), mcpTools: mcpTools.map((t) => t.name),
 			signal: traceSignalId(options?.signal), digests: { systemPrompt: systemPromptText }, systemPromptPreset: providerSettings.systemPromptPreset ?? null,
-		}, ccChildEnv(options?.env));
+		}, ccChildEnv({ ...options?.env, CLAUDE_CODE_RESUME_INTERRUPTED_TURN: continuation ? "1" : "", CLAUDE_CODE_RESUME_PROMPT: continuation ?? "" }));
 		const cliDebug = makeCliDebugOptions("provider");
 		const childProcess = new QueryProcess(cliDebug.stderr);
 		const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 			cwd,
-			env: childEnv,
+			// CC_CHILD_ENV ages every interrupted turn out; a continuation is one to resume.
+			env: continuation ? { ...childEnv, CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "0" } : childEnv,
 			tools: [],
 			permissionMode: "bypassPermissions",
 			includePartialMessages: true,
