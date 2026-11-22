@@ -339,6 +339,17 @@ it("session_shutdown closes its own parked query (a terminate:true tool's) and l
 });
 
 
+it("session_shutdown resolves after its query saved the session, so a host may exit then", { timeout: 5000 }, async () => {
+	const id = "shutdown-save";
+	scripts.push({ tool: true, deferTool: true, late: true });
+	await call([user("tool")], undefined, id).result();
+	assert.equal(persisted(id), null, "Claude Code records the tool call only when it exits");
+	await Promise.all(handlers.session_shutdown.map((fn) => fn({}, { sessionManager: { getSessionId: () => id } })));
+	assert.notEqual(persisted(id), null, "the save finished before session_shutdown resolved");
+	assert.match(readFileSync(calls[0].path, "utf8"), /late-exit-marker/);
+});
+
+
 it("a synthetic durable-host continuation is grouped with its next assistant, not fabricated as a pi slot", async () => {
 	const ask = user("tool"), controller = new AbortController();
 	scripts.push({ tool: true });
