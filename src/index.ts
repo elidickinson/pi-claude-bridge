@@ -78,6 +78,8 @@ interface SessionRegistry {
 	/** Real pi session ids this process has read or written state for. */
 	known: Set<string>;
 	writers: Map<string, Promise<void>>;
+	/** Queries of each pi session whose final save has not finished. */
+	saves?: Map<string, Set<Promise<void>>>;
 }
 const sessionRegistry: SessionRegistry = ((globalThis as Record<symbol, unknown>)[SESSION_REGISTRY_KEY] as SessionRegistry | undefined)
 	?? { states: new Map(), loaded: new Set(), known: new Set(), writers: new Map() };
@@ -85,6 +87,7 @@ const sessionRegistry: SessionRegistry = ((globalThis as Record<symbol, unknown>
 const sharedSessions = sessionRegistry.states;
 const loadedSessionStates = sessionRegistry.loaded;
 const knownSessionIds = sessionRegistry.known;
+const pendingSaves = (sessionRegistry.saves ??= new Map());
 
 /** The mirror for `piSessionId`, or null when this session has none yet. A pi
  *  session reads its persisted pointer on first use (restart, /reload).
@@ -118,6 +121,42 @@ function inheritSessionState(parentFile: string, piSessionId: string): void {
 	if (!parent) return;
 	setSessionStateFor(piSessionId, { ...parent, ...copyRecording(parent), dirtyTail: true });
 	debug(`session_start:fork: inherited ${parent.ccSessionId} from piSession=${header.id} ${sessionTag(piSessionId)}`);
+}
+
+/** A query saves its session state only after Claude Code exits, so a host that
+ *  ends its process at session_shutdown must wait for that save, or its next
+ *  process rebuilds the transcript and misses the prompt cache. */
+function trackSessionSave(piSessionId: string, ended: Promise<unknown>): void {
+	const saves = pendingSaves.get(piSessionId) ?? new Set<Promise<void>>();
+	pendingSaves.set(piSessionId, saves);
+	// `finally` keeps a fatal rejection unhandled, so it still ends the process.
+	const settled: Promise<void> = new Promise((resolve) => {
+		void ended.finally(() => {
+			saves.delete(settled);
+			if (!saves.size && pendingSaves.get(piSessionId) === saves) pendingSaves.delete(piSessionId);
+			resolve();
+		});
+	});
+	saves.add(settled);
+}
+
+const SESSION_SAVE_TIMEOUT_MS = 30_000;
+
+async function waitForSessionSaves(piSessionId: string): Promise<void> {
+	const deadline = Date.now() + SESSION_SAVE_TIMEOUT_MS;
+	for (let saves = pendingSaves.get(piSessionId); saves?.size; saves = pendingSaves.get(piSessionId)) {
+		const remaining = deadline - Date.now();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timedOut = await Promise.race([
+			Promise.all(saves).then(() => false),
+			new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), Math.max(0, remaining)); }),
+		]);
+		clearTimeout(timer);
+		if (timedOut) {
+			debug(`session_shutdown: gave up waiting for ${saves.size} session save(s) ${sessionTag(piSessionId)}`);
+			return;
+		}
+	}
 }
 
 /** Replace (or plant) the mirror for `piSessionId`. */
@@ -2162,7 +2201,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		};
 
 		// Background consumer — its recording and CAS token belong to this query.
-		void consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx)
+		const queryEnded = consumeQuery(sdkQuery, customToolNameToPi, model, () => wasAborted, queryCtx)
 			.then(async ({ capturedSessionId, failure }) => {
 				if (queryCtx.discarded) return;
 				if (capturedSessionId && capturedSessionId !== syncResult.targetSessionId) {
@@ -2205,6 +2244,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 					releaseWriter();
 				}
 			});
+		if (piSessionId != null) trackSessionSave(piSessionId, queryEnded);
 
 	})().catch((error) => {
 		if (createdBeforeLaunch) deleteSession(createdBeforeLaunch.id, createdBeforeLaunch.cwd, process.env.CLAUDE_CONFIG_DIR);
@@ -2286,10 +2326,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_start", (_event, ctx) => {
 		rejectedToolCalls.delete(ctx.sessionManager.getSessionId());
 	});
-	pi.on("session_shutdown", (_event, ctx) => {
-		forgetSessionCwd(ctx.sessionManager.getSessionId());
-		closeSessionQueries(ctx.sessionManager.getSessionId());
+	pi.on("session_shutdown", async (_event, ctx) => {
+		const piSessionId = ctx.sessionManager.getSessionId();
+		forgetSessionCwd(piSessionId);
+		closeSessionQueries(piSessionId);
 		clearSession("session_shutdown");
+		await waitForSessionSaves(piSessionId);
 	});
 
 	// Pi and summary extensions own compaction and branch summaries; native calls use the
