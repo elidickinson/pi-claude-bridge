@@ -20,7 +20,7 @@ import { compareHistory, copyRecording, importHistory, LiveRecording, type Recor
 import { deleteSessionState, loadSessionState, saveSessionState } from "./session-store.js";
 import { newAssistantOutput, QueryContext, type AssistantStep } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { registerAccount, continuationChildEnv, continuationPromptEnv, continuationSyncRow, observeContinuationOutput, prepareContinuationPrompt, pushContinuationPrompt } from "./fork/index.js";
+import { registerAccount, continuationChildEnv, continuationPromptEnv, continuationSyncRow, observeContinuationOutput, prepareContinuationPrompt, pushContinuationPrompt, setActiveToolsProbe, warnIfToolless, withRememberedDeclarations } from "./fork/index.js";
 import { claudeCodeSettings, globalConfigPath, loadConfig, type Config } from "./config.js";
 import { collectCarriedAttachments } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
@@ -1726,6 +1726,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		return isolatedStreamFn(model, context, options, traceCallId);
 	}
 
+	context = withRememberedDeclarations(context, sourceContext, options?.sessionId);
 	if (options?.sessionId) noticeDroppedTurn(options.sessionId, context.messages);
 
 	const stream = createAssistantMessageEventStream();
@@ -1858,6 +1859,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// failure here leaves no half-built query behind -- in particular no stream claimed on
 	// the shared context that nobody will ever end.
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
+	warnIfToolless(mcpTools.length, sessionTag(options?.sessionId));
 	// pi's own prompt, whole: toBridgeContext joined pi's sections via pi-ai. No
 	// capture lookup -- the prompt is forwarded as-is, as the preset's append by
 	// default or as a plain string when provider.systemPromptPreset is off.
@@ -2204,6 +2206,7 @@ export default function (pi: ExtensionAPI) {
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
 	registerAccount(pi, providerSettings);
+	setActiveToolsProbe(pi.getActiveTools ? () => pi.getActiveTools() : undefined);
 	// Opus 4.6 and Sonnet 4.6 need these settings to know if they're eligible for 1M context
 	// Validate at the boundary: a non-array here would throw inside every
 	// claudeCodeModelId call and brick the extension at activation.

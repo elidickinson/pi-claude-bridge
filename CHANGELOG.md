@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: no tools or prompt after pi compacts** — pi's compaction drops the system message, so the query rebuilt for the next call had no MCP server and ended the turn silently; the bridge now reuses the session's last declared tools and prompt, and logs when a query starts without tools while pi has some.
 - **Refactor: isolate fork features for upstream syncs** — sync upstream 0.13.0 while keeping project account and interrupted-turn behavior in `src/fork/`, with documented hooks and fork regression tests.
 - **Add: per-project Claude account (`provider.account`)** — a project's `.pi/claude-bridge.json` can name a login, e.g. `"banx"`, and Claude Code runs with `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name>`. A missing login fails as not logged in rather than falling back to the default account; `/claude-account` shows the project's account and who it is signed in as, `/claude-account <name>` or `/claude-account default` switches it (keeping the file out of git) and reloads, `/claude-account login` signs in from inside pi (asking before it creates a new login folder), and `/claude-account logout` signs the project's account out.
 
