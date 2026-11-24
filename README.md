@@ -71,6 +71,7 @@ Create `~/.pi/agent/claude-bridge.json`
 - `forceTwoHundredK` - array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if pi-ai declares a model at 1M but Claude Code won't serve it on your plan.
 - `plan` - set to `"max"` on a Max (or Team Premium/Enterprise) plan to run Opus 4.6 with 1M context (default `"pro"`).
 - `longContextExtraUsage` - set to `true` to run Opus 4.6 (on Pro) and Sonnet 4.6 with 1M context, billed through Extra Usage.
+- `waitForUsageReset` - set to `true` to wait out a subscription limit instead of failing the turn (default `false`). Like Claude Code's own auto-continue, the turn is retried shortly after the limit resets, if that is within a day. Esc cancels the wait. Fallback models don't kick in while it waits.
 
 ### Model overrides
 

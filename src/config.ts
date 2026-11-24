@@ -32,6 +32,9 @@ export interface Config {
 		// off, making pi's prompt the whole system prompt. Any other value is a startup
 		// error. Loaded config holds "claude_code" when on and omits the key when off.
 		systemPromptPreset?: "claude_code" | false | null;
+		// Set to true to retry a turn that fails on a subscription limit once the limit
+		// resets, like Claude Code's own auto-continue, instead of failing it.
+		waitForUsageReset?: boolean;
 	};
 }
 
