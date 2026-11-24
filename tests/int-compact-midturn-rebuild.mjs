@@ -34,8 +34,8 @@
 //     continues from a rebuilt session, so that usage drops to roughly the
 //     compacted history, and the turn still finishes with its marker.
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
@@ -221,6 +221,16 @@ try {
 	);
 
 	const debugLog = lines.join("\n");
+	// The continuation must not be opened on a file ending in a user record: CC
+	// then inserts a <synthetic> "No response requested." the model takes for its
+	// own answer (#274). Every CC session the run wrote is checked for one.
+	const ccIds = [...new Set([...debugLog.matchAll(/syncResult: path=\S+ sessionId=([0-9a-f-]{36})/g)].map((m) => m[1]))];
+	const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
+	const files = readdirSync(projects, { recursive: true }).filter((f) => ccIds.some((id) => f.endsWith(`${id}.jsonl`)));
+	assert(files.length > 0, `found none of the run's CC sessions (${ccIds.join(", ")}) under ${projects}`);
+	const synthetic = files.filter((f) => readFileSync(join(projects, f), "utf8").split("\n").some((line) => line.includes('"model":"<synthetic>"') && line.includes("No response requested")));
+	assert(synthetic.length === 0, `Claude Code inserted "No response requested." in ${synthetic.join(", ")}`);
+	console.log(`  CC sessions checked for the synthetic filler: ${files.length}, none found`);
 	assert(
 		!/MCP handlers still waiting/.test(debugLog),
 		"a tool handler was left waiting — the discarded query stranded one",

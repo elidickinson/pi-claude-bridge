@@ -3,7 +3,7 @@ import { getModels } from "@earendil-works/pi-ai/compat";
 import { isToolCallEventType, VERSION as PI_VERSION, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource, type ThinkingConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
-import { createSession, deleteSession, getSessionPath } from "cc-session-io";
+import { createSession, deleteSession, getSessionPath, type Session } from "cc-session-io";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname } from "path";
@@ -557,6 +557,29 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	debug(`${label}: env.CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? "(unset)"} HOME=${process.env.HOME ?? "(unset)"}`);
 }
 
+/** The assistant record a continuation's session file ends with.
+ *
+ *  A turn that goes on at a tool result with no query parked on it (a rewrite
+ *  discarded it, or the process restarted) is opened with a fresh query, and a
+ *  query needs a prompt. Resumed from a file that ends in a user record (the
+ *  tool result), Claude Code answers a second user record by inserting its own
+ *  `<synthetic>` "No response requested." assistant between the two. The model
+ *  reads that as its own answer and often ends the turn on it (issues #145,
+ *  #272, #274). No setting disables the insertion; it fires on the file's shape.
+ *
+ *  So the bridge writes the turn shape itself: the file it imports ends with
+ *  this record after the tool result, and the continue prompt follows an
+ *  assistant, which is an ordinary resume. It sits where CC's filler sat (no pi
+ *  slot, after every pi anchor), so recording and cuts are unchanged. Written
+ *  with the session's real model, not `<synthetic>`, so neither CC nor
+ *  processAssistantMessage reads it as a failure report. Worded so that, read
+ *  as the model's own words, it carries the turn on rather than closing it. */
+export const CONTINUATION_ASSISTANT_TEXT = "Continuing from the tool result above.";
+
+function addContinuationAssistant(session: Session): void {
+	session.addAssistantMessage([{ type: "text", text: CONTINUATION_ASSISTANT_TEXT }]);
+}
+
 // Compare pi's values, then retain CC's own records up to the last valid cut.
 // `promptDigest` hashes the provider's whole system prompt plus the preset setting; a
 // change takes a full import, the only path on which CC records a new one.
@@ -568,6 +591,7 @@ function syncSharedSession(
 	piSessionId: string | null,
 	traceCallId: string | undefined,
 	promptDigest: string,
+	continuation = false,
 ): SyncResult {
 	let state = sessionStateFor(piSessionId);
 	const before = state;
@@ -589,9 +613,14 @@ function syncSharedSession(
 	const cwdChanged = Boolean(state && safeRealpath(state.cwd) !== safeRealpath(cwd));
 	const promptChanged = Boolean(state && state.promptDigest !== promptDigest);
 	if (promptChanged) debug(`sync: system prompt changed; importing pi history ${sessionTag(piSessionId)}`);
-	const row = piSessionId == null ? 0 : !state ? (priors.length ? 2 : 1) : state.model !== modelId || promptChanged ? 3
+	let row = piSessionId == null ? 0 : !state ? (priors.length ? 2 : 1) : state.model !== modelId || promptChanged ? 3
 		: cwdChanged ? 5
 		: compared.equal && !state.dirtyTail ? 4 : !compared.cutCount ? 5 : compared.cutCount === priors.length ? 6 : 7;
+	// A continuation needs a file that this sync writes, so it can end the file
+	// with the bridge's own assistant record (CONTINUATION_ASSISTANT_TEXT). Reuse
+	// keeps whatever CC wrote past the result, and a fork's resumeSessionAt
+	// leaves the file's tail to CC: both become a prefix write of the same cut.
+	if (continuation && (row === 4 || row === 6)) row = compared.cutCount ? 7 : 5;
 	const reason = piSessionId == null ? "unattributed-history" : missingFile ? "missing-transcript" : !state ? "no-state"
 		: state.model !== modelId ? "model-changed" : promptChanged ? "prompt-changed" : cwdChanged ? "cwd-changed"
 		: row === 4 ? "equal-digests" : state.dirtyTail && compared.equal ? "dirty-tail" : "history-difference";
@@ -625,12 +654,14 @@ function syncSharedSession(
 		const replaced = transcript.slice(cut.index + 1);
 		const suffix = importHistory(session, rest, customToolNameToSdk, collectCarriedAttachments(replaced), recordedToolResults(replaced, state!.digests, rest));
 		recorded = { digests: [...recorded.digests, ...suffix.digests], uuids: [...recorded.uuids, ...suffix.uuids], cuttable: [...recorded.cuttable, ...suffix.cuttable] };
+		if (continuation) addContinuationAssistant(session);
 		records = savePrefixSession(session, transcript.slice(0, cut.index + 1), cut.uuid);
 	} else {
 		// Nothing is kept, but the old transcript's @file expansions and tool results
 		// still belong to messages pi kept unchanged.
 		const transcript = state ? readTranscript(state) : [];
 		recorded = importHistory(session, priors, customToolNameToSdk, collectCarriedAttachments(transcript), recordedToolResults(transcript, state?.digests ?? [], priors));
+		if (continuation) addContinuationAssistant(session);
 		session.save();
 		records = session.records.length;
 	}
@@ -1900,15 +1931,20 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		// after compaction), the session's mark is the only sign of the rewrite.
 		const historyRewritten = rewrittenUnderQuery || (piSessionId !== null && historyRewrittenBySession.has(piSessionId));
 		const promptDigest = createHash("sha256").update(JSON.stringify([providerSettings.systemPromptPreset ?? null, systemPromptText ?? ""])).digest("hex");
-		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, promptDigest);
+		const promptBlocks = extractUserPromptBlocks(context.messages);
+		let promptText = extractUserPrompt(context.messages) ?? "";
+		// A turn going on at its tool result with no prompt of its own: the
+		// session file this sync writes ends with the bridge's assistant record,
+		// so the continue prompt below follows an assistant and CC inserts no
+		// "No response requested." (see CONTINUATION_ASSISTANT_TEXT).
+		const continuation = !promptText && !promptBlocks && lastMsg?.role === "toolResult" && (historyRewritten || unparkedToolResult);
+		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, promptDigest, continuation);
 		if (syncResult.created) createdBeforeLaunch = { id: syncResult.targetSessionId, cwd };
 		// This query starts from the history pi has now: consume this session's
 		// armed rewrite — a sibling pi session's stays armed for its own queries.
 		if (piSessionId) historyRewrittenBySession.delete(piSessionId);
 		const { sessionId: resumeSessionId } = syncResult;
 		const recording = queryCtx.recording = new LiveRecording(syncResult.recorded, nonSystemMessages(context.messages));
-		const promptBlocks = extractUserPromptBlocks(context.messages);
-		let promptText = extractUserPrompt(context.messages) ?? "";
 
 		// A turn continuing past a rewrite ends at its tool result, not at a
 		// prompt, so say what happened rather than falling into the empty-prompt

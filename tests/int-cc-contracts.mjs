@@ -1086,6 +1086,63 @@ test("includeGitInstructions:false strips gitStatus and keeps the preset static 
 
 // --- Resuming a session that ends at a tool result ---
 
+test("a continuation file that ends with the bridge's assistant record gets no \"No response requested.\" filler", { timeout: 120_000 }, async () => {
+	// A fresh query opened at a tool result (pi compacted mid-turn, or the process
+	// restarted) needs a prompt. Resumed from a file ending in that tool result, CC
+	// answers the second user record by inserting a <synthetic> "No response
+	// requested." assistant, which the model takes for its own answer (#145, #272,
+	// #274). The bridge ends the file with its own assistant record instead
+	// (src/index.ts CONTINUATION_ASSISTANT_TEXT): the control proves CC still inserts
+	// the filler for the old shape, the second run that the new shape avoids it.
+	const requests = [];
+	const api = await stubApi(requests);
+	const cwd = mkdtempSync(join(tmpdir(), "cc-continuation-contract-"));
+	const filler = "No response requested.";
+	const bridgeText = "Continuing from the tool result above.";
+	const sessionIds = [];
+	const run = async (tail) => {
+		const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
+		sessionIds.push(session.sessionId);
+		session.importMessages([
+			{ role: "user", content: "Read the marker." },
+			{ role: "assistant", content: [{ type: "tool_use", id: "toolu_marker_1", name: "mcp__custom-tools__get_marker", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_marker_1", content: "MARKER_OK" }] },
+			...tail,
+		]);
+		session.save();
+		const marker = `PI-CONTINUE-${sessionIds.length}`;
+		await collect(query({
+			prompt: `[${marker}] Continue the task from there.`,
+			options: providerOptions({
+				cwd, resume: session.sessionId, maxTurns: 1,
+				env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1" },
+			}),
+		}));
+		const body = requests.filter((b) => JSON.stringify(b.messages).includes(marker)).at(-1);
+		assert.ok(body, "the resumed query never reached the stub API");
+		return body.messages;
+	};
+	const text = (m) => typeof m.content === "string" ? m.content : m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+	try {
+		const control = await run([]);
+		assert.ok(control.some((m) => m.role === "assistant" && text(m).includes(filler)),
+			"CC no longer inserts its filler after a file ending in a tool result; the bridge's record may be unnecessary");
+		const fixed = await run([{ role: "assistant", content: [{ type: "text", text: bridgeText }] }]);
+		assert.ok(!fixed.some((m) => m.role === "assistant" && text(m).includes(filler)), "CC inserted its filler after the bridge's assistant record");
+		const roles = fixed.map((m) => m.role);
+		const at = fixed.findIndex((m) => m.role === "assistant" && text(m).includes(bridgeText));
+		assert.ok(at > 0, "the bridge's assistant record did not reach the request");
+		assert.equal(fixed[at - 1].role, "user", "the bridge's record does not follow the tool result");
+		assert.ok(fixed[at - 1].content.some?.((b) => b.type === "tool_result"), "the bridge's record does not follow the tool result");
+		assert.equal(fixed[at + 1]?.role, "user", `the prompt does not follow the bridge's record: ${roles.join(",")}`);
+		for (let i = 1; i < roles.length; i++) assert.notEqual(roles[i], roles[i - 1], `consecutive ${roles[i]} messages: ${roles.join(",")}`);
+	} finally {
+		api.close();
+		for (const id of sessionIds) deleteSession(id, cwd, process.env.CLAUDE_CONFIG_DIR);
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1 stops CC resuming a turn that ends at a tool result", { timeout: 120_000 }, async () => {
 	// A rebuild after a terminating tool, or after a parked query was discarded, ends
 	// at a tool result, which CC reads as an interrupted turn. Behind a server flag it

@@ -356,6 +356,41 @@ it("a synthetic durable-host continuation is grouped with its next assistant, no
 	assert.equal(resolveRecordingCut(records, state, 4).uuid, state.uuids[3]);
 });
 
+// CC inserts a <synthetic> "No response requested." between two user records on
+// resume, and the model takes it for its own answer (#145, #272, #274). A
+// continuation's file therefore ends with the bridge's own assistant record, so
+// the continue prompt follows an assistant (tests/int-cc-contracts.mjs checks CC).
+const conversation = (records) => records.filter((r) => r.type === "user" || r.type === "assistant");
+const textOf = (r) => typeof r.message.content === "string" ? r.message.content : r.message.content.map((b) => b.text ?? b.type).join("");
+it("a continuation at a tool result ends the resumed file with the bridge's assistant record, before the prompt", async () => {
+	const ask = user("tool"), controller = new AbortController();
+	scripts.push({ tool: true });
+	const tool = await call([ask], controller.signal).result();
+	controller.abort();
+	scripts.push({});
+	await call([ask, tool, toolResult]).result();
+	assert.equal(calls[1].options.forkSession, undefined, "a continuation writes its own file instead of forking");
+	const records = conversation(readFileSync(calls[1].path, "utf8").trim().split("\n").map(JSON.parse));
+	const at = records.findIndex((r) => r.type === "assistant" && textOf(r) === mod.CONTINUATION_ASSISTANT_TEXT);
+	assert.ok(at > 0, "the bridge's assistant record is in the resumed file");
+	assert.ok(records[at - 1].message.content.some((b) => b.type === "tool_result"), "it follows the tool result");
+	assert.ok(records[at].message.model.startsWith(model.id), `it carries the session's model, not ${records[at].message.model}`);
+	assert.equal(records[at + 1].type, "user");
+	assert.match(textOf(records[at + 1]), /Your session was interrupted and resumed/);
+	assert.deepEqual(records.map((r) => r.type), ["user", "assistant", "user", "assistant", "user", "assistant"]);
+});
+
+it("an ordinary prompt gets no continuation record", async () => {
+	const ask = user("warm");
+	scripts.push({});
+	const answer = await call([ask]).result();
+	await calls[0].exited;
+	__test.forgetSessionMemory();
+	scripts.push({});
+	await call([ask, answer, user("next")]).result();
+	for (const c of calls) assert.doesNotMatch(readFileSync(c.path, "utf8"), new RegExp(mod.CONTINUATION_ASSISTANT_TEXT));
+});
+
 it("a restart reloads the persisted pointer dirty and forks at its last valid cut", async () => {
 	const ask = user("warm");
 	scripts.push({});
