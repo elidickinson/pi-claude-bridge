@@ -1472,8 +1472,9 @@ async function consumeQuery(
 			if (resultError !== undefined) {
 				// Consume the rejection alongside the failure it caused, so a later
 				// unrelated failure on this query doesn't inherit the label.
-				if (queryCtx.rateLimitRejection) {
-					resultError = describeRateLimitFailure(queryCtx.rateLimitRejection, resultError);
+				const rejection = queryCtx.rateLimitRejection;
+				if (rejection) {
+					resultError = describeRateLimitFailure(rejection, resultError);
 					queryCtx.rateLimitRejection = null;
 				} else if (resultError.includes("out of extra usage") && !extraUsageByChoice(model, longContextSettings)) {
 					// Extra Usage off or empty, and no plan window was rejected first.
@@ -1483,6 +1484,7 @@ async function consumeQuery(
 				if (queryCtx.turnOutput && queryCtx.currentPiStream) {
 					queryCtx.turnOutput.stopReason = "error";
 					queryCtx.turnOutput.errorMessage = resultError;
+					if (rejection) rateLimitedTurns.set(queryCtx.turnOutput, rejection);
 				}
 				// The failure ends the query. Closing stdin does not: Claude Code still
 				// runs a steer it had queued, and that turn's stop reason would overwrite
@@ -1717,8 +1719,58 @@ function dropParkedQuery(c: QueryContext): void {
 	debug("provider: discarded parked query; its recorded prefix remains available for a fork");
 }
 
-/** Provider entry point. Pi calls this for each new prompt and each tool result.
- *  Two cases: tool result delivery (active query) or fresh query. */
+/** The rejection behind each turn a rate limit failed, for provider.waitForUsageReset. */
+const rateLimitedTurns = new WeakMap<AssistantMessage, { rateLimitType?: string; resetsAt?: number }>();
+// Claude Code's own auto-continue skips resets further out, and resumes 30-90 s after one.
+const USAGE_RESET_MAX_WAIT_MS = 24 * 60 * 60 * 1000;
+const USAGE_RESET_WAITS = 3;
+
+/** Provider entry point. Pi calls this for each new prompt and each tool result. */
+function streamProvider(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+	if (!providerSettings.waitForUsageReset) return streamClaudeAgentSdk(model, context, options);
+	const stream = createAssistantMessageEventStream();
+	void (async () => {
+		for (let waits = 0; ; waits++) {
+			const resetsAt = await forwardUnlessRateLimited(streamClaudeAgentSdk(model, context, options), stream, waits < USAGE_RESET_WAITS);
+			if (resetsAt === undefined) return;
+			const resumeAt = Math.max(resetsAt * 1000, Date.now()) + 30_000 + Math.random() * 60_000;
+			debug(`provider: usage limit, retrying the call at ${new Date(resumeAt).toISOString()} (wait ${waits + 1})`);
+			piUI?.notify(`Claude usage limit: waiting to retry at ${new Date(resumeAt).toLocaleTimeString()}`, "warning");
+			if (!await sleepUnlessAborted(resumeAt - Date.now(), options?.signal)) {
+				const output = newAssistantOutput(model, "", "aborted", "Operation aborted");
+				endStream(stream, { type: "error", reason: "aborted", error: output });
+				return;
+			}
+		}
+	})();
+	return stream;
+}
+
+/** False if `signal` aborts first. */
+function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+	if (signal?.aborted) return Promise.resolve(false);
+	return new Promise((resolve) => {
+		const onAbort = () => { clearTimeout(timer); resolve(false); };
+		const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(true); }, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/** Forwards one call's events, except a rate-limit failure that came before any output
+ *  and resets within the wait limit: that call is retried, so its reset is returned. */
+async function forwardUnlessRateLimited(call: AssistantMessageEventStream, stream: AssistantMessageEventStream, mayWait: boolean): Promise<number | undefined> {
+	let forwarded = false;
+	for await (const event of call) {
+		const resetsAt = mayWait && !forwarded && event.type === "error" ? rateLimitedTurns.get(event.error)?.resetsAt : undefined;
+		if (resetsAt !== undefined && resetsAt * 1000 - Date.now() <= USAGE_RESET_MAX_WAIT_MS) return resetsAt;
+		forwarded = true;
+		stream.push(event);
+	}
+	stream.end();
+	return undefined;
+}
+
+/** One provider call. Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	// pi hands providers a transcript (prompt/tools folded into system messages) — fold it
 	// back out to the prompt/tools fields every syncSharedSession call below assumes (issue #106).
@@ -2358,7 +2410,7 @@ export default function (pi: ExtensionAPI) {
 		models: registeredModels,
 		// Cast: the Provider interface passes a TranscriptContext; the bridge takes plain
 		// Context models (toBridgeContext normalizes at the stream entry points).
-		streamSimple: streamClaudeAgentSdk as any,
+		streamSimple: streamProvider as any,
 	};
 	if (!g[ACTIVE_STREAM_SIMPLE_KEY]) {
 		// First instance: store our streamSimple and register.
