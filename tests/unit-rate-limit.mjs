@@ -109,6 +109,29 @@ describe("consumeQuery forwarding rate_limit_event", () => {
 		assert.match(warnings[0], /billed to Extra Usage/);
 	});
 
+	it("keeps the parent session's UI across a headless subagent session_start", async () => {
+		const starts = [];
+		mod.default({
+			on: (event, fn) => { if (event === "session_start") starts.push(fn); },
+			registerProvider: () => {},
+		});
+		const notices = [];
+		const modelRegistry = { getProvider: () => ({}) };
+		const emitStart = (sid, hasUI, notify) => {
+			for (const fn of starts) fn({}, { cwd: "/tmp", hasUI, ui: { notify }, modelRegistry, sessionManager: { getSessionId: () => sid } });
+		};
+		try {
+			emitStart("parent", true, (message) => notices.push(message));
+			emitStart("subagent", false, () => { throw new Error("no-op UI should not be called"); });
+			await replay([{ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1791580200, rateLimitType: "five_hour" } }], () => {});
+		} finally {
+			__test.setPiUI(null);
+		}
+
+		assert.equal(notices.length, 1);
+		assert.match(notices[0], /rate limit reached/);
+	});
+
 	it("finishes the turn when onResponse throws", async () => {
 		const c = await replay(fixture("text"), () => { throw new Error("consumer bug"); });
 

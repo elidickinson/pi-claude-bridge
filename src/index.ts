@@ -2258,7 +2258,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 	pi.on("session_start", (event, ctx) => {
-		piUI = ctx.ui;
+		if (ctx.ui && ctx.hasUI !== false) piUI = ctx.ui;
 		rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
