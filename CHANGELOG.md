@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: tool call arguments now stream as deltas arrive (#294)** — Partial tool call JSON is parsed incrementally instead of waiting for a complete JSON object, so pi tool renderers show paths, commands and previews while streaming. Thanks @dandjo.
 - **Fix: no stray `"No response requested."` reply when resuming after a tool result (#274)** — Applies to the bundled Claude Code after mid-turn compaction or restart. Thanks @steve-wecompare, @ricardofelixb, @georgeharker and @alfred-marketingagranel.
 
 ## 0.13.0 — 2026-11-16

@@ -6,7 +6,7 @@
 //
 // Extracted from index.ts so tests can import without activating the extension.
 
-import type { AssistantMessage, AssistantMessageEventStream, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEventStream, Model, SimpleStreamOptions, ToolCallArgumentsStream } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
 import { LiveRecording } from "./session-sync.js";
@@ -128,6 +128,8 @@ export class QueryContext {
 	/** API message id of the non-streaming fallback being delivered from `assistant`
 	 *  messages. The SDK hands it over one block per message, all under this id. */
 	turnFallbackMessageId: string | undefined;
+	/** Incremental JSON parsers for toolCall blocks still streaming, keyed by block. */
+	turnToolArgStreams = new Map<object, ToolCallArgumentsStream>();
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
@@ -157,6 +159,7 @@ export class QueryContext {
 		this.turnStreamOpen = false;
 		this.turnStreamBlockStart = 0;
 		this.turnFallbackMessageId = undefined;
+		this.turnToolArgStreams.clear();
 		// turnToolCallIds is NOT reset — it persists across tool-result delivery
 		// callbacks within the same assistant message so results can be routed to
 		// this query while its handlers are still pending.

@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, ToolCallArgumentsStream, type AssistantMessage, type AssistantMessageEvent, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { isToolCallEventType, VERSION as PI_VERSION, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type EffortLevel, type SDKMessage, type SettingSource, type ThinkingConfig } from "@anthropic-ai/claude-agent-sdk";
@@ -968,11 +968,6 @@ function mapStopReason(reason: string | undefined): "stop" | "length" | "toolUse
 	}
 }
 
-function parsePartialJson(input: string, fallback: Record<string, unknown>): Record<string, unknown> {
-	if (!input) return fallback;
-	try { return JSON.parse(input); } catch { return fallback; }
-}
-
 
 // --- Provider: streaming function ---
 //
@@ -1177,12 +1172,14 @@ function processStreamEvent(
 				return;
 			}
 			c.turnToolCallIds.push(event.content_block.id);
-			c.turnBlocks.push({
+			const block = {
 				type: "toolCall", id: event.content_block.id,
 				name: piName,
 				arguments: (event.content_block.input as Record<string, unknown>) ?? {},
-				partialJson: "", index: event.index,
-			});
+				index: event.index,
+			};
+			c.turnBlocks.push(block);
+			c.turnToolArgStreams.set(block, new ToolCallArgumentsStream());
 			c.currentPiStream!.push({ type: "toolcall_start", contentIndex: c.turnBlocks.length - 1, partial: c.turnOutput });
 		} else {
 			debug("processStreamEvent: unhandled content_block_start type", event.content_block?.type);
@@ -1201,9 +1198,13 @@ function processStreamEvent(
 			block.thinking += event.delta.thinking;
 			c.currentPiStream!.push({ type: "thinking_delta", contentIndex: index, delta: event.delta.thinking, partial: c.turnOutput });
 		} else if (event.delta?.type === "input_json_delta" && block.type === "toolCall") {
-			block.partialJson += event.delta.partial_json;
-			block.arguments = parsePartialJson(block.partialJson, block.arguments);
-			c.currentPiStream!.push({ type: "toolcall_delta", contentIndex: index, delta: event.delta.partial_json, partial: c.turnOutput });
+			const delta = event.delta.partial_json ?? "";
+			const argStream = c.turnToolArgStreams.get(block);
+			if (argStream) {
+				const parsed = argStream.append(delta);
+				if (argStream.text) block.arguments = parsed;
+			}
+			c.currentPiStream!.push({ type: "toolcall_delta", contentIndex: index, delta, partial: c.turnOutput });
 		} else if (event.delta?.type === "signature_delta" && block.type === "thinking") {
 			block.thinkingSignature = (block.thinkingSignature ?? "") + event.delta.signature;
 		} else {
@@ -1223,6 +1224,8 @@ function processStreamEvent(
 			c.currentPiStream!.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: c.turnOutput });
 		} else if (block.type === "toolCall") {
 			c.turnSawToolCall = true;
+			const argStream = c.turnToolArgStreams.get(block);
+			c.turnToolArgStreams.delete(block);
 			// CC's finished tool_use (already in assistantSteps) carries the input it
 			// runs and records, e.g. "5" converted for an integer param. Copied so pi
 			// can change its arguments without changing the recorded step.
@@ -1231,9 +1234,14 @@ function processStreamEvent(
 			if (finished) block.arguments = { ...finished.arguments };
 			else {
 				debug(`WARNING: Claude Code's finished tool_use ${block.id} did not arrive before content_block_stop; keeping the streamed arguments`);
-				block.arguments = mapToolArgs(block.name, parsePartialJson(block.partialJson, block.arguments));
+				if (argStream?.text) {
+					const { arguments: parsed, argumentsError } = argStream.finish();
+					block.arguments = mapToolArgs(block.name, parsed);
+					if (argumentsError) block.argumentsError = argumentsError;
+				} else {
+					block.arguments = mapToolArgs(block.name, block.arguments);
+				}
 			}
-			delete block.partialJson;
 			c.currentPiStream!.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: c.turnOutput });
 		}
 		return;
@@ -1284,6 +1292,7 @@ function dropUnfinishedStreamBlocks(c: QueryContext, why: string): void {
 		// `index` is deleted at content_block_stop, so it marks a block that never closed.
 		if (c.turnBlocks[i].index === undefined) continue;
 		dropped.push(`${c.turnBlocks[i].type}${c.turnBlocks[i].id ? `[${c.turnBlocks[i].id}]` : ""}`);
+		c.turnToolArgStreams.delete(c.turnBlocks[i]);
 		c.turnBlocks.splice(i, 1);
 	}
 	if (!dropped.length) return;
@@ -1302,6 +1311,7 @@ function dropUnfinishedStreamBlocks(c: QueryContext, why: string): void {
  *  rejects a repeated start, so it would need a change there to drive this provider. */
 function dropAbandonedStreamBlocks(c: QueryContext, why: string): void {
 	const dropped = c.turnBlocks.splice(c.turnStreamBlockStart);
+	for (const block of dropped) c.turnToolArgStreams.delete(block);
 	c.turnAssistantIds = c.turnAssistantIds.filter((id) => id !== c.turnStreamMessageId);
 	debug(`dropAbandonedStreamBlocks: ${why}; dropped ${dropped.length} blocks from ${c.turnStreamMessageId} types=${dropped.map((b: any) => b.type).join(",")}`);
 	c.turnToolCallIds = [];

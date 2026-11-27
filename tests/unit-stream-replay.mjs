@@ -35,8 +35,24 @@ function fixture(name) {
 /** Replays a fixture through the real consumeQuery, collecting the pi-side events. */
 async function replay(name) {
 	const events = [];
+	const toolCallSnapshots = [];
 	const c = new QueryContext();
-	c.currentPiStream = { push: (e) => events.push(e), end: () => events.push({ type: "end" }) };
+	c.currentPiStream = {
+		push: (e) => {
+			events.push(e);
+			if (e.type.startsWith("toolcall_")) {
+				const block = e.partial.content[e.contentIndex];
+				toolCallSnapshots.push({
+					type: e.type,
+					id: block?.id,
+					delta: e.delta,
+					arguments: structuredClone(block?.arguments),
+					hasPartialJson: block != null && "partialJson" in block,
+				});
+			}
+		},
+		end: () => events.push({ type: "end" }),
+	};
 	c.resetTurnState(model);
 	// The map the provider path builds from the served tool list: SDK name → pi name.
 	const customToolNameToPi = new Map([["mcp__custom-tools__read", "read"]]);
@@ -44,7 +60,7 @@ async function replay(name) {
 	const messages = fixture(name);
 	async function* stream() { for (const m of messages) yield m; }
 	const { capturedSessionId } = await __test.consumeQuery(stream(), customToolNameToPi, model, () => false, c);
-	return { events, ctx: c, messages, capturedSessionId };
+	return { events, toolCallSnapshots, ctx: c, messages, capturedSessionId };
 }
 
 const blocks = (ctx, type) => ctx.turnOutput.content.filter((b) => b.type === type);
@@ -127,11 +143,28 @@ describe("replaying a recorded single-tool turn", () => {
 		assert.equal(ctx.turnSawToolCall, true);
 		assert.deepEqual(ctx.turnToolCallIds, [calls[0].id]);
 	});
+
+	it("parses partial tool arguments as input_json_delta frames arrive (#294)", async () => {
+		const { toolCallSnapshots, ctx } = await replay("single-tool");
+		const deltas = toolCallSnapshots.filter((s) => s.type === "toolcall_delta");
+
+		assert.deepEqual(
+			deltas.map((s) => [s.delta, s.arguments]),
+			[
+				["", {}],
+				['{"path"', {}],
+				[': "one.', { path: "one." }],
+				['txt"}', { path: "one.txt" }],
+			],
+		);
+		assert.ok(toolCallSnapshots.every((s) => !s.hasPartialJson), "raw partialJson must not leak onto toolCall blocks");
+		assert.equal(ctx.turnToolArgStreams.size, 0, "parser state is released at content_block_stop");
+	});
 });
 
 describe("replaying a recorded parallel-tool turn", () => {
 	it("keeps every parallel call, in emission order", async () => {
-		const { ctx } = await replay("parallel-tools");
+		const { ctx, toolCallSnapshots } = await replay("parallel-tools");
 
 		const calls = blocks(ctx, "toolCall");
 		assert.ok(calls.length >= 2, `expected a parallel batch, got ${calls.length}`);
@@ -140,5 +173,13 @@ describe("replaying a recorded parallel-tool turn", () => {
 		for (const call of calls) assert.equal(call.name, "read");
 		// The recording splits each call's input across several input_json_delta frames.
 		assert.deepEqual(calls.map((c) => c.arguments), [{ path: "one.txt" }, { path: "two.txt" }, { path: "three.txt" }]);
+		const partialPaths = calls.map((call) =>
+			toolCallSnapshots.filter((s) => s.type === "toolcall_delta" && s.id === call.id).map((s) => s.arguments.path));
+		assert.deepEqual(partialPaths, [
+			[undefined, undefined, "one.", "one.txt"],
+			[undefined, undefined, "two.", "two.txt"],
+			[undefined, undefined, "thre", "three.txt"],
+		]);
+		assert.equal(ctx.turnToolArgStreams.size, 0);
 	});
 });
