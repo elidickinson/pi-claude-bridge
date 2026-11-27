@@ -10,7 +10,7 @@ import { createSession, deleteSession } from "cc-session-io";
 import { Type } from "typebox";
 import {
 	CLAUDE_MD_EXCLUDES, ccChildEnv, convertPiMessages, debug, errorMessage, loadProviderSettings, makeCliDebugOptions,
-	QueryProcess, REASONING_TO_EFFORT, resultErrorText, type ProviderSettings,
+	QueryProcess, queryWithFreshBinary, REASONING_TO_EFFORT, resultErrorText, type ProviderSettings,
 } from "./claude-code.js";
 import { buildActionSummary, type ToolCallState } from "./ui.js";
 
@@ -138,7 +138,7 @@ async function promptAndWait(
 			`history=${options.history?.length ?? "isolated"} resume=${sessionId?.slice(0, 8) ?? "none"}`,
 			`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
 
-		sdkQuery = queryImpl({
+		sdkQuery = queryWithFreshBinary(queryImpl, {
 			prompt,
 			options: {
 				cwd,
