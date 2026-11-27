@@ -16,6 +16,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { QueryContext } from "../src/query-state.js";
+import { convertPiMessages } from "../src/convert.js";
+import { digestMessage } from "../src/message-digests.js";
+import { NARRATION_KIND, signatureBlockKind } from "../src/narration.js";
 
 const { __test } = await import("../src/index.js");
 
@@ -32,18 +35,33 @@ function fixture(name) {
 	return readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 
-/** Replays a fixture through the real consumeQuery, collecting the pi-side events. */
-async function replay(name) {
+/** One recorded query spans a response per cycle, and the bridge ends the pi turn at the
+ *  first tool call, so each later cycle is what a later pi turn receives. Splits at each
+ *  response's message_start so a cycle can be replayed as a turn of its own. */
+function cycles(messages) {
+	const out = [];
+	for (const m of messages) {
+		if (m.type === "stream_event" && m.event?.type === "message_start") out.push([]);
+		out.at(-1)?.push(m);
+	}
+	return out;
+}
+
+/** Replays a fixture through the real consumeQuery, collecting the pi-side events.
+ *  With `cycle`, replays just that cycle, as the turn it would be; with `provider`, as
+ *  that provider's turn. */
+async function replay(name, { cycle, provider = model.provider } = {}) {
 	const events = [];
 	const c = new QueryContext();
+	const turnModel = { ...model, provider };
 	c.currentPiStream = { push: (e) => events.push(e), end: () => events.push({ type: "end" }) };
-	c.resetTurnState(model);
+	c.resetTurnState(turnModel);
 	// The map the provider path builds from the served tool list: SDK name → pi name.
 	const customToolNameToPi = new Map([["mcp__custom-tools__read", "read"]]);
 
-	const messages = fixture(name);
+	const messages = cycle === undefined ? fixture(name) : cycles(fixture(name))[cycle];
 	async function* stream() { for (const m of messages) yield m; }
-	const { capturedSessionId } = await __test.consumeQuery(stream(), customToolNameToPi, model, () => false, c);
+	const { capturedSessionId } = await __test.consumeQuery(stream(), customToolNameToPi, turnModel, () => false, c);
 	return { events, ctx: c, messages, capturedSessionId };
 }
 
@@ -141,4 +159,89 @@ describe("replaying a recorded parallel-tool turn", () => {
 		// The recording splits each call's input across several input_json_delta frames.
 		assert.deepEqual(calls.map((c) => c.arguments), [{ path: "one.txt" }, { path: "two.txt" }, { path: "three.txt" }]);
 	});
+});
+
+// Claude 5 models write the note between tool calls as a thinking block, and under summarized
+// display only its signature says it is a progress update rather than reasoning
+// (src/narration.ts). narration.jsonl was recorded on Sonnet 5.5 through the bridge: three
+// reads, with a note after each of the first two, and it was scrubbed like the others.
+describe("replaying recorded progress updates", () => {
+	// What Claude Code itself recorded, block by block, for each cycle, with its own verdict:
+	// each assistant frame lists the blocks it decoded as narration, which is the reference here.
+	const recorded = cycles(fixture("narration")).map((cycle) => cycle
+		.filter((m) => m.type === "assistant")
+		.flatMap((m) => m.message.content.map((b, i) => ({ ...b, ccNarration: m.narration_block_indexes?.includes(i) ?? false }))));
+	const isProgressUpdate = (b) => b.ccNarration && b.thinking.trim() !== "";
+	// As the bridge's own turn: its provider decides which signed blocks go back to the API.
+	const replayCycle = (cycle) => replay("narration", { cycle, provider: "claude-bridge" });
+
+	it("has progress updates to replay", () => {
+		assert.ok(recorded.flat().filter(isProgressUpdate).length >= 2,
+			"re-record: a fixture without progress updates would make everything below vacuous");
+	});
+
+	it("decodes every thinking block's kind the way Claude Code did", () => {
+		for (const b of recorded.flat().filter((b) => b.type === "thinking")) {
+			assert.equal(signatureBlockKind(b.signature) === NARRATION_KIND, b.ccNarration, b.signature.slice(0, 40));
+		}
+	});
+
+	for (const [cycle, blocks] of recorded.entries()) {
+		it(`delivers cycle ${cycle} as Claude Code recorded it, with progress updates as text`, async () => {
+			const { ctx, events, messages } = await replayCycle(cycle);
+
+			const expected = blocks.map((b) => {
+				if (isProgressUpdate(b)) return { type: "text", text: b.thinking, textSignature: b.signature };
+				if (b.type === "thinking") return { type: "thinking", thinking: b.thinking, thinkingSignature: b.signature };
+				if (b.type === "tool_use") return { type: "toolCall", id: b.id, name: "read" };
+				return { type: "text", text: b.text };
+			});
+			const delivered = ctx.turnOutput.content.map((b) => (b.type === "toolCall" ? { type: "toolCall", id: b.id, name: b.name } : { ...b }));
+			assert.deepEqual(delivered, expected);
+
+			// pi was told the same thing: every event for a block belongs to the type it ended up as.
+			for (const [index, block] of ctx.turnOutput.content.entries()) {
+				const prefix = block.type === "toolCall" ? "toolcall" : block.type;
+				const types = events.filter((e) => e.contentIndex === index).map((e) => e.type);
+				assert.ok(types.length > 0 && types.every((t) => t.startsWith(`${prefix}_`)), `block ${index} (${block.type}) saw ${JSON.stringify(types)}`);
+			}
+
+			// Session sync matched what pi was given with Claude Code's own record of the turn
+			// (src/session-sync.ts), so the next request can continue this session. A turn that
+			// ends without a tool call is finished by the provider path after consumeQuery returns.
+			if (ctx.currentPiStream) __test.finalizeCurrentStream(ctx);
+			assert.deepEqual(ctx.recording.recorded.digests, [digestMessage(ctx.turnOutput)], "the turn left a gap in the session recording");
+			assert.equal(ctx.recording.recorded.uuids[0], messages.filter((m) => m.type === "assistant").at(-1).uuid);
+		});
+	}
+
+	it("sends a progress update back to Claude Code exactly as it arrived", async () => {
+		const cycle = recorded.findIndex((blocks) => blocks.some(isProgressUpdate));
+		assert.ok(cycle >= 0, "a cycle must carry a progress update");
+		const { ctx } = await replayCycle(cycle);
+		const { anthropicMessages } = convertPiMessages(
+			[{ role: "assistant", provider: "claude-bridge", content: ctx.turnOutput.content }],
+			new Map([["read", "mcp__custom-tools__read"]]),
+		);
+
+		const sent = anthropicMessages[0].content.filter((b) => b.type === "thinking");
+		const arrived = recorded[cycle].filter(isProgressUpdate).map((b) => ({ type: "thinking", thinking: b.thinking, signature: b.signature }));
+		assert.deepEqual(sent, arrived);
+		assert.equal(anthropicMessages[0].content.length, ctx.turnOutput.content.length, "conversion dropped a block");
+	});
+});
+
+// Reasoning must come through as before. These are Haiku 4.5 recordings, narration.jsonl is Sonnet
+// 5.5: the signature of each model's reasoning names the kind "thinking".
+describe("replaying recorded reasoning", () => {
+	for (const name of ["text", "single-tool", "parallel-tools"]) {
+		it(`keeps the ${name} turn's reasoning as thinking`, async () => {
+			const { ctx } = await replay(name, { cycle: 0 });
+
+			const thinking = blocks(ctx, "thinking");
+			assert.ok(thinking.length > 0, "fixture must carry a thinking block, else this asserts nothing");
+			for (const b of thinking) assert.equal(signatureBlockKind(b.thinkingSignature), "thinking");
+			assert.ok(blocks(ctx, "text").every((b) => b.textSignature === undefined), "no text block should carry a signature");
+		});
+	}
 });
