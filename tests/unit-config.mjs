@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig } from "../src/config.js";
+import { claudeCodeSettings, loadConfig, settingSources } from "../src/config.js";
 import activate, { __test } from "../src/index.js";
 
 function withTempHome(fn) {
@@ -31,6 +31,22 @@ describe("claudeCodeSettings", () => {
 
 	it("allows auto-memory to be enabled", () => {
 		assert.deepEqual(claudeCodeSettings({ autoMemoryEnabled: true }), { autoMemoryEnabled: true });
+	});
+});
+
+describe("settingSources", () => {
+	it("loads the user's settings by default", () => {
+		assert.deepEqual(settingSources(), ["user"]);
+		assert.deepEqual(settingSources({}), ["user"]);
+		assert.deepEqual(settingSources({ userSettings: true }), ["user"]);
+	});
+
+	it("loads nothing when userSettings is false, and never the project's", () => {
+		assert.deepEqual(settingSources({ userSettings: false }), []);
+		for (const provider of [undefined, {}, { userSettings: true }, { userSettings: false }]) {
+			assert.ok(!settingSources(provider).includes("project"));
+			assert.ok(!settingSources(provider).includes("local"));
+		}
 	});
 });
 
@@ -67,6 +83,16 @@ describe("loadConfig", () => {
 			if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = oldEnv;
 			rmSync(agentDir, { recursive: true, force: true });
+		}
+	}));
+
+	it("preserves userSettings opt-out while defaulting to user settings", () => withTempHome(() => {
+		mkdirSync(getAgentDir(), { recursive: true });
+		for (const provider of [{}, { userSettings: true }, { userSettings: false }]) {
+			writeFileSync(join(getAgentDir(), "claude-bridge.json"), JSON.stringify({ provider }));
+			const loaded = loadConfig().provider;
+			assert.equal(loaded.userSettings, provider.userSettings);
+			assert.deepEqual(settingSources(loaded), provider.userSettings === false ? [] : ["user"]);
 		}
 	}));
 

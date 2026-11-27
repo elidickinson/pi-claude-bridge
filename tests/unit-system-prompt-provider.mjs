@@ -85,10 +85,19 @@ it("default puts CC's preset in front with pi's prompt appended", { timeout: 120
 	activate();
 	__test.resetSharedSession();
 	await startTurn("sp-default", [head({ cwd }), user("hello")]);
+	assert.deepEqual(launches.at(-1).settingSources, ["user"], "user settings stay enabled by default");
 	assert.deepEqual(launches.at(-1).systemPrompt, { type: "preset", preset: "claude_code", append: buildSystemPrompt({ cwd }) });
 	const sent = sentSystemText();
 	assert.ok(sent.includes(buildSystemPrompt({ cwd })), "CC sends pi's prompt as the preset's append");
 	assert.ok(sent.includes("You are Claude Code"), "the CC preset is present");
+});
+
+for (const userSettings of [false, true]) it(`userSettings ${userSettings} reaches the provider query`, { timeout: 120_000 }, async () => {
+	writeConfig({ userSettings });
+	activate();
+	__test.resetSharedSession();
+	await startTurn(`user-settings-${userSettings}`, [head({ cwd }), user("hello")]);
+	assert.deepEqual(launches.at(-1).settingSources, userSettings ? ["user"] : []);
 });
 
 it("systemPromptPreset false sends pi's whole prompt as a plain string", { timeout: 120_000 }, async () => {

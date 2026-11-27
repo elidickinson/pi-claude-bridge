@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Add: `provider.userSettings: false` skips `~/.claude/settings.json` (#252)** — Claude Code then runs bridge turns without the user's hooks, plugins, `env` and `apiKeyHelper`; `provider.userSettings` defaults to `true` for backward compatibility.
 - **Fix: no stray `"No response requested."` reply when resuming after a tool result (#274)** — Applies to the bundled Claude Code after mid-turn compaction or restart. Thanks @steve-wecompare, @ricardofelixb, @georgeharker and @alfred-marketingagranel.
 
 ## 0.13.0 — 2026-11-16
