@@ -79,15 +79,22 @@ describe("empty text block filtering", () => {
 });
 
 describe("thinking block filtering", () => {
+	// Each of these appends a trailing turn so the thinking-bearing message is
+	// NOT the latest assistant message — convertPiMessages drops a trailing
+	// unreplayable-thinking message outright (see "latest assistant message
+	// unreplayable thinking" below), so without a turn after it these would be
+	// testing that behavior instead of the historical in-place filtering they
+	// were written for.
 	it("non-Anthropic provider thinking blocks dropped", () => {
 		const msgs = [
 			{ role: "assistant", provider: "openrouter", content: [
 				{ type: "thinking", thinking: "let me think..." },
 				{ type: "text", text: "answer" },
 			]},
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 		];
 		const result = convert(msgs);
-		assert.equal(result.length, 1);
 		assert.equal(result[0].content.length, 1);
 		assert.equal(result[0].content[0].type, "text");
 	});
@@ -113,6 +120,8 @@ describe("thinking block filtering", () => {
 				{ type: "thinking", thinking: "hmm", thinkingSignature: "sig456" },
 				{ type: "text", text: "done" },
 			]},
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 		];
 		const result = convert(msgs);
 		assert.deepEqual(result[0].content, [{ type: "text", text: "done" }]);
@@ -124,21 +133,64 @@ describe("thinking block filtering", () => {
 				{ type: "thinking", thinking: "no sig" },
 				{ type: "text", text: "answer" },
 			]},
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
 		];
 		const result = convert(msgs);
 		assert.equal(result[0].content.length, 1);
 		assert.equal(result[0].content[0].type, "text");
 	});
 
-	it("assistant with only thinking (non-Anthropic) → placeholder", () => {
+	it("assistant with only thinking (non-Anthropic), NOT latest → placeholder", () => {
+		const msgs = [
+			{ role: "assistant", provider: "deepseek", content: [
+				{ type: "thinking", thinking: "deep thoughts" },
+			]},
+			{ role: "user", content: "next" },
+			{ role: "assistant", content: [{ type: "text", text: "ok" }] },
+		];
+		const result = convert(msgs);
+		assert.equal(result.length, 3);
+		assert.equal(result[0].content[0].text, "[incompatible content omitted]");
+	});
+
+	// The actual bug: this exact shape as the conversation's real tail. Session
+	// 565c9601-cd95-402a-925e-4ce90ea28c08 hit this after the backing Claude
+	// Code process died mid-thought and nothing followed before a long idle
+	// gap — every resume attempt 400'd identically ("the last turn in the
+	// conversation [must] be a user message") because the rebuilt transcript's
+	// last record was this placeholder, not a user turn. See PR #90, which hit
+	// the same root cause from Anthropic's other turn-shape requirement
+	// ("thinking blocks in the latest assistant message cannot be modified")
+	// and was closed as superseded by #224 -- #224 did not eliminate this
+	// pattern; it's still present verbatim in main as of this PR, this is a
+	// still-live occurrence of it, and this fix is #90's technique ported onto
+	// the current convertPiMessages shape.
+	it("assistant with only thinking (non-Anthropic), IS latest → dropped entirely", () => {
 		const msgs = [
 			{ role: "assistant", provider: "deepseek", content: [
 				{ type: "thinking", thinking: "deep thoughts" },
 			]},
 		];
 		const result = convert(msgs);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].content[0].text, "[incompatible content omitted]");
+		assert.equal(result.length, 0);
+	});
+
+	// #90's finding, generalized: dropping is unconditional for the latest
+	// assistant message even when real content sits alongside the
+	// unreplayable thinking block -- Anthropic's "cannot be modified"
+	// constraint is on the whole message's thinking blocks matching the
+	// original response byte-for-byte, not on this filtering producing empty
+	// content, so a text block in the same message doesn't save it.
+	it("assistant with thinking AND text, IS latest → still dropped entirely", () => {
+		const msgs = [
+			{ role: "assistant", provider: "deepseek", content: [
+				{ type: "thinking", thinking: "deep thoughts" },
+				{ type: "text", text: "answer anyway" },
+			]},
+		];
+		const result = convert(msgs);
+		assert.equal(result.length, 0);
 	});
 });
 

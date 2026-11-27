@@ -104,6 +104,30 @@ export function convertPiMessages(
 		sources.set(message, [index]);
 	};
 	const sanitizedIds = new Map();
+	// Anthropic's API requires the conversation to end on a user turn, and 400s
+	// otherwise ("the last turn in the conversation [must] be a user message").
+	// The LATEST assistant message in `messages` is the one this bites: if
+	// every block it carries is unreplayable — a thinking block from a
+	// provider other than claude-bridge, or one that is ours but never got a
+	// signature because the stream was cut mid-thought — the turn still isn't
+	// "aborted" (content.length > 0), so it would otherwise get the
+	// "[incompatible content omitted]" placeholder below and land as a
+	// content-free trailing assistant turn. That's never real conversational
+	// content, so the whole turn is dropped instead — same treatment as an
+	// aborted turn, just scoped to the one message this specific failure
+	// mode can actually reach: a *historical* message hitting the exact same
+	// filtering is left on the existing placeholder branch unchanged, since
+	// it isn't the one landing at the conversation's tail.
+	//
+	// Precomputed once, before the loop: "latest assistant message" means the
+	// last index in the *given* array with role "assistant", not literally
+	// messages.length-1 — a user message or tool result may follow it in an
+	// arbitrary slice (settledPrefixes in diag/lib/write-path.mjs accounts
+	// for exactly this).
+	let lastAssistantIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "assistant") { lastAssistantIdx = i; break; }
+	}
 	// The user message collecting this assistant turn's tool results, if one has
 	// been emitted yet, and the index of the assistant message it belongs to. Both
 	// are cleared at every assistant message — see the toolResult branch.
@@ -128,6 +152,12 @@ export function convertPiMessages(
 			}
 		} else if (msg.role === "assistant") {
 			const content = Array.isArray(msg.content) ? msg.content : [];
+			// See the lastAssistantIdx comment above: this is the one message a
+			// stream cut mid-thought can leave as the conversation's actual tail.
+			if (piIndex === lastAssistantIdx && content.some((block) =>
+				block.type === "thinking" && !(msg.provider === PROVIDER_ID && block.thinkingSignature))) {
+				continue;
+			}
 			const blocks = [];
 			for (const block of content) {
 				if (block.type === "text" && block.text) {
