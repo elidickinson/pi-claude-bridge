@@ -64,8 +64,8 @@ after(async () => {
 	rmSync(cwd, { recursive: true, force: true });
 });
 
-async function turn(messages) {
-	const output = await provider.streamSimple(model, { messages, tools: [] }, { sessionId: "pi-native", env: { PROVIDER_ENV_PROBE: "1" } }).result();
+async function turn(messages, signal) {
+	const output = await provider.streamSimple(model, { messages, tools: [] }, { sessionId: "pi-native", signal, env: { PROVIDER_ENV_PROBE: "1" } }).result();
 	assert.equal(output.stopReason, "stop", output.errorMessage);
 	assert.deepEqual(output.content.filter((b) => b.type === "text").map((b) => b.text), ["ACK"]);
 	return output;
@@ -94,4 +94,33 @@ it("native Claude Code accepts import, restart fork and prefix-write launches", 
 	assert.match(requests.at(-1), /REDACTED question/);
 
 	assert.equal(existsSync(repoHookRan), false, "a hook from the repo's .claude settings ran");
+});
+
+it("a compacted tool turn resumes once, keeping its steer and compaction notice (#274)", { timeout: 10_000 }, async () => {
+	const calls = ["a", "b"].map((id) => ({ type: "toolCall", id: `toolu_${id}`, name: "read", arguments: { path: id } }));
+	const result = (id) => ({ role: "toolResult", toolCallId: `toolu_${id}`, toolName: "read", content: [{ type: "text", text: `result-${id}` }], isError: false, timestamp: 1 });
+	const before = requests.length;
+	__test.markRebuildForSession("pi-native");
+	await turn([
+		user("read both files"), { ...say(""), content: calls },
+		result("a"), user("focus on the second file"), result("b"),
+	]);
+	assert.equal(requests.length, before + 1);
+	const request = requests.at(-1);
+	for (const text of ["result-a", "result-b", "focus on the second file", "context was compacted"]) assert.ok(request.includes(text), text);
+	assert.doesNotMatch(request, /No response requested\./);
+});
+
+it("Claude Code's reserved transcript markers reach the API through stdin", async () => {
+	const call = { type: "toolCall", id: "toolu_read", name: "read", arguments: { path: "a" } };
+	const prior = [user("read a"), { ...say(""), content: [call] }, {
+		role: "toolResult", toolCallId: call.id, toolName: "read", content: [{ type: "text", text: "result-a" }], isError: false, timestamp: 1,
+	}];
+	const image = { type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" };
+	for (const content of ["[Request interrupted by user]", [image, { type: "text", text: "<bash-input>echo hi</bash-input>" }]]) {
+		const before = requests.length;
+		await turn([...prior, user(content)], AbortSignal.timeout(5_000));
+		assert.equal(requests.length, before + 1);
+		assert.equal(launches.at(-1).env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN, undefined);
+	}
 });

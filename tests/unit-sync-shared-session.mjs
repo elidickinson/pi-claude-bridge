@@ -68,6 +68,25 @@ describe("digest session decisions", () => {
 		assert.deepEqual(synced.recorded.digests, digestMessages(rewrite));
 		assert.deepEqual(readFileSync(session.jsonlPath), before);
 	});
+	it("an inline prompt tail prefix-writes priors plus the trailing user prompt without adding it to recorded (#274)", () => {
+		const priors = [user("read"), calls("A"), result("A")];
+		const { session } = seed(priors);
+		const synced = __test.syncSharedSession([...priors, user("follow up")], cwd, new Map(), "sonnet", "pi", undefined, "", "follow up");
+		assert.notEqual(synced.sessionId, session.sessionId);
+		assert.equal(synced.forkAt, undefined);
+		assert.ok(synced.inlinePromptUuid);
+		assert.deepEqual(synced.recorded.digests, digestMessages(priors), "recorded covers priors only; LiveRecording tracks the inline prompt");
+		const records = readFileSync(getSessionPath(synced.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR), "utf8").trim().split("\n").map(JSON.parse)
+			.filter((r) => r.type === "user" || r.type === "assistant");
+		assert.equal(records.at(-1).uuid, synced.inlinePromptUuid);
+		assert.equal(records.at(-1).message.content, "follow up");
+		assert.equal(records.at(-2).message.content[0].type, "tool_result");
+	});
+	it("does not inline after an unmatched tool result is dropped and leaves an assistant tail", () => {
+		const messages = [user("read"), say("answer"), result("unmatched"), user("follow up")];
+		const synced = __test.syncSharedSession(messages, cwd, new Map(), "sonnet", "pi", undefined, "", "follow up");
+		assert.equal(synced.inlinePromptUuid, undefined);
+	});
 	it("model changes rotate even for equal history", () => {
 		const priors = [user("hi"), say("hello")];
 		const { session } = seed(priors);
