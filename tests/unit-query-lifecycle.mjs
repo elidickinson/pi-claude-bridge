@@ -74,14 +74,17 @@ function fakeQuery({ options, prompt }) {
 	const gen = (async function* () {
 		await ready;
 		const input = typeof prompt === "string" ? null : prompt[Symbol.asyncIterator]();
-		const initial = input ? (await input.next()).value : { message: { content: prompt } };
+		entry.resumed = options.env?.CLAUDE_CODE_RESUME_INTERRUPTED_TURN === "1";
+		const inlineRecord = entry.resumed ? readFileSync(path, "utf8").trim().split("\n").map(JSON.parse).at(-1) : null;
+		const initial = inlineRecord ? { uuid: inlineRecord.uuid, message: inlineRecord.message }
+			: input ? (await input.next()).value : { message: { content: prompt } };
 		if (input) void (async () => {
 			for await (const _ of input) { /* Drain stdin like the SDK transport. */ }
 		})().catch(() => {});
 		entry.pulled = true;
 		// CC pulled the prompt from stdin, then dies booting: no record, no replay.
 		if (script.boot) { await parked; return; }
-		record("user", initial.message.content, initial.uuid);
+		if (!inlineRecord) record("user", initial.message.content, initial.uuid);
 		if (!script.preInit) yield { type: "system", subtype: "init", session_id: id };
 		if (!script.preInit && input) yield { type: "user", isReplay: true, parent_tool_use_id: null, uuid: initial.uuid, session_id: id, message: initial.message };
 		if (script.tool) {
@@ -354,6 +357,29 @@ it("a synthetic durable-host continuation is grouped with its next assistant, no
 	assert.doesNotMatch(JSON.stringify(records.slice(0, resultCut.index + 1)), /Your session was interrupted and resumed/);
 	assert.match(JSON.stringify(records.slice(resultCut.index + 1)), /Your session was interrupted and resumed/);
 	assert.equal(resolveRecordingCut(records, state, 4).uuid, state.uuids[3]);
+});
+
+it("a user/extension message after an unparked tool result is written inline, replayed by UUID, and reused on the next turn (#274)", async () => {
+	const ask = user("tool"), notice = user("[budget notice]"), controller = new AbortController();
+	scripts.push({ tool: true });
+	const tool = await call([ask], controller.signal).result();
+	controller.abort();
+	scripts.push({});
+	const answer = await call([ask, tool, toolResult, notice]).result();
+	assert.equal(calls[1].resumed, true);
+	assert.equal(calls[1].options.forkSession, undefined, "inline prompt writes a prefix session instead of forking");
+	assert.equal(calls[1].options.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS, "0");
+	const state = __test.getSharedSession("pi");
+	assert.deepEqual(state.digests, digestMessages([ask, tool, toolResult, notice, answer]));
+	const records = readFileSync(calls[1].path, "utf8").trim().split("\n").map(JSON.parse)
+		.filter((r) => r.type === "user" || r.type === "assistant");
+	assert.equal(records.filter((r) => r.message?.content === "[budget notice]").length, 1, "no duplicate user record");
+	assert.equal(records[3].uuid, state.uuids[3], "LiveRecording anchored the replayed inline UUID");
+	// Next ordinary turn reuses the session cleanly.
+	scripts.push({});
+	await call([ask, tool, toolResult, notice, answer, user("next")]).result();
+	assert.equal(calls[2].resumed, false);
+	assert.equal(calls[2].options.resume, calls[1].options.resume);
 });
 
 it("a restart reloads the persisted pointer dirty and forks at its last valid cut", async () => {

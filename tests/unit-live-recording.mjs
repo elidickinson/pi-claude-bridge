@@ -29,6 +29,7 @@ it("pins three independently streamed result records and the last completed assi
 	assert.equal(echoes.length, 3);
 	const results = echoes.map((m) => result(m.message.content[0].tool_use_id));
 	c.recording.results([prompt, assistant, ...results]);
+	for (const r of results) c.dispatchedToolCalls.add(r.toolCallId); // as the MCP handler would
 	// There is deliberately no live UI stream here: the recording tap must run.
 	await consume(c, echoes);
 	assert.deepEqual(c.recording.recorded.uuids.slice(2), echoes.map((m) => m.uuid));
@@ -134,6 +135,7 @@ for (const laterTurn of [false, true]) it(`${laterTurn ? "later-turn" : "absorbe
 	const tr = result("X"), steer = user("steer");
 	const context = [prompt, call, tr, steer];
 	c.recording.results(context);
+	c.dispatchedToolCalls.add("X"); // as the MCP handler would
 	c.recording.users(context, 3, "steer", false);
 	c.resetTurnState(model);
 	const stream = c.currentPiStream = createAssistantMessageEventStream();

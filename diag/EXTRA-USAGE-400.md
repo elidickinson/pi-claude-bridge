@@ -81,6 +81,18 @@ CC's `isUsingOverage` misses this case. CC sets it only when the plan window is 
 
 The bridge's own debug log has 6 events of the billed shape (`rateLimitType: "overage"`, `status: "allowed"`, `isUsingOverage: false`) from 2026-07-29 to 2026-08-06, and none after. Their prompts weren't logged, so the cause is not known.
 
+### Plain-string form: November 11, 2026
+
+With `provider.systemPromptPreset: false` the bridge sends pi's whole prompt as a plain string; by default it is the `claude_code` preset's append. `diag/probe-third-party-gate.mjs`, interleaved `control` and `plain:` arms, Agent SDK 0.3.321 (CC 2.1.321), Haiku 5.5, Extra Usage disabled (`org_level_disabled`), so a gated prompt would 400 rather than bill.
+
+| plain arm | Extra Usage off |
+| --- | --- |
+| none (control) | plan: `five_hour`, `overageInUse` unset, `isUsingOverage=false` |
+| pi 1.5.2 default prompt | 2/2 plan, same as control |
+| pi 1.5.2 + project AGENTS.md | 2/2 plan, same as control |
+
+The last arm is pi 1.5.2's prompt rendered with a project AGENTS.md (2.7K chars: `<project_context>` plus pi's tools/rules/docs); the skill section did not surface in the offline render. Raw runs: `.test-output/third-party-gate/results.jsonl`. A clean pass with Extra Usage off rules out the gate reacting to pi's wording or to ordinary context-file text in the plain form. It does not establish eligibility for arbitrary prompt content: the gate reacts to specific wording, and any AGENTS.md could contain it.
+
 ## Reproduction
 
 Capture through the real SDK path, then compare requests using the same account and model, changing only the system prompt:

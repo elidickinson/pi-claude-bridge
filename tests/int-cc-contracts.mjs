@@ -1126,3 +1126,70 @@ test("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1 stops CC resuming a turn 
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
+
+test("resuming an inline prompt after a tool result preserves images without a synthetic reply (#274)", { timeout: 10_000 }, async () => {
+	const filler = "No response requested.";
+	const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+	const cwd = mkdtempSync(join(tmpdir(), "cc-resume-274-contract-"));
+	const content = [{ type: "text", text: "INLINE-PROMPT-274" }, { type: "image", source: { type: "base64", media_type: "image/png", data: tinyPng } }];
+	async function run(inline) {
+		const requests = [];
+		const api = await stubApi(requests);
+		const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: MODEL });
+		let q, finish;
+		try {
+			session.addUserMessage("Read marker.");
+			session.addAssistantMessage([{ type: "tool_use", id: "toolu_274", name: "mcp__custom-tools__read", input: {} }]);
+			session.addToolResultBlocks([{ type: "tool_result", tool_use_id: "toolu_274", content: "MARKER_OK" }]);
+			const uuid = inline ? session.addUserMessage(content) : randomUUID();
+			session.save();
+
+			const done = new Promise((resolve) => { finish = resolve; });
+			async function* input() {
+				if (!inline) yield { type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid };
+				await done;
+			}
+			q = query({
+				prompt: input(),
+				options: providerOptions({
+					cwd, resume: session.sessionId, maxTurns: 1,
+					extraArgs: { "strict-mcp-config": null, "replay-user-messages": null },
+					env: {
+						...process.env,
+						ANTHROPIC_BASE_URL: api.url,
+						ENABLE_CLAUDEAI_MCP_SERVERS: "0",
+						DISABLE_AUTO_COMPACT: "1",
+						CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+						CLAUDE_CODE_RESUME_INTERRUPTED_TURN: inline ? "1" : "",
+						CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: inline ? "0" : "1",
+					},
+				}),
+			});
+			let replayed = false;
+			for await (const msg of q) {
+				if (msg.type === "user" && msg.isReplay && msg.uuid === uuid) replayed = true;
+				if (msg.type === "result") finish();
+			}
+			assert.equal(requests.length, 1);
+			return { replayed, messages: JSON.stringify(requests[0].messages), disk: readFileSync(session.jsonlPath, "utf8") };
+		} finally {
+			finish?.();
+			q?.close();
+			api.close();
+			deleteSession(session.sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+		}
+	}
+	try {
+		const control = await run(false);
+		assert.ok(control.messages.includes(filler), "the stdin prompt did not trigger the filler");
+		const inline = await run(true);
+		assert.ok(!inline.messages.includes(filler) && !inline.disk.includes(filler), "Claude Code inserted a synthetic reply");
+		assert.ok(inline.messages.includes("MARKER_OK") && inline.messages.includes("INLINE-PROMPT-274") && inline.messages.includes(tinyPng));
+		assert.ok(inline.replayed, "Claude Code did not replay the written prompt UUID");
+		const users = inline.disk.trim().split("\n").map(JSON.parse).filter((r) =>
+			r.type === "user" && JSON.stringify(r.message.content).includes("INLINE-PROMPT-274"));
+		assert.equal(users.length, 1, "the inline prompt must appear exactly once");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});

@@ -1,7 +1,7 @@
 // Model selection + display-order policy for the model picker. The picker is
-// driven by pi-ai's anthropic catalog: models appear (and disappear) with it,
-// no per-model code here. Extracted from index.ts so tests can import without
-// activating the extension.
+// driven by pi-ai's anthropic catalog: models appear (and disappear) with it.
+// The one exception is GATED_MODELS, for access-gated ids pi-ai leaves out.
+// Extracted from index.ts so tests can import without activating the extension.
 
 const TWO_HUNDRED_K_CONTEXT = 200_000;
 const ONE_M_CONTEXT = 1_000_000;
@@ -13,8 +13,31 @@ function isDatedAlias(id: string): boolean {
 }
 
 // Family tiers for display order: flagship families first; unknown families
-// sink below all known ones.
-const FAMILY_ORDER = ["fable", "opus", "sonnet", "haiku"];
+// sink below all known ones. Mythos goes last because most accounts can't use
+// it, and pi falls back to a provider's first model when it has no default.
+const FAMILY_ORDER = ["fable", "opus", "sonnet", "haiku", "mythos"];
+
+// Access-gated models pi-ai's catalog leaves out. Anthropic serves Claude Mythos
+// only to approved programs, so pi-ai doesn't list it and the picker would never
+// show it. Each one is cloned from the Fable release it shipped beside, which
+// shares its context window, max output, thinking levels and input types
+// (measured, diag/CONTEXT-SIZE.md). Requests fail on accounts without access.
+// If pi-ai ever lists one, its own entry wins.
+const GATED_MODELS: Record<string, { from: string; name: string }> = {
+	"claude-mythos-5-2": { from: "claude-fable-5-2", name: "Claude Mythos 5.2" },
+	"claude-mythos-5-1": { from: "claude-fable-5-1", name: "Claude Mythos 5.1" },
+};
+
+function withGatedModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]): T[] {
+	const listed = new Set(piAiModels.map((m) => m.id));
+	const added: T[] = [];
+	for (const [id, { from, name }] of Object.entries(GATED_MODELS)) {
+		const sibling = piAiModels.find((m) => m.id === from);
+		if (listed.has(id) || !sibling) continue;
+		added.push({ ...sibling, id, name });
+	}
+	return [...piAiModels, ...added];
+}
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
 // newest generation first. Context-dependent display labels are applied after
@@ -26,7 +49,7 @@ function versionRank(id: string): { family: string; tuple: [number, number] } {
 }
 
 export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]) {
-	return piAiModels
+	return withGatedModels(piAiModels)
 		.filter((m) => typeof m.id === "string" && !isDatedAlias(m.id))
 		.sort((a, b) => {
 			const fa = FAMILY_ORDER.indexOf(versionRank(a.id).family);
@@ -74,11 +97,13 @@ type ClaudeCodeRuntimeModel = {
 // - The registered contextWindow must match the window the bridge actually
 //   requests, or pi's status bar and compaction threshold misreport.
 // [1m] ids that serve 1M on every plan (sonnet-5-5 measured on Pro with and
-// without Extra Usage; opus-5-5 and fable-5-2 on Max). A new model
-// serves 200K until someone measures it (diag/context-size.mjs) and adds it
-// here. Known exception unrelated to long context: fable-5 is not included
+// without Extra Usage; opus-5-5, fable-5-2, mythos-5-1 and mythos-5-2 on Max).
+// A new model serves 200K until someone measures it (diag/context-size.mjs) and
+// adds it here. Known exception unrelated to long context: fable-5 is not included
 // with Pro account without Extra Usage.
 const MEASURED_ONE_M = new Set([
+	"claude-mythos-5-2",
+	"claude-mythos-5-1",
 	"claude-fable-5",
 	"claude-fable-5-1",
 	"claude-fable-5-2",
