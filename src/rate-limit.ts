@@ -12,6 +12,7 @@ const WINDOW_ABBREVIATIONS: Readonly<Record<string, string>> = {
 	five_hour: "5h",
 	seven_day: "7d",
 	seven_day_overage_included: "7d_oi",
+	overage: "overage",
 };
 
 type UsageWindow = { utilization?: number; resetsAt?: number };
@@ -20,6 +21,7 @@ export type RateLimitInfo = {
 	status?: string;
 	resetsAt?: number;
 	rateLimitType?: string;
+	utilization?: number;
 	overageStatus?: string;
 	overageResetsAt?: number;
 	unifiedWindows?: Record<string, UsageWindow | undefined>;
@@ -36,13 +38,21 @@ export function rateLimitResponse(info: RateLimitInfo): ProviderResponse {
 	set("reset", info.resetsAt);
 	set("representative-claim", info.rateLimitType);
 	set("overage-status", info.overageStatus);
-	set("overage-reset", info.overageResetsAt);
 
-	for (const [name, window] of Object.entries(info.unifiedWindows ?? {})) {
+	// unifiedWindows never includes overage, and a warning Claude Code keeps after
+	// losing the window readings arrives without it; the event's own window fills in.
+	const windows = { ...info.unifiedWindows };
+	const { rateLimitType, utilization } = info;
+	if (rateLimitType && Object.hasOwn(WINDOW_ABBREVIATIONS, rateLimitType) && utilization !== undefined) {
+		windows[rateLimitType] ??= { utilization, resetsAt: info.resetsAt };
+	}
+	for (const [name, window] of Object.entries(windows)) {
 		const abbreviation = WINDOW_ABBREVIATIONS[name] ?? name;
 		set(`${abbreviation}-utilization`, window?.utilization);
 		set(`${abbreviation}-reset`, window?.resetsAt);
 	}
+	// After the windows, so an explicit overage reset wins over the event's generic one.
+	set("overage-reset", info.overageResetsAt);
 
 	return { status: HTTP_OK, headers };
 }

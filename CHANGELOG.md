@@ -3,6 +3,7 @@
 ## UNRELEASED
 
 - **Fix: preserve parent UI when headless subagents start (#292)** — Rate-limit warnings and other bridge notices still reach the parent session. Thanks @leierx.
+- **Fix: rate-limit headers carry utilization for overage and warning-only events (#275)** — When Claude Code's event has no per-window table, its own window's utilization and reset fill the `anthropic-ratelimit-unified-*` headers. Thanks @Ribelio.
 - **Fix: tool call arguments now stream as deltas arrive (#294)** — Partial tool call JSON is parsed incrementally instead of waiting for a complete JSON object, so pi tool renderers show paths, commands and previews while streaming. Thanks @dandjo.
 - **Fix: no stray `"No response requested."` reply when resuming after a tool result (#274)** — Applies to the bundled Claude Code after mid-turn compaction or restart. Thanks @steve-wecompare, @ricardofelixb, @georgeharker and @alfred-marketingagranel.
 
