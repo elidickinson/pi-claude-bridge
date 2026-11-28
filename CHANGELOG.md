@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## 0.13.1 — 2026-11-27
 
 - **Fix: preserve parent UI when headless subagents start (#292)** — Rate-limit warnings and other bridge notices still reach the parent session. Thanks @leierx.
 - **Fix: rate-limit headers carry utilization for overage and warning-only events (#275)** — When Claude Code's event has no per-window table, its own window's utilization and reset fill the `anthropic-ratelimit-unified-*` headers. Thanks @Ribelio.
